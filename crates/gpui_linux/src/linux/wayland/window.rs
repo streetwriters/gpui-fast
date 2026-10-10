@@ -2073,6 +2073,17 @@ impl PlatformWindow for WaylandWindow {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
+        let mut state = self.borrow_mut();
+        let state = &mut *state;
+        let renderer = state
+            .renderer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("the window has no renderer"))?;
+        renderer.render_to_image(scene)
+    }
+
     fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {
         crate::fast::composition::wayland::draw_composed(self, scene)
     }

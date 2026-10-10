@@ -1828,6 +1828,16 @@ impl PlatformWindow for X11Window {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
+        let mut state = self.0.state.borrow_mut();
+        let renderer = state
+            .renderer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("the window has no renderer"))?;
+        renderer.render_to_image(scene)
+    }
+
     fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {
         crate::fast::composition::x11::draw_composed(self, scene)
     }
