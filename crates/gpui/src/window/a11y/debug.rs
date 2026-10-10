@@ -182,6 +182,12 @@ fn node_to_json(
     let mut map = serde_json::Map::new();
     map.insert("accesskit_id".into(), json!(id.0.to_string()));
 
+    // The author-provided identifier (`Element::accessibility_id`), which is
+    // what test tooling resolves nodes by.
+    if let Some(v) = node.author_id() {
+        map.insert("author_id".into(), json!(v));
+    }
+
     let children: Vec<String> = node
         .children()
         .iter()
@@ -267,6 +273,12 @@ fn node_to_json(
     }
     if let Some(v) = node.toggled() {
         aria.insert("toggled".into(), json!(format!("{v:?}")));
+    }
+    if node.is_hidden() {
+        aria.insert("hidden".into(), json!(true));
+    }
+    if node.is_disabled() {
+        aria.insert("disabled".into(), json!(true));
     }
     if let Some(v) = node.orientation() {
         aria.insert("orientation".into(), json!(format!("{v:?}")));
