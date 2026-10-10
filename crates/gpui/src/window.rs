@@ -2136,7 +2136,11 @@ impl Window {
             platform_window.set_app_id(&app_id);
         }
 
-        platform_window.map_window().unwrap();
+        // A window that asks not to be shown must stay unmapped: mapping it here
+        // would flash it before anything can hide it. `activate` maps it on demand.
+        if show {
+            platform_window.map_window().unwrap();
+        }
 
         Ok(Window {
             handle,
