@@ -280,6 +280,10 @@ pub struct X11WindowState {
     maximized_vertical: bool,
     maximized_horizontal: bool,
     hidden: bool,
+    /// Set when this window asked X to map it. `X11WindowRef::is_mapped` tracks
+    /// the same thing for the client; this flag lets `activate` map a window
+    /// that was created hidden without a client round trip.
+    mapped: bool,
     active: bool,
     /// Owned by the client's `WindowRef`, which combines the mapped state with
     /// `VisibilityNotify`; this is the last value it reported.
@@ -855,6 +859,7 @@ impl X11WindowState {
                 maximized_vertical: false,
                 maximized_horizontal: false,
                 hidden: false,
+                mapped: false,
                 appearance,
                 handle,
                 background_appearance: WindowBackgroundAppearance::Opaque,
@@ -1445,10 +1450,11 @@ impl PlatformWindow for X11Window {
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
-        let state = self.0.state.borrow();
-        let size = size.to_device_pixels(state.scale_factor);
-        let width = size.width.0 as u32;
-        let height = size.height.0 as u32;
+        let (width, height, mapped) = {
+            let state = self.0.state.borrow();
+            let size = size.to_device_pixels(state.scale_factor);
+            (size.width.0 as u32, size.height.0 as u32, state.mapped)
+        };
 
         check_reply(
             || {
@@ -1466,6 +1472,26 @@ impl PlatformWindow for X11Window {
         )
         .log_err();
         xcb_flush(&self.0.xcb);
+
+        // X never sends ConfigureNotify for a window that was never mapped, so
+        // record the size here. Do not run the resize callback: it re-enters the
+        // App, which is already borrowed while a caller drives the resize (test
+        // infrastructure syncs the window with `bounds_changed` afterwards).
+        if !mapped {
+            let mut state = self.0.state.borrow_mut();
+            state.bounds.size = Size {
+                width: px(width as f32 / state.scale_factor),
+                height: px(height as f32 / state.scale_factor),
+            };
+            match query_render_extent(&self.0.xcb, self.0.x_window) {
+                Ok(gpu_size) => {
+                    if let Some(renderer) = &mut state.renderer {
+                        renderer.update_drawable_size(gpu_size);
+                    }
+                }
+                Err(error) => log::error!("X11 QueryRenderExtent failed: {error}"),
+            }
+        }
     }
 
     fn scale_factor(&self) -> f32 {
@@ -1536,6 +1562,17 @@ impl PlatformWindow for X11Window {
     }
 
     fn activate(&self) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            if !state.mapped {
+                check_reply(
+                    || "X11 MapWindow failed.",
+                    self.0.xcb.map_window(self.0.x_window),
+                )
+                .log_err();
+                state.mapped = true;
+            }
+        }
         let data = [1, xproto::Time::CURRENT_TIME.into(), 0, 0, 0];
         let message = xproto::ClientMessageEvent::new(
             32,
@@ -1627,6 +1664,7 @@ impl PlatformWindow for X11Window {
             || "X11 MapWindow failed.",
             self.0.xcb.map_window(self.0.x_window),
         )?;
+        self.0.state.borrow_mut().mapped = true;
         Ok(())
     }
 
