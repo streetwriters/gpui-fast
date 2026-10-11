@@ -1375,6 +1375,15 @@ impl X11WindowStatePtr {
         }
     }
 
+    /// Records the X server's map state on the window itself. `X11WindowRef`
+    /// tracks the same thing for the client; this flag tells `resize` whether a
+    /// `ConfigureNotify` will arrive. Kept in sync by the `MapNotify` and
+    /// `UnmapNotify` arms, which cover maps and unmaps made on another X
+    /// connection (the desktop shell shows and hides windows that way).
+    pub fn set_mapped(&self, mapped: bool) {
+        self.state.borrow_mut().mapped = mapped;
+    }
+
     pub fn set_appearance(&mut self, appearance: WindowAppearance) {
         let mut state = self.state.borrow_mut();
         state.appearance = appearance;

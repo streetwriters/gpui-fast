@@ -889,6 +889,7 @@ impl X11Client {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
                     window_ref.is_mapped = false;
+                    window_ref.window.set_mapped(false);
                 }
                 handle_visibility_changed(state, event.window);
             }
@@ -896,6 +897,7 @@ impl X11Client {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
                     window_ref.is_mapped = true;
+                    window_ref.window.set_mapped(true);
                 }
                 handle_visibility_changed(state, event.window);
             }
