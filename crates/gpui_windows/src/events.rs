@@ -178,9 +178,9 @@ impl WindowsWindowInner {
             self.state.scale_factor.get(),
         );
         self.state.origin.set(origin);
-        let size = self.state.logical_size.get();
-        let center_x = origin.x.as_f32() + size.width.as_f32() / 2.;
-        let center_y = origin.y.as_f32() + size.height.as_f32() / 2.;
+        let window_size = self.state.logical_size.get();
+        let center_x = origin.x.as_f32() + window_size.width.as_f32() / 2.;
+        let center_y = origin.y.as_f32() + window_size.height.as_f32() / 2.;
         let monitor_bounds = self.state.display.get().bounds();
         if center_x < monitor_bounds.left().as_f32()
             || center_x > monitor_bounds.right().as_f32()
@@ -349,7 +349,12 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn handle_mouse_move_msg(&self, handle: HWND, lparam: LPARAM, wparam: WPARAM) -> Option<isize> {
+    fn handle_mouse_move_msg(
+        self: &Rc<Self>,
+        handle: HWND,
+        lparam: LPARAM,
+        wparam: WPARAM,
+    ) -> Option<isize> {
         self.start_tracking_mouse(handle, TME_LEAVE);
         self.restore_cursor_after_hide();
 
@@ -383,20 +388,36 @@ impl WindowsWindowInner {
         if handled { Some(0) } else { Some(1) }
     }
 
-    fn handle_mouse_leave_msg(&self) -> Option<isize> {
+    fn handle_mouse_leave_msg(self: &Rc<Self>) -> Option<isize> {
         self.state.hovered.set(false);
         // The next window's `WM_SETCURSOR` picks its own cursor, so we just clear
         // the flag for tight `is_cursor_visible()` semantics.
         self.state.cursor_visible.store(true, Ordering::Relaxed);
-        if let Some(mut callback) = self.state.callbacks.hovered_status_change.take() {
-            callback(false);
-            self.state
-                .callbacks
-                .hovered_status_change
-                .set(Some(callback));
-        }
+        self.report_hovered_status_change(false);
 
         Some(0)
+    }
+
+    /// Delivers a hover change after the window procedure returns.
+    ///
+    /// The callback runs `Window::update`, which borrows the `App`; this
+    /// procedure can run while `App` is already borrowed by the caller (a
+    /// mouse move delivered from inside an update, or a `TrackMouseEvent`
+    /// notification), and borrowing again logs "RefCell already borrowed" and
+    /// drops the notification. The activation path defers the same way.
+    fn report_hovered_status_change(self: &Rc<Self>, hovered: bool) {
+        let this = self.clone();
+        self.executor
+            .spawn(async move {
+                if let Some(mut callback) = this.state.callbacks.hovered_status_change.take() {
+                    callback(hovered);
+                    this.state
+                        .callbacks
+                        .hovered_status_change
+                        .set(Some(callback));
+                }
+            })
+            .detach();
     }
 
     fn handle_syskeyup_msg(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
@@ -860,7 +881,7 @@ impl WindowsWindowInner {
     }
 
     fn handle_dpi_changed_msg(
-        &self,
+        self: &Rc<Self>,
         handle: HWND,
         wparam: WPARAM,
         lparam: LPARAM,
@@ -1021,7 +1042,7 @@ impl WindowsWindowInner {
         drag_area
     }
 
-    fn handle_nc_mouse_move_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+    fn handle_nc_mouse_move_msg(self: &Rc<Self>, handle: HWND, lparam: LPARAM) -> Option<isize> {
         self.start_tracking_mouse(handle, TME_LEAVE | TME_NONCLIENT);
         self.restore_cursor_after_hide();
 
@@ -1413,7 +1434,7 @@ impl WindowsWindowInner {
         }
     }
 
-    fn start_tracking_mouse(&self, handle: HWND, flags: TRACKMOUSEEVENT_FLAGS) {
+    fn start_tracking_mouse(self: &Rc<Self>, handle: HWND, flags: TRACKMOUSEEVENT_FLAGS) {
         if !self.state.hovered.get() {
             self.state.hovered.set(true);
             unsafe {
@@ -1425,13 +1446,7 @@ impl WindowsWindowInner {
                 })
                 .log_err()
             };
-            if let Some(mut callback) = self.state.callbacks.hovered_status_change.take() {
-                callback(true);
-                self.state
-                    .callbacks
-                    .hovered_status_change
-                    .set(Some(callback));
-            }
+            self.report_hovered_status_change(true);
         }
     }
 
