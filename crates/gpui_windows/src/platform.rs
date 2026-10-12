@@ -478,6 +478,14 @@ impl WindowsPlatform {
                     };
                     for hwnd in all_windows.read().iter() {
                         unsafe {
+                            // A window that has been destroyed but whose
+                            // `WM_GPUI_CLOSE_ONE_WINDOW` has not been processed
+                            // yet is still in this list. `IsWindowVisible`,
+                            // `IsIconic` and `RedrawWindow` all fail on it, and
+                            // every failure logs at ERROR once per frame.
+                            if !IsWindow(Some(hwnd.as_raw())).as_bool() {
+                                continue;
+                            }
                             if let Some(signal_at) = signal_at {
                                 if IsWindowVisible(hwnd.as_raw()).as_bool()
                                     && !IsIconic(hwnd.as_raw()).as_bool()
@@ -1273,11 +1281,17 @@ impl WindowsPlatformInner {
             return false;
         };
         let mut lock = all_windows.write();
-        let index = lock
+        // The window may already be gone from the tracked list: a close can be
+        // requested twice (the close hook and `Window::remove_window`), and the
+        // second `WM_GPUI_CLOSE_ONE_WINDOW` arrives after the first removed the
+        // entry. `position()` then returns `None`, and the old `unwrap()` panicked
+        // inside the window procedure.
+        if let Some(index) = lock
             .iter()
             .position(|handle| handle.as_raw() == target_window)
-            .unwrap();
-        lock.remove(index);
+        {
+            lock.remove(index);
+        }
 
         lock.is_empty()
     }
