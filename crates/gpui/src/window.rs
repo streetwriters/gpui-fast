@@ -1971,18 +1971,37 @@ impl Window {
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
+            let foreground_executor = cx.foreground_executor().clone();
             move |_, _| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                // Deferred: the platform can deliver this while the App is
+                // already borrowed (a `Window::resize` from inside an update
+                // dispatches `WM_SIZE` synchronously), and updating then fails
+                // with "RefCell already borrowed". The foreground executor keeps
+                // the ordering, so bounds changes are still applied in arrival
+                // order.
+                let mut cx = cx.clone();
+                foreground_executor
+                    .spawn(async move {
+                        handle
+                            .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                            .log_err();
+                    })
+                    .detach();
             }
         }));
         platform_window.on_moved(Box::new({
             let mut cx = cx.to_async();
+            let foreground_executor = cx.foreground_executor().clone();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                // Deferred for the same reason as `on_resize`.
+                let mut cx = cx.clone();
+                foreground_executor
+                    .spawn(async move {
+                        handle
+                            .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                            .log_err();
+                    })
+                    .detach();
             }
         }));
         platform_window.on_display_changed(Box::new({
@@ -2016,51 +2035,59 @@ impl Window {
         platform_window.on_active_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, cx| {
-                        window.active.set(active);
-                        window.modifiers = window.platform_window.modifiers();
-                        window.capslock = window.platform_window.capslock();
-                        window
-                            .activation_observers
-                            .clone()
-                            .retain(&(), |callback| callback(window, cx));
+                // The Windows backend defers this to the executor, so a window
+                // removed in between (a dismissed menu popup, a closed child
+                // window) is already gone by the time it runs. Losing the
+                // activation update for a window that no longer exists is the
+                // expected outcome, not an error.
+                let _ = handle.update(&mut cx, |_, window, cx| {
+                    window.active.set(active);
+                    window.modifiers = window.platform_window.modifiers();
+                    window.capslock = window.platform_window.capslock();
+                    window
+                        .activation_observers
+                        .clone()
+                        .retain(&(), |callback| callback(window, cx));
 
-                        window.bounds_changed(cx);
-                        window.refresh();
+                    window.bounds_changed(cx);
+                    window.refresh();
 
-                        SystemWindowTabController::update_last_active(cx, window.handle.id);
-                    })
-                    .log_err();
+                    SystemWindowTabController::update_last_active(cx, window.handle.id);
+                });
             }
         }));
         platform_window.on_visibility_change(Box::new({
             let mut cx = cx.to_async();
             move |_| {
-                handle
-                    .update(&mut cx, |_, window, cx| {
-                        window.refresh_visibility(cx);
-                    })
-                    .log_err();
+                // The platform delivers this after the message that changed the
+                // visibility, so a window closed in between is already gone.
+                // `update` then fails with "window not found"; that is the
+                // expected outcome of a window being removed, not an error, so
+                // it is ignored rather than logged at ERROR level.
+                let _ = handle.update(&mut cx, |_, window, cx| {
+                    window.refresh_visibility(cx);
+                });
             }
         }));
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        window.hovered.set(active);
-                        window.refresh();
-                    })
-                    .log_err();
+                // Delivered after the mouse message that changed the state, so a
+                // window removed in between is already gone; that is expected
+                // (see `on_close` above), not an error worth logging.
+                let _ = handle.update(&mut cx, |_, window, _| {
+                    window.hovered.set(active);
+                    window.refresh();
+                });
             }
         }));
         platform_window.on_input({
             let mut cx = cx.to_async();
             Box::new(move |event| {
+                // Input that arrives for a window removed since it was queued is
+                // dropped; there is no longer a window to dispatch it to.
                 handle
                     .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
-                    .log_err()
                     .unwrap_or(DispatchEventResult::default())
             })
         });
@@ -2076,7 +2103,6 @@ impl Window {
                         }
                         None
                     })
-                    .log_err()
                     .unwrap_or(None)
             })
         });
