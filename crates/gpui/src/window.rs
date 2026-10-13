@@ -1971,37 +1971,18 @@ impl Window {
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
-            let foreground_executor = cx.foreground_executor().clone();
             move |_, _| {
-                // Deferred: the platform can deliver this while the App is
-                // already borrowed (a `Window::resize` from inside an update
-                // dispatches `WM_SIZE` synchronously), and updating then fails
-                // with "RefCell already borrowed". The foreground executor keeps
-                // the ordering, so bounds changes are still applied in arrival
-                // order.
-                let mut cx = cx.clone();
-                foreground_executor
-                    .spawn(async move {
-                        handle
-                            .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                            .log_err();
-                    })
-                    .detach();
+                handle
+                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                    .log_err();
             }
         }));
         platform_window.on_moved(Box::new({
             let mut cx = cx.to_async();
-            let foreground_executor = cx.foreground_executor().clone();
             move || {
-                // Deferred for the same reason as `on_resize`.
-                let mut cx = cx.clone();
-                foreground_executor
-                    .spawn(async move {
-                        handle
-                            .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                            .log_err();
-                    })
-                    .detach();
+                handle
+                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                    .log_err();
             }
         }));
         platform_window.on_display_changed(Box::new({

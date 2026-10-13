@@ -171,7 +171,7 @@ impl WindowsWindowInner {
         }
     }
 
-    fn handle_move_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+    fn handle_move_msg(self: &Rc<Self>, handle: HWND, lparam: LPARAM) -> Option<isize> {
         let origin = logical_point(
             lparam.signed_loword() as f32,
             lparam.signed_hiword() as f32,
@@ -198,10 +198,7 @@ impl WindowsWindowInner {
                 )?);
             }
         }
-        if let Some(mut callback) = self.state.callbacks.moved.take() {
-            callback();
-            self.state.callbacks.moved.set(Some(callback));
-        }
+        self.report_moved();
         Some(0)
     }
 
@@ -254,7 +251,7 @@ impl WindowsWindowInner {
     }
 
     fn handle_size_change(
-        &self,
+        self: &Rc<Self>,
         device_size: Size<DevicePixels>,
         scale_factor: f32,
         should_resize_renderer: bool,
@@ -270,10 +267,46 @@ impl WindowsWindowInner {
                 .invalidate_devices
                 .store(true, std::sync::atomic::Ordering::Release);
         }
-        if let Some(mut callback) = self.state.callbacks.resize.take() {
-            callback(new_logical_size, scale_factor);
-            self.state.callbacks.resize.set(Some(callback));
-        }
+        // The renderer and the recorded size are updated here, synchronously:
+        // the frame that follows this message must see the new size, and only
+        // the *callback* is re-entrant (it runs `Window::update`, which borrows
+        // the `App`). See `report_resized`.
+        self.report_resized(new_logical_size, scale_factor);
+    }
+
+    /// Delivers a resize to GPUI after the window procedure returns.
+    ///
+    /// `WM_SIZE` can arrive while the `App` is already borrowed by the caller:
+    /// a `Window::resize` from inside an update calls `SetWindowPos`, Windows
+    /// dispatches `WM_SIZE` synchronously, and the callback then runs
+    /// re-entrantly. Borrowing again there would log "RefCell already borrowed"
+    /// and drop the bounds change, which is why this is deferred. Delivery
+    /// through the foreground executor keeps arrival order, and the size the
+    /// renderer was already given above is the one the next frame draws.
+    fn report_resized(self: &Rc<Self>, size: Size<Pixels>, scale_factor: f32) {
+        let this = self.clone();
+        self.executor
+            .spawn(async move {
+                if let Some(mut callback) = this.state.callbacks.resize.take() {
+                    callback(size, scale_factor);
+                    this.state.callbacks.resize.set(Some(callback));
+                }
+            })
+            .detach();
+    }
+
+    /// Delivers a move to GPUI after the window procedure returns, for the
+    /// same reason as `report_resized`.
+    fn report_moved(self: &Rc<Self>) {
+        let this = self.clone();
+        self.executor
+            .spawn(async move {
+                if let Some(mut callback) = this.state.callbacks.moved.take() {
+                    callback();
+                    this.state.callbacks.moved.set(Some(callback));
+                }
+            })
+            .detach();
     }
 
     fn handle_size_move_loop(&self, handle: HWND) -> Option<isize> {
