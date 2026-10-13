@@ -54,7 +54,7 @@ use crate::{
     PromptLevel, Render, RenderImage, RenderablePromptHandle, Reservation, ScreenCaptureSource,
     SharedString, SubscriberSet, Subscription, SvgRenderer, SystemNotification,
     SystemNotificationResponse, Task, TextRenderingMode, TextSystem, ThermalState, Window,
-    WindowAppearance, WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator,
+    WindowAppearance, WindowButtonLayout, WindowHandle, WindowId, WindowInvalidator, WindowRemoved,
     WindowingRequest,
     colors::{Colors, GlobalColors},
     hash, init_app_menus,
@@ -2199,7 +2199,7 @@ impl App {
                 drop(result.take());
             }
         });
-        result.context("window not found")
+        result.ok_or(WindowRemoved.into())
     }
 
     /// Creates an `AsyncApp`, which can be cloned and has a static lifetime

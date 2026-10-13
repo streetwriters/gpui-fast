@@ -1587,6 +1587,44 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
     window_bounds_ctor(Bounds::new(final_origin, base_size))
 }
 
+/// The window a platform callback was addressed to no longer exists.
+///
+/// A platform can deliver a callback after the message that removed the window
+/// — a dismissed menu popup, a closed child window — and `update` then fails.
+/// That is an expected outcome, not an error, and is the *only* failure the
+/// platform callbacks below ignore. Every other failure, in particular a
+/// re-entrant borrow of the `App`, is still logged: it is the signal that a
+/// callback fired while the `App` was already borrowed, which is a real bug in
+/// the platform's delivery timing.
+#[derive(Debug)]
+pub(crate) struct WindowRemoved;
+
+impl std::fmt::Display for WindowRemoved {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("window not found")
+    }
+}
+
+impl std::error::Error for WindowRemoved {}
+
+/// Runs `update` for a window, ignoring only the failure that means the window
+/// was removed before the callback was delivered.
+///
+/// This exists so the five platform callbacks that can outlive their window
+/// share one rule instead of five copies, and so the distinction cannot be lost
+/// by a later edit: anything that is not [`WindowRemoved`] is logged at ERROR
+/// level, as it was before the window-removal case was recognised.
+pub(crate) fn ignore_if_window_removed<T>(result: Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) if error.downcast_ref::<WindowRemoved>().is_some() => None,
+        Err(error) => {
+            log::error!("{:#}", error);
+            None
+        }
+    }
+}
+
 impl Window {
     pub(crate) fn new(
         handle: AnyWindowHandle,
@@ -2016,12 +2054,10 @@ impl Window {
         platform_window.on_active_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                // The Windows backend defers this to the executor, so a window
-                // removed in between (a dismissed menu popup, a closed child
-                // window) is already gone by the time it runs. Losing the
-                // activation update for a window that no longer exists is the
-                // expected outcome, not an error.
-                let _ = handle.update(&mut cx, |_, window, cx| {
+                // The platform can deliver this after the window was removed (a
+                // dismissed menu popup, a closed child window); see
+                // `ignore_if_window_removed`.
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
                     window.active.set(active);
                     window.modifiers = window.platform_window.modifiers();
                     window.capslock = window.platform_window.capslock();
@@ -2034,32 +2070,29 @@ impl Window {
                     window.refresh();
 
                     SystemWindowTabController::update_last_active(cx, window.handle.id);
-                });
+                }));
             }
         }));
         platform_window.on_visibility_change(Box::new({
             let mut cx = cx.to_async();
             move |_| {
-                // The platform delivers this after the message that changed the
-                // visibility, so a window closed in between is already gone.
-                // `update` then fails with "window not found"; that is the
-                // expected outcome of a window being removed, not an error, so
-                // it is ignored rather than logged at ERROR level.
-                let _ = handle.update(&mut cx, |_, window, cx| {
+                // Delivered after the message that changed the visibility, so a
+                // window closed in between is already gone; see
+                // `ignore_if_window_removed`.
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
                     window.refresh_visibility(cx);
-                });
+                }));
             }
         }));
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                // Delivered after the mouse message that changed the state, so a
-                // window removed in between is already gone; that is expected
-                // (see `on_close` above), not an error worth logging.
-                let _ = handle.update(&mut cx, |_, window, _| {
+                // Delivered after the mouse message that changed the state; see
+                // `ignore_if_window_removed`.
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| {
                     window.hovered.set(active);
                     window.refresh();
-                });
+                }));
             }
         }));
         platform_window.on_input({
@@ -2067,24 +2100,24 @@ impl Window {
             Box::new(move |event| {
                 // Input that arrives for a window removed since it was queued is
                 // dropped; there is no longer a window to dispatch it to.
-                handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
-                    .unwrap_or(DispatchEventResult::default())
+                ignore_if_window_removed(
+                    handle.update(&mut cx, |_, window, cx| window.dispatch_event(event, cx)),
+                )
+                .unwrap_or(DispatchEventResult::default())
             })
         });
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, window, _cx| {
-                        for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
-                            if window.mouse_hit_test.ids.contains(&hitbox.id) {
-                                return Some(*area);
-                            }
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, _cx| {
+                    for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
+                        if window.mouse_hit_test.ids.contains(&hitbox.id) {
+                            return Some(*area);
                         }
-                        None
-                    })
-                    .unwrap_or(None)
+                    }
+                    None
+                }))
+                .unwrap_or(None)
             })
         });
         platform_window.on_move_tab_to_new_window({
