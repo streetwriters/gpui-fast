@@ -2016,11 +2016,28 @@ impl Window {
             }
         }));
         platform_window.on_moved(Box::new({
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
+            let foreground_executor = cx.foreground_executor().clone();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                let mut cx = cx.clone();
+                // Defer the update, for the same reason `on_appearance_changed`
+                // below does: a move the platform performs synchronously — a
+                // `setFrameTopLeftPoint:` from `Window::set_position`, say —
+                // makes the platform notify the move before that call returns,
+                // so this callback runs while the caller is still inside an
+                // `App` update and `handle.update` cannot borrow it:
+                //
+                //     ERROR gpui::window] RefCell already borrowed
+                //
+                // The bounds still land one foreground tick later, so a caller
+                // that reads them after the move sees the new value.
+                foreground_executor
+                    .spawn(async move {
+                        handle
+                            .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                            .log_err();
+                    })
+                    .detach();
             }
         }));
         platform_window.on_display_changed(Box::new({
