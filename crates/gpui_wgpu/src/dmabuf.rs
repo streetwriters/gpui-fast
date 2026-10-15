@@ -315,8 +315,9 @@ pub fn import(
         .context("dma-buf import requires the Vulkan backend")?;
     // Without the extension enabled the image is not laid out by the
     // modifier, and the import reads sheared pixels: refuse instead, so the
-    // caller falls back to shared memory. `WgpuContext::create_device`
-    // enables it whenever `capabilities` advertises formats.
+    // caller sees an error rather than a wrong texture.
+    // `WgpuContext::create_device` enables it whenever `capabilities`
+    // advertises formats.
     if !hal_device
         .enabled_device_extensions()
         .contains(&ash::ext::image_drm_format_modifier::NAME)
