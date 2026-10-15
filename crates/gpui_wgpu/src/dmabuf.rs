@@ -313,6 +313,16 @@ pub fn import(
     // SAFETY: `as_hal` is sound for any device.
     let hal_device = unsafe { device.as_hal::<Vulkan>() }
         .context("dma-buf import requires the Vulkan backend")?;
+    // Without the extension enabled the image is not laid out by the
+    // modifier, and the import reads sheared pixels: refuse instead, so the
+    // caller falls back to shared memory. `WgpuContext::create_device`
+    // enables it whenever `capabilities` advertises formats.
+    if !hal_device
+        .enabled_device_extensions()
+        .contains(&ash::ext::image_drm_format_modifier::NAME)
+    {
+        bail!("the device was opened without VK_EXT_image_drm_format_modifier");
+    }
     let raw_device = hal_device.raw_device().clone();
     let (vulkan_format, wgpu_format) = format_for_fourcc(descriptor.fourcc)
         .ok_or_else(|| anyhow!("unsupported dma-buf fourcc {:#x}", descriptor.fourcc))?;

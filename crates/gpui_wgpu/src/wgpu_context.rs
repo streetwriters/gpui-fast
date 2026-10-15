@@ -448,17 +448,25 @@ impl WgpuContext {
             .using_resolution(adapter.limits())
             .using_alignment(adapter.limits());
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("gpui_device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?;
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("gpui_device"),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        };
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let opened = Self::open_vulkan_device_for_dmabuf(adapter, &descriptor);
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        let opened: Option<anyhow::Result<(wgpu::Device, wgpu::Queue)>> = None;
+        let (device, queue) = match opened {
+            Some(opened) => opened?,
+            None => adapter
+                .request_device(&descriptor)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?,
+        };
 
         Ok((
             device,
@@ -466,6 +474,79 @@ impl WgpuContext {
             dual_source_blending,
             color_atlas_texture_format,
         ))
+    }
+
+    /// Opens the device through wgpu-hal on a Vulkan adapter that can import
+    /// dma-bufs, adding `VK_EXT_image_drm_format_modifier` to the extensions
+    /// wgpu enables. wgpu has no use for the extension itself, but without it
+    /// `VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT` images are not backed by the
+    /// modifier's memory layout (Mesa falls back to an optimal layout), so an
+    /// imported dma-buf reads sheared pixels (`crate::dmabuf`).
+    ///
+    /// `None` when the adapter is not Vulkan or lacks the extension: the
+    /// caller then opens the device as wgpu does.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn open_vulkan_device_for_dmabuf(
+        adapter: &wgpu::Adapter,
+        descriptor: &wgpu::DeviceDescriptor<'_>,
+    ) -> Option<anyhow::Result<(wgpu::Device, wgpu::Queue)>> {
+        use wgpu::hal::api::Vulkan;
+
+        let extension = ash::ext::image_drm_format_modifier::NAME;
+        // SAFETY: the guard is only read from, and dropped before the device
+        // is wrapped below.
+        let hal_adapter = unsafe { adapter.as_hal::<Vulkan>() }?;
+        if !hal_adapter
+            .physical_device_capabilities()
+            .supports_extension(extension)
+        {
+            return None;
+        }
+
+        // `request_device` checks these before opening the device; opening it
+        // through wgpu-hal skips them.
+        let supported_features = adapter.features();
+        if !supported_features.contains(descriptor.required_features) {
+            return Some(Err(anyhow::anyhow!(
+                "Failed to create wgpu device: unsupported features {:?}",
+                descriptor.required_features - supported_features
+            )));
+        }
+        if !descriptor.required_limits.check_limits(&adapter.limits()) {
+            return Some(Err(anyhow::anyhow!(
+                "Failed to create wgpu device: limits exceed the adapter's"
+            )));
+        }
+
+        // SAFETY: the features and limits are the adapter's own (checked
+        // above), and the callback only adds an extension the physical device
+        // supports.
+        let opened = unsafe {
+            hal_adapter.open_with_callback(
+                descriptor.required_features,
+                &descriptor.required_limits,
+                &descriptor.memory_hints,
+                Some(Box::new(move |args| {
+                    if !args.extensions.contains(&extension) {
+                        args.extensions.push(extension);
+                    }
+                })),
+            )
+        };
+        drop(hal_adapter);
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                return Some(Err(anyhow::anyhow!(
+                    "Failed to create wgpu device: {error}"
+                )));
+            }
+        };
+        // SAFETY: the device was opened from this adapter with exactly the
+        // descriptor's features.
+        let wrapped = unsafe { adapter.create_device_from_hal(opened, descriptor) }
+            .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"));
+        Some(wrapped)
     }
 
     #[cfg(not(target_family = "wasm"))]
