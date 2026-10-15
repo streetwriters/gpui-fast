@@ -10,7 +10,9 @@
 use crate::fast::pass_state::PassState;
 use crate::wgpu_renderer::{SurfaceParams, WgpuBindGroupLayouts, WgpuPipelines};
 use collections::FxHashMap;
-use gpui::{ExternalTexture, ExternalTextureId, PaintExternalTexture, Size};
+#[cfg(not(target_family = "wasm"))]
+use gpui::Size;
+use gpui::{ExternalTexture, ExternalTextureId, PaintExternalTexture};
 use std::any::Any;
 use std::ops::Range;
 use std::sync::Arc;
@@ -39,6 +41,10 @@ pub struct SurfaceTexture {
 /// non-sRGB surface and uploads its sprite atlas as `Bgra8Unorm`, so the whole
 /// pipeline carries sRGB-encoded values unmodified. An sRGB texture here would
 /// be linearized on sample and come out darker than everything next to it.
+///
+/// Not on wasm, where wgpu's handles are not `Send + Sync`, as an
+/// [`ExternalTexture`]'s payload must be.
+#[cfg(not(target_family = "wasm"))]
 pub fn external_texture_from_rgba(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -154,7 +160,7 @@ impl ExternalTextures {
         if self.entries.contains_key(&texture.id()) {
             return;
         }
-        let Some(surface) = texture.downcast::<SurfaceTexture>() else {
+        let Some(surface) = surface_texture(texture) else {
             return;
         };
         let view = surface
@@ -208,6 +214,18 @@ impl ExternalTextures {
             pass.draw(0..4, 0..1);
         }
     }
+}
+
+/// The [`SurfaceTexture`] behind `texture`, if this renderer made it.
+#[cfg(not(target_family = "wasm"))]
+fn surface_texture(texture: &ExternalTexture) -> Option<&SurfaceTexture> {
+    texture.downcast::<SurfaceTexture>()
+}
+
+/// No [`SurfaceTexture`] exists on wasm (see [`external_texture_from_rgba`]).
+#[cfg(target_family = "wasm")]
+fn surface_texture(_texture: &ExternalTexture) -> Option<&SurfaceTexture> {
+    None
 }
 
 impl ParamSlot {

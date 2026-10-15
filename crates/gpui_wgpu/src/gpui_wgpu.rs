@@ -8,7 +8,9 @@ mod wgpu_context;
 mod wgpu_renderer;
 
 pub use cosmic_text_system::*;
-pub use external_textures::{SurfaceTexture, external_texture_from_rgba};
+pub use external_textures::SurfaceTexture;
+#[cfg(not(target_family = "wasm"))]
+pub use external_textures::external_texture_from_rgba;
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;
