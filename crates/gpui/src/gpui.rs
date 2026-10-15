@@ -22,6 +22,7 @@ mod debug_overlay;
 mod element;
 mod elements;
 mod executor;
+mod external_texture;
 mod fast;
 mod platform_scheduler;
 pub(crate) use platform_scheduler::PlatformScheduler;
@@ -112,6 +113,7 @@ pub use debug_overlay::*;
 pub use element::*;
 pub use elements::*;
 pub use executor::*;
+pub use external_texture::*;
 pub use fast::composition::{
     ComposedScene, ComposedSceneLayer, CompositionSurfaceId, CompositionSurfaceKind,
     PlatformCompositionSurface, PlatformCompositionSurfaceContent, PlatformSurfaceAttachment,

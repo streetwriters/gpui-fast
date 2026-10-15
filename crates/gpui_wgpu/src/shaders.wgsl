@@ -1360,3 +1360,21 @@ fn fs_surface(input: SurfaceVarying) -> @location(0) vec4<f32> {
 
     return ycbcr_to_RGB * y_cb_cr;
 }
+
+// A single RGBA/BGRA texture sampled directly (an imported dma-buf, or a
+// synthetic test texture). This shares `vs_surface` and `surface_locals` with
+// `fs_surface`, but binds its texture and sampler at group 2 — the NV12
+// resources above occupy group 1 bindings 1..3 (and the sprite sampler at
+// group 2 binding 1 is a different entry point's resource, which naga allows).
+@group(2) @binding(0) var t_surface_rgba: texture_2d<f32>;
+@group(2) @binding(1) var s_surface_rgba: sampler;
+
+@fragment
+fn fs_surface_rgba(input: SurfaceVarying) -> @location(0) vec4<f32> {
+    // Alpha clip after using the derivatives.
+    if (any(input.clip_distances < vec4<f32>(0.0))) {
+        return vec4<f32>(0.0);
+    }
+
+    return textureSampleLevel(t_surface_rgba, s_surface_rgba, input.texture_position, 0.0);
+}

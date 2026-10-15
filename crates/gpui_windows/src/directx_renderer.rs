@@ -397,6 +397,8 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                // External GPU textures are painted by the WGPU renderer.
+                PrimitiveBatch::ExternalTextures(_) => Ok(()),
             }
             .with_context(|| {
                 format!(

@@ -5272,6 +5272,59 @@ impl Window {
         });
     }
 
+    /// Paint an external GPU texture into the scene for the next frame at the
+    /// current z-index. The renderer samples the texture directly — no atlas
+    /// upload, no CPU copy.
+    ///
+    /// This method should only be called as part of the paint phase of element
+    /// drawing.
+    pub fn paint_external_texture(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        texture: crate::ExternalTexture,
+    ) {
+        use crate::PaintExternalTexture;
+
+        self.invalidator.debug_assert_paint();
+
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        self.next_frame
+            .scene
+            .insert_primitive(PaintExternalTexture {
+                order: 0,
+                bounds,
+                content_mask,
+                texture,
+            });
+    }
+
+    /// What this platform can import from dma-bufs, if anything (Linux).
+    pub fn dmabuf_capabilities(&self) -> Option<crate::DmaBufCapabilities> {
+        self.platform_window.dmabuf_capabilities()
+    }
+
+    /// Imports a dma-buf as a GPU texture the renderer can paint (Linux).
+    pub fn import_dmabuf(
+        &mut self,
+        descriptor: crate::DmaBufDescriptor,
+    ) -> anyhow::Result<crate::ExternalTexture> {
+        self.platform_window.import_dmabuf(descriptor)
+    }
+
+    /// Uploads BGRA pixels into a standalone GPU texture and wraps it for
+    /// [`Window::paint_external_texture`]. This is the verification affordance
+    /// for the external-texture path: it exercises exactly the same paint and
+    /// sampling code an imported dma-buf uses, on machines whose driver cannot
+    /// import one.
+    pub fn external_texture_from_rgba(
+        &mut self,
+        size: Size<u32>,
+        bgra: &[u8],
+    ) -> anyhow::Result<crate::ExternalTexture> {
+        self.platform_window.external_texture_from_rgba(size, bgra)
+    }
+
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {

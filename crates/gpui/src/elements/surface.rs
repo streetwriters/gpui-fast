@@ -1,6 +1,7 @@
 use crate::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
+    App, Bounds, DevicePixels, Element, ElementId, ExternalTexture, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, ObjectFit, Pixels, Style, StyleRefinement, Styled,
+    Window,
 };
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use objc2_core_foundation::CFRetained;
@@ -14,6 +15,15 @@ pub enum SurfaceSource {
     /// A CoreVideo image buffer
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     Surface(CFRetained<CVPixelBuffer>),
+    /// A GPU texture the renderer samples directly (an imported dma-buf, or a
+    /// test image).
+    Texture(ExternalTexture),
+}
+
+impl From<ExternalTexture> for SurfaceSource {
+    fn from(value: ExternalTexture) -> Self {
+        SurfaceSource::Texture(value)
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -31,7 +41,6 @@ pub struct Surface {
 }
 
 /// Create a new surface element.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
@@ -88,17 +97,9 @@ impl Element for Surface {
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        #[cfg_attr(
-            not(any(target_os = "macos", target_os = "ios")),
-            allow(unused_variables)
-        )]
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         _: &mut Self::PrepaintState,
-        #[cfg_attr(
-            not(any(target_os = "macos", target_os = "ios")),
-            allow(unused_variables)
-        )]
         window: &mut Window,
         _: &mut App,
     ) {
@@ -112,6 +113,15 @@ impl Element for Surface {
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
                 window.paint_surface(new_bounds, surface.clone());
+            }
+            SurfaceSource::Texture(texture) => {
+                let size = crate::size(
+                    DevicePixels(texture.size().width as i32),
+                    DevicePixels(texture.size().height as i32),
+                );
+                let new_bounds = self.object_fit.get_bounds(bounds, size);
+                // TODO: Add support for corner_radii
+                window.paint_external_texture(new_bounds, texture.clone());
             }
             #[allow(unreachable_patterns)]
             _ => {}

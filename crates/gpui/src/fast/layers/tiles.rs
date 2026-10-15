@@ -287,6 +287,14 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_bounds(&surface.bounds, hasher);
             hash_mask(&surface.content_mask, tile, hasher);
         }
+        Primitive::ExternalTexture(texture) => {
+            // Never rasterized into tiles either: `overlay::split` lifts every
+            // external texture into the overlay, drawn into the frame.
+            hasher.write_u8(8);
+            hasher.write_u64(texture.texture.id().0);
+            hash_bounds(&texture.bounds, hasher);
+            hash_mask(&texture.content_mask, tile, hasher);
+        }
     }
 }
 

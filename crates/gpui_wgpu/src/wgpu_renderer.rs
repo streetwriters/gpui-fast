@@ -1,3 +1,4 @@
+use crate::fast::pass_state::PassState;
 use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
@@ -65,7 +66,7 @@ pub(crate) struct GlobalParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct PodBounds {
+pub(crate) struct PodBounds {
     origin: [f32; 2],
     size: [f32; 2],
 }
@@ -81,9 +82,9 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct SurfaceParams {
-    bounds: PodBounds,
-    content_mask: PodBounds,
+pub(crate) struct SurfaceParams {
+    pub(crate) bounds: PodBounds,
+    pub(crate) content_mask: PodBounds,
 }
 
 #[repr(C)]
@@ -134,6 +135,9 @@ pub(crate) struct WgpuPipelines {
     pub(crate) poly_sprites: wgpu::RenderPipeline,
     #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
+    /// Paints a [`gpui::ExternalTexture`] (a single RGBA/BGRA texture) using
+    /// `vs_surface` + `fs_surface_rgba`.
+    pub(crate) surfaces_rgba: wgpu::RenderPipeline,
 }
 
 /// One frame allocation of instance data, ready to bind.
@@ -161,6 +165,9 @@ pub(crate) struct WgpuBindGroupLayouts {
     pub(crate) instances: wgpu::BindGroupLayout,
     pub(crate) texture: wgpu::BindGroupLayout,
     surfaces: wgpu::BindGroupLayout,
+    /// Params-only layout for the RGBA surface pipeline (the texture binds
+    /// through the shared `texture` layout at group 2).
+    pub(crate) surface_rgba: wgpu::BindGroupLayout,
 }
 
 /// Shared GPU context reference, used to coordinate device recovery across multiple windows.
@@ -609,11 +616,26 @@ impl WgpuRendererCore {
             ],
         });
 
+        let surface_rgba = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("surface_rgba_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(std::mem::size_of::<SurfaceParams>() as u64),
+                },
+                count: None,
+            }],
+        });
+
         WgpuBindGroupLayouts {
             globals,
             instances,
             texture,
             surfaces,
+            surface_rgba,
         }
     }
 
@@ -931,6 +953,26 @@ impl WgpuRendererCore {
             &shader_module,
         );
 
+        // WebKit's ARGB buffers are premultiplied (and XRGB buffers are opaque,
+        // so the blend is a no-op for them), matching GPUI's own premultiplied
+        // target convention.
+        let surfaces_rgba = create_pipeline(
+            "surfaces_rgba",
+            "vs_surface",
+            "fs_surface_rgba",
+            &layouts.globals,
+            &layouts.surface_rgba,
+            Some(&layouts.texture),
+            wgpu::PrimitiveTopology::TriangleStrip,
+            &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            1,
+            &shader_module,
+        );
+
         WgpuPipelines {
             quads,
             shadows,
@@ -941,6 +983,7 @@ impl WgpuRendererCore {
             subpixel_sprites,
             poly_sprites,
             surfaces,
+            surfaces_rgba,
         }
     }
 
@@ -1101,6 +1144,38 @@ impl WgpuRenderer {
 
     pub fn sprite_atlas(&self) -> &Arc<WgpuAtlas> {
         &self.atlas
+    }
+
+    /// The device the renderer draws with, to create external textures (the
+    /// synthetic verification path, and dma-buf imports) on the same device
+    /// the paint path samples. `None` once GPU resources have been released.
+    pub fn device(&self) -> Option<&wgpu::Device> {
+        Some(&self.core()?.resources.device)
+    }
+
+    /// The queue the renderer submits with. `None` once GPU resources have
+    /// been released.
+    pub fn queue(&self) -> Option<&wgpu::Queue> {
+        Some(&self.core()?.resources.queue)
+    }
+
+    /// The format the renderer presents in. External textures uploaded with
+    /// [`crate::external_texture_from_rgba`] are sampled against this target;
+    /// see its docs for why the texture is non-sRGB.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_config.format
+    }
+
+    /// What this adapter can import from dma-bufs, if anything (Linux). The
+    /// nested compositor builds its `linux-dmabuf` feedback from this list, so
+    /// it must be exact: every advertised (fourcc, modifier) pair is one
+    /// [`import_dmabuf`](crate::dmabuf::import) accepts.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub fn dmabuf_capabilities(&self) -> Option<gpui::DmaBufCapabilities> {
+        let context = self.context.as_ref()?;
+        let context = context.borrow();
+        let context = context.as_ref()?;
+        crate::dmabuf::capabilities(&context.adapter)
     }
 
     pub fn supports_dual_source_blending(&self) -> bool {
@@ -1531,6 +1606,13 @@ impl WgpuRendererCore {
         {
             return Ok(submission);
         }
+        self.fast_frame.external_textures.prepare(
+            &self.resources.device,
+            &self.resources.queue,
+            &self.resources.bind_group_layouts,
+            &self.resources.atlas_sampler,
+            &scene.external_textures,
+        );
         let mut instance_offset = 0;
         let instance_bindings = self
             .write_instances(scene, &mut instance_offset)
@@ -1662,6 +1744,17 @@ impl WgpuRendererCore {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
+                    PrimitiveBatch::ExternalTextures(range) => {
+                        let resources = &self.resources;
+                        self.fast_frame.external_textures.draw(
+                            &mut pass,
+                            &mut PassState::default(),
+                            &resources.pipelines,
+                            &resources.globals_bind_group,
+                            &scene.external_textures,
+                            range,
+                        );
+                    }
                 }
             }
         }

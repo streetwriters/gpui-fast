@@ -179,7 +179,11 @@ impl MetalRenderer {
         Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
     }
 
-    pub(crate) fn configure_layer(layer: &metal::MetalLayerRef, device: &metal::DeviceRef, transparent: bool) {
+    pub(crate) fn configure_layer(
+        layer: &metal::MetalLayerRef,
+        device: &metal::DeviceRef,
+        transparent: bool,
+    ) {
         layer.set_device(device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
         // Support direct-to-display rendering if the window is not transparent
@@ -810,6 +814,9 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
+                // External GPU textures are painted by the WGPU renderer
+                // (Linux); Metal draws macOS surfaces only.
+                PrimitiveBatch::ExternalTextures(_) => {}
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
         }

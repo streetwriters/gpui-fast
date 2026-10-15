@@ -43,6 +43,8 @@ font-kit = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 wgpu = { workspace = true, features = ["std", "parking_lot", "metal", "gles", "vulkan", "wgsl", "webgpu"] }
+# Raw Vulkan calls for importing dma-bufs (`dmabuf.rs`); the version wgpu-hal uses.
+ash = "0.38"
 
 [target.'cfg(not(any(target_os = "linux", target_os = "freebsd")))'.dependencies]
 wgpu = { workspace = true, default-features = true }

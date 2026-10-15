@@ -258,6 +258,8 @@ pub(crate) fn draw_scene(
             }
             // Upstream draws nothing for surfaces on Windows either.
             PrimitiveBatch::Surfaces(_) => Ok(()),
+            // External GPU textures are painted by the WGPU renderer only.
+            PrimitiveBatch::ExternalTextures(_) => Ok(()),
         }
         .with_context(|| scene_too_large(scene))?;
     }

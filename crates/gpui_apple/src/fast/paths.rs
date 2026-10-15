@@ -164,6 +164,8 @@ pub(crate) fn draw_primitives_to_texture(
                 viewport_size,
                 command_encoder,
             ),
+            // External GPU textures are painted by the WGPU renderer only.
+            PrimitiveBatch::ExternalTextures(_) => {}
             PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
         }
     }

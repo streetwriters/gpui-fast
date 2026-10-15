@@ -38,6 +38,7 @@ use anyhow::{Context as _, Result};
 use gpui::{AtlasTextureId, Bounds, PrimitiveBatch, ScaledPixels, Scene};
 
 use crate::WgpuAtlas;
+use crate::external_textures::ExternalTextures;
 use crate::fast::bind_groups::BindGroupCache;
 use crate::fast::globals::UploadedGlobals;
 use crate::fast::layers::{TileCache, composite, raster};
@@ -63,6 +64,7 @@ pub(crate) struct FrameState {
     pub(crate) bind_groups: BindGroupCache,
     pub(crate) globals: UploadedGlobals,
     pub(crate) layers: TileCache,
+    pub(crate) external_textures: ExternalTextures,
     vertices: Vec<PathRasterizationVertex>,
     sprites: Vec<PathSprite>,
     path_batches: Vec<PathBatch>,
@@ -269,6 +271,15 @@ fn record_with(
         .and_then(|(uploads, paths)| {
             let target = host.target()?;
             state.layers.prepare(&target, &scene.layers, &planned);
+            // Only the frame's own scene paints external textures: layer
+            // tiles never hold one (`gpui::fast::layers::overlay`).
+            state.external_textures.prepare(
+                target.device,
+                target.queue,
+                target.bind_group_layouts,
+                target.atlas_sampler,
+                &scene.external_textures,
+            );
             Ok(record(
                 &target, state, scene, frame_view, clear, &rasters, &scenes, &uploads, &paths,
             ))
@@ -716,6 +727,14 @@ pub(crate) fn draw_scene(
             // Surfaces are macOS-only for video playback and are not
             // implemented by the WGPU renderer.
             PrimitiveBatch::Surfaces(_surfaces) => {}
+            PrimitiveBatch::ExternalTextures(range) => state.external_textures.draw(
+                &mut pass,
+                &mut bound,
+                pipelines,
+                draw.globals,
+                &draw.scene.external_textures,
+                range,
+            ),
         }
     }
     drop(pass);

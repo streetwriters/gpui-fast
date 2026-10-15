@@ -7,6 +7,7 @@ use std::{
     time::Instant,
 };
 
+use anyhow::Context as _;
 use calloop::ping::Ping;
 use collections::{FxHashMap, HashMap};
 use futures::channel::oneshot::Receiver;
@@ -2264,6 +2265,44 @@ impl PlatformWindow for WaylandWindow {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         self.borrow().renderer.as_ref()?.gpu_specs()
+    }
+
+    fn external_texture_from_rgba(
+        &mut self,
+        size: Size<u32>,
+        bgra: &[u8],
+    ) -> anyhow::Result<gpui::ExternalTexture> {
+        let state = self.borrow();
+        let renderer = state
+            .renderer
+            .as_ref()
+            .context("the window's renderer has been released")?;
+        let (Some(device), Some(queue)) = (renderer.device(), renderer.queue()) else {
+            anyhow::bail!("the window's GPU resources have been released");
+        };
+        Ok(gpui_wgpu::external_texture_from_rgba(
+            device,
+            queue,
+            (size.width, size.height),
+            bgra,
+        ))
+    }
+
+    fn dmabuf_capabilities(&self) -> Option<gpui::DmaBufCapabilities> {
+        self.borrow().renderer.as_ref()?.dmabuf_capabilities()
+    }
+
+    fn import_dmabuf(
+        &mut self,
+        descriptor: gpui::DmaBufDescriptor,
+    ) -> anyhow::Result<gpui::ExternalTexture> {
+        let state = self.borrow();
+        let device = state
+            .renderer
+            .as_ref()
+            .and_then(|renderer| renderer.device())
+            .context("the window's GPU resources have been released")?;
+        gpui_wgpu::dmabuf::import(device, &descriptor)
     }
 
     fn play_system_bell(&self) {

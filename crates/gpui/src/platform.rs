@@ -1364,6 +1364,31 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn set_client_inset(&self, _inset: Pixels) {}
     fn gpu_specs(&self) -> Option<GpuSpecs>;
 
+    /// What this platform can import from dma-bufs, if anything. Defaults to
+    /// `None`: no import support.
+    fn dmabuf_capabilities(&self) -> Option<crate::DmaBufCapabilities> {
+        None
+    }
+
+    /// Imports a dma-buf as a GPU texture the renderer can paint. Platforms
+    /// without import support refuse.
+    fn import_dmabuf(
+        &mut self,
+        _descriptor: crate::DmaBufDescriptor,
+    ) -> anyhow::Result<crate::ExternalTexture> {
+        anyhow::bail!("dma-buf import is not supported on this platform")
+    }
+
+    /// Uploads BGRA pixels into a standalone GPU texture. Platforms without a
+    /// renderer that can sample external textures refuse.
+    fn external_texture_from_rgba(
+        &mut self,
+        _size: Size<u32>,
+        _bgra: &[u8],
+    ) -> anyhow::Result<crate::ExternalTexture> {
+        anyhow::bail!("external textures are not supported on this platform")
+    }
+
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
 
     // Mobile platform methods.

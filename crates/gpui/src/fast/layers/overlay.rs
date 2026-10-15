@@ -6,9 +6,13 @@
 //! odd translation pairs other pixels than the window does, so an edge
 //! pixel can come out one level apart (spec §5.6).
 //!
-//! Instead a layer's content is split in two. The *overlay* is every path,
-//! and every primitive drawn after something in the overlay that it
-//! overlaps; the tiles are rasterized from the rest. Each composited frame
+//! External textures are never rasterized into tiles either: their pixels
+//! come from outside the scene (an imported dma-buf, a video frame) and
+//! change without the scene changing, so a tile would keep a stale copy.
+//!
+//! Instead a layer's content is split in two. The *overlay* is every path
+//! and external texture, and every primitive drawn after something in the
+//! overlay that it overlaps; the tiles are rasterized from the rest. Each composited frame
 //! draws the overlay over the tiles, in drawing order, at the layer's
 //! translation: that is how the window draws it without a layer, path
 //! rasterization included.
@@ -57,20 +61,29 @@ fn rank(primitive: &Primitive) -> u8 {
         Primitive::SubpixelSprite(_) => 5,
         Primitive::PolychromeSprite(_) => 6,
         Primitive::Surface(_) => 7,
+        Primitive::ExternalTexture(_) => 8,
     }
+}
+
+/// Whether `primitive` always goes in the overlay, never in the tiles.
+fn lifted(primitive: &Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Path(_) | Primitive::ExternalTexture(_)
+    )
 }
 
 /// `operations`, as a scene recorded them (each primitive holding the draw
 /// order the scene gave it), split into the operations tiles are rasterized
-/// from and the overlay, in drawing order. `None` when they paint no path,
-/// and the tiles hold them all.
+/// from and the overlay, in drawing order. `None` when they paint no path
+/// or external texture, and the tiles hold them all.
 pub(crate) fn split(
     operations: &[PaintOperation],
 ) -> Option<(Vec<PaintOperation>, Vec<Primitive>)> {
-    let painted_path = operations
-        .iter()
-        .any(|operation| matches!(operation, PaintOperation::Primitive(Primitive::Path(_))));
-    if !painted_path {
+    let painted_lifted = operations.iter().any(
+        |operation| matches!(operation, PaintOperation::Primitive(primitive) if lifted(primitive)),
+    );
+    if !painted_lifted {
         return None;
     }
     // Every primitive in the order the renderer draws them: by draw order,
@@ -92,7 +105,7 @@ pub(crate) fn split(
     let mut overlay = Vec::new();
     for ((_, _, ix), primitive) in sequence {
         let reach = reach(primitive);
-        if matches!(primitive, Primitive::Path(_))
+        if lifted(primitive)
             || union.is_some_and(|union| union.intersects(&reach))
                 && reaches.iter().any(|earlier| earlier.intersects(&reach))
         {

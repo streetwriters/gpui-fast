@@ -1638,6 +1638,102 @@ mod paint {
         })
         .unwrap();
     }
+
+    /// A scroll container whose content paints an external texture under a
+    /// row.
+    struct TextureRows(crate::ExternalTexture);
+
+    impl crate::Render for TextureRows {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            let texture = self.0.clone();
+            crate::div().size_full().bg(crate::white()).child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .h(crate::px(100.))
+                    .child(
+                        crate::canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                window.paint_external_texture(bounds, texture.clone());
+                            },
+                        )
+                        .h(crate::px(40.))
+                        .w_full(),
+                    )
+                    .children((0..20).map(|i| crate::div().h(crate::px(20.)).bg(row_color(i)))),
+            )
+        }
+    }
+
+    /// An external texture's pixels change without the scene changing, so it
+    /// is never rasterized into tiles: like a path, it is drawn into the
+    /// frame over the layer's tiles every frame the layer is composited.
+    #[crate::test]
+    fn external_textures_are_drawn_over_the_tiles(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let texture = crate::ExternalTexture::new(crate::size(16, 16), std::sync::Arc::new(()));
+        let window = cx.add_window(|_, _| TextureRows(texture.clone()));
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let direct = cx
+            .update_window(window.into(), |_, window, _| {
+                let scene = &window.rendered_frame.scene;
+                assert_eq!(scene.external_textures.len(), 1);
+                crate::fast::layers::verify::drawn(scene)
+            })
+            .unwrap();
+
+        window
+            .update(cx, |_, window, cx| {
+                window.fast_layers.forced_decision =
+                    Some(crate::fast::layers::policy::Decision::Repaint);
+                window.reset_layout_stats();
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        cx.update_window(window.into(), |_, window, _| {
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_composited, 1);
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            let record = layer.record.as_ref().expect("painted");
+            assert!(
+                record.content.scene().unwrap().external_textures.is_empty(),
+                "the tiles hold no external texture"
+            );
+            assert_eq!(record.overlay.len(), 1, "the layer keeps the texture apart");
+            let scene = &window.rendered_frame.scene;
+            assert!(!tile_quads(scene).is_empty(), "the tiles are composited");
+            assert_eq!(
+                scene.external_textures.len(),
+                1,
+                "the texture is in the frame"
+            );
+            assert_eq!(scene.external_textures[0].texture, texture);
+            assert!(
+                scene.external_textures[0].order > tile_quads(scene)[0].2.order,
+                "the texture is drawn over the tiles"
+            );
+            assert_eq!(
+                crate::fast::layers::verify::drawn(scene),
+                direct,
+                "the frame draws what it drew without a layer"
+            );
+        })
+        .unwrap();
+    }
 }
 
 /// Primitives that draw outside their bounds: a shadow's blur and a

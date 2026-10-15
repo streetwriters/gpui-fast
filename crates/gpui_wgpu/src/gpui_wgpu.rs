@@ -1,10 +1,14 @@
 mod cosmic_text_system;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub mod dmabuf;
+mod external_textures;
 mod fast;
 mod wgpu_atlas;
 mod wgpu_context;
 mod wgpu_renderer;
 
 pub use cosmic_text_system::*;
+pub use external_textures::{SurfaceTexture, external_texture_from_rgba};
 pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;

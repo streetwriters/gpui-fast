@@ -2064,6 +2064,49 @@ impl PlatformWindow for X11Window {
         self.0.state.borrow().renderer.as_ref()?.gpu_specs()
     }
 
+    fn external_texture_from_rgba(
+        &mut self,
+        size: Size<u32>,
+        bgra: &[u8],
+    ) -> anyhow::Result<gpui::ExternalTexture> {
+        let state = self.0.state.borrow();
+        let renderer = state
+            .renderer
+            .as_ref()
+            .context("the window's renderer has been released")?;
+        let (Some(device), Some(queue)) = (renderer.device(), renderer.queue()) else {
+            anyhow::bail!("the window's GPU resources have been released");
+        };
+        Ok(gpui_wgpu::external_texture_from_rgba(
+            device,
+            queue,
+            (size.width, size.height),
+            bgra,
+        ))
+    }
+
+    fn dmabuf_capabilities(&self) -> Option<gpui::DmaBufCapabilities> {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .as_ref()?
+            .dmabuf_capabilities()
+    }
+
+    fn import_dmabuf(
+        &mut self,
+        descriptor: gpui::DmaBufDescriptor,
+    ) -> anyhow::Result<gpui::ExternalTexture> {
+        let state = self.0.state.borrow();
+        let device = state
+            .renderer
+            .as_ref()
+            .and_then(|renderer| renderer.device())
+            .context("the window's GPU resources have been released")?;
+        gpui_wgpu::dmabuf::import(device, &descriptor)
+    }
+
     fn play_system_bell(&self) {
         // Volume 0% means don't increase or decrease from system volume
         let _ = self.0.xcb.bell(0);
