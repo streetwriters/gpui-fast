@@ -203,7 +203,10 @@ pub(crate) struct MacPlatformState {
     finish_launching: Option<Box<dyn FnOnce()>>,
     dock_menu: Option<id>,
     menus: Option<Vec<OwnedMenu>>,
-    keyboard_mapper: Rc<MacKeyboardMapper>,
+    /// Created on first use. `MacKeyboardLayout::new` queries the input source,
+    /// which is only needed once a key is pressed or a key equivalent is asked
+    /// for — never for the first frame.
+    keyboard_mapper: Option<Rc<MacKeyboardMapper>>,
     /// Mirrors `[NSCursor setHiddenUntilMouseMoves:]` state, which AppKit doesn't expose.
     cursor_visible: Arc<AtomicBool>,
     system_notifications: crate::system_notifications::SystemNotificationState,
@@ -243,8 +246,6 @@ impl MacPlatform {
             Arc::new(gpui::NoopTextSystem::new())
         };
 
-        let keyboard_layout = MacKeyboardLayout::new();
-        let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
 
         let state = Mutex::new(MacPlatformState {
             headless,
@@ -272,7 +273,7 @@ impl MacPlatform {
             on_system_wake: None,
             system_power_observers_registered: false,
             menus: None,
-            keyboard_mapper,
+            keyboard_mapper: None,
             cursor_visible: Arc::new(AtomicBool::new(true)),
             system_notifications: crate::system_notifications::SystemNotificationState::new(),
         });
@@ -573,6 +574,15 @@ impl Platform for MacPlatform {
             if policy == ActivationPolicy::Accessory {
                 app.setActivationPolicy_(native_activation_policy(policy));
             }
+            // Disable automatic window tabbing before any window exists. With
+            // it off, `NSWindow.tabGroup` is nil, so `tab_bar_visible` answers
+            // without a round trip to AppKit — and GPUI never uses tab groups.
+            // Tabbing off before any window exists. `NSWindow` asks AppKit for
+            // its tab group on creation otherwise, and `tab_bar_visible` then
+            // costs a round trip; with tabbing off, `tabGroup` is nil and the
+            // query answers immediately. A window that asks for a tabbing
+            // identifier re-enables it in its own initialiser.
+            let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: false];
             let app_delegate: id = msg_send![APP_DELEGATE_CLASS, new];
             app.setDelegate_(app_delegate);
 
@@ -1136,7 +1146,12 @@ impl Platform for MacPlatform {
     }
 
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
-        self.0.lock().keyboard_mapper.clone()
+        let mut lock = self.0.lock();
+        if lock.keyboard_mapper.is_none() {
+            let layout = MacKeyboardLayout::new();
+            lock.keyboard_mapper = Some(Rc::new(MacKeyboardMapper::new(layout.id())));
+        }
+        lock.keyboard_mapper.clone().expect("just created")
     }
 
     fn app_path(&self) -> Result<PathBuf> {
@@ -1392,7 +1407,7 @@ extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
     let platform = unsafe { get_mac_platform(this) };
     let mut lock = platform.0.lock();
     let keyboard_layout = MacKeyboardLayout::new();
-    lock.keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
+    lock.keyboard_mapper = Some(Rc::new(MacKeyboardMapper::new(keyboard_layout.id())));
     if let Some(mut callback) = lock.on_keyboard_layout_change.take() {
         drop(lock);
         callback();
