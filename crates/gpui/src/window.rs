@@ -2127,10 +2127,39 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move || {
                 ignore_if_window_removed(handle.update(&mut cx, |_, window, _cx| {
-                    for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
-                        if window.mouse_hit_test.ids.contains(&hitbox.id) {
+                    // Walk front to back, the order pointer dispatch uses, and
+                    // answer for whichever element is actually under the pointer.
+                    // An element painted after a drag region sits in front of it,
+                    // so a button inside a title bar has to be able to take the
+                    // press: the region's hitbox is registered before its children
+                    // paint, so taking the first *control* area found reported the
+                    // whole bar and the press arrived as HTCAPTION, moving the
+                    // window instead of pressing the button.
+                    //
+                    // Computed here rather than read from `mouse_hit_test`, which
+                    // is only refreshed when a mouse event is dispatched: the
+                    // first hit-test of a window happens before any pointer event
+                    // has been delivered, so the stored answer would still be
+                    // empty and the window would not be draggable. The field is
+                    // read directly rather than through `mouse_position()`, whose
+                    // job is to taint the retained layer's dependency tracking,
+                    // and a hit test is not a reason for the frame to change.
+                    let hit_test = window.rendered_frame.hit_test(window.mouse_position);
+                    for id in hit_test.ids.iter().take(hit_test.hover_hitbox_count) {
+                        let control = window
+                            .rendered_frame
+                            .window_control_hitboxes
+                            .iter()
+                            .find(|(_, hitbox)| hitbox.id == *id);
+                        if let Some((area, _)) = control {
                             return Some(*area);
                         }
+                        // Not a control area, and in front of any that the drag
+                        // region behind it claims. Every hitbox in this list was
+                        // inserted because its element takes the mouse, focus,
+                        // scroll or a cursor, so it owns the press and the window
+                        // must not be moved instead.
+                        return None;
                     }
                     None
                 }))
