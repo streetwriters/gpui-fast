@@ -1770,9 +1770,9 @@ impl Window {
             cx.foreground_executor()
                 .spawn(async move {
                     while activation_receiver.recv().await.is_ok() {
-                        handle
-                            .update(&mut async_cx, |_, window, _| window.refresh())
-                            .log_err();
+                        ignore_if_window_removed(
+                            handle.update(&mut async_cx, |_, window, _| window.refresh()),
+                        );
                     }
                 })
                 .detach();
@@ -1781,9 +1781,9 @@ impl Window {
             cx.foreground_executor()
                 .spawn(async move {
                     while deactivation_receiver.recv().await.is_ok() {
-                        handle
-                            .update(&mut async_cx, |_, window, _| window.refresh())
-                            .log_err();
+                        ignore_if_window_removed(
+                            handle.update(&mut async_cx, |_, window, _| window.refresh()),
+                        );
                     }
                 })
                 .detach();
@@ -1792,11 +1792,9 @@ impl Window {
             cx.foreground_executor()
                 .spawn(async move {
                     while let Ok(request) = action_receiver.recv().await {
-                        handle
-                            .update(&mut async_cx, |_, window, cx| {
-                                window.handle_a11y_action(request, cx);
-                            })
-                            .log_err();
+                        ignore_if_window_removed(handle.update(&mut async_cx, |_, window, cx| {
+                            window.handle_a11y_action(request, cx);
+                        }));
                     }
                 })
                 .detach();
@@ -1861,9 +1859,8 @@ impl Window {
                 let force_render =
                     mem::take(&mut deferred_force_render) || request_frame_options.force_render;
 
-                let thermal_state = handle
-                    .update(&mut cx, |_, _, cx| cx.thermal_state())
-                    .log_err();
+                let thermal_state =
+                    ignore_if_window_removed(handle.update(&mut cx, |_, _, cx| cx.thermal_state()));
 
                 // Throttle frame rate based on conditions:
                 // - Thermal pressure (Serious/Critical): cap to ~60fps
@@ -1890,11 +1887,9 @@ impl Window {
                         // Don't lose a pending forced render to throttling.
                         deferred_force_render |= force_render;
                         // Deferred by throttling: ask demand-driven platforms to retry.
-                        handle
-                            .update(&mut cx, |_, window, _| {
-                                window.platform_window.schedule_frame();
-                            })
-                            .log_err();
+                        ignore_if_window_removed(handle.update(&mut cx, |_, window, _| {
+                            window.platform_window.schedule_frame();
+                        }));
                         // The demand that entered this branch (a deferred forced
                         // render or pending next-frame callbacks) is still
                         // unserved; platforms that stop requesting frames for
@@ -1920,13 +1915,11 @@ impl Window {
 
                 let pending_next_frame_callbacks = next_frame_callbacks.take();
                 if !pending_next_frame_callbacks.is_empty() {
-                    handle
-                        .update(&mut cx, |_, window, cx| {
-                            for callback in pending_next_frame_callbacks {
-                                callback(window, cx);
-                            }
-                        })
-                        .log_err();
+                    ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
+                        for callback in pending_next_frame_callbacks {
+                            callback(window, cx);
+                        }
+                    }));
                 }
 
                 // Keep presenting if input was recently arriving at a high rate (>= 60fps).
@@ -1939,38 +1932,34 @@ impl Window {
                 let should_draw = invalidator.is_dirty() || force_render;
                 if should_draw {
                     measure("frame duration", || {
-                        handle
-                            .update(&mut cx, |_, window, cx| {
-                                #[cfg(feature = "profiler")]
-                                window
-                                    .window_profiler
-                                    .record_frame_signal(request_frame_options.signal_at);
-                                if force_render {
-                                    // Bypass cached view reuse so we don't replay stale
-                                    // atlas tile references after a GPU device recovery.
-                                    window.refresh();
-                                }
-                                let arena_clear_needed = window.draw(cx);
-                                window.present();
-                                arena_clear_needed.clear(cx);
-                            })
-                            .log_err();
+                        ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
+                            #[cfg(feature = "profiler")]
+                            window
+                                .window_profiler
+                                .record_frame_signal(request_frame_options.signal_at);
+                            if force_render {
+                                // Bypass cached view reuse so we don't replay stale
+                                // atlas tile references after a GPU device recovery.
+                                window.refresh();
+                            }
+                            let arena_clear_needed = window.draw(cx);
+                            window.present();
+                            arena_clear_needed.clear(cx);
+                        }));
                     })
                 } else if needs_present {
-                    handle
-                        .update(&mut cx, |_, window, _| window.present())
-                        .log_err();
+                    ignore_if_window_removed(
+                        handle.update(&mut cx, |_, window, _| window.present()),
+                    );
                 }
 
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        if window.invalidator.is_dirty()
-                            || !window.next_frame_callbacks.borrow().is_empty()
-                        {
-                            window.platform_window.schedule_frame();
-                        }
-                    })
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| {
+                    if window.invalidator.is_dirty()
+                        || !window.next_frame_callbacks.borrow().is_empty()
+                    {
+                        window.platform_window.schedule_frame();
+                    }
+                }));
 
                 // Platforms that stop requesting frames for idle windows only
                 // deliver another request after a wakeup. If demand remains
@@ -1994,25 +1983,21 @@ impl Window {
         platform_window.on_visual_viewport_changed(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, _| window.refresh())
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| window.refresh()));
             }
         }));
         platform_window.on_insets_changed(Box::new({
             let mut cx = cx.to_async();
             move |_| {
-                handle
-                    .update(&mut cx, |_, window, _| window.refresh())
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| window.refresh()));
             }
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
             move |_, _| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                ignore_if_window_removed(
+                    handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx)),
+                );
             }
         }));
         platform_window.on_moved(Box::new({
@@ -2033,9 +2018,9 @@ impl Window {
                 // that reads them after the move sees the new value.
                 foreground_executor
                     .spawn(async move {
-                        handle
-                            .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                            .log_err();
+                        ignore_if_window_removed(
+                            handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx)),
+                        );
                     })
                     .detach();
             }
@@ -2053,9 +2038,9 @@ impl Window {
                 // synchronously invoke this callback while App is already borrowed.
                 foreground_executor
                     .spawn(async move {
-                        handle
-                            .update(&mut cx, |_, window, cx| window.appearance_changed(cx))
-                            .log_err();
+                        ignore_if_window_removed(
+                            handle.update(&mut cx, |_, window, cx| window.appearance_changed(cx)),
+                        );
                     })
                     .detach();
             }
@@ -2063,9 +2048,9 @@ impl Window {
         platform_window.on_button_layout_changed(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.button_layout_changed(cx))
-                    .log_err();
+                ignore_if_window_removed(
+                    handle.update(&mut cx, |_, window, cx| window.button_layout_changed(cx)),
+                );
             }
         }));
         platform_window.on_active_status_change(Box::new({
@@ -2169,52 +2154,42 @@ impl Window {
         platform_window.on_move_tab_to_new_window({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, _window, cx| {
-                        SystemWindowTabController::move_tab_to_new_window(cx, handle.window_id());
-                    })
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, _window, cx| {
+                    SystemWindowTabController::move_tab_to_new_window(cx, handle.window_id());
+                }));
             })
         });
         platform_window.on_merge_all_windows({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, _window, cx| {
-                        SystemWindowTabController::merge_all_windows(cx, handle.window_id());
-                    })
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, _window, cx| {
+                    SystemWindowTabController::merge_all_windows(cx, handle.window_id());
+                }));
             })
         });
         platform_window.on_select_next_tab({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, _window, cx| {
-                        SystemWindowTabController::select_next_tab(cx, handle.window_id());
-                    })
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, _window, cx| {
+                    SystemWindowTabController::select_next_tab(cx, handle.window_id());
+                }));
             })
         });
         platform_window.on_select_previous_tab({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, _window, cx| {
-                        SystemWindowTabController::select_previous_tab(cx, handle.window_id())
-                    })
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, _window, cx| {
+                    SystemWindowTabController::select_previous_tab(cx, handle.window_id())
+                }));
             })
         });
         platform_window.on_toggle_tab_bar({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, window, cx| {
-                        let tab_bar_visible = window.platform_window.tab_bar_visible();
-                        SystemWindowTabController::set_visible(cx, tab_bar_visible);
-                    })
-                    .log_err();
+                ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
+                    let tab_bar_visible = window.platform_window.tab_bar_visible();
+                    SystemWindowTabController::set_visible(cx, tab_bar_visible);
+                }));
             })
         });
 
@@ -2911,15 +2886,13 @@ impl Window {
     }
 
     fn display_changed(handle: AnyWindowHandle, cx: &mut App) {
-        let moved_to = handle
-            .update(cx, |_, window, _| {
-                let display_id = window.platform_window.display().map(|display| display.id());
-                let moved = display_id != window.display_id;
-                window.display_id = display_id;
-                moved.then_some(display_id)
-            })
-            .log_err()
-            .flatten();
+        let moved_to = ignore_if_window_removed(handle.update(cx, |_, window, _| {
+            let display_id = window.platform_window.display().map(|display| display.id());
+            let moved = display_id != window.display_id;
+            window.display_id = display_id;
+            moved.then_some(display_id)
+        }))
+        .flatten();
         let Some(display_id) = moved_to else {
             return;
         };
@@ -2931,9 +2904,9 @@ impl Window {
         {
             cx.displays_changed();
         }
-        handle
-            .update(cx, |_, window, cx| window.notify_display_observers(cx))
-            .log_err();
+        ignore_if_window_removed(
+            handle.update(cx, |_, window, cx| window.notify_display_observers(cx)),
+        );
     }
 
     pub(crate) fn notify_display_observers(&mut self, cx: &mut App) {
