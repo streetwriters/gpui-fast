@@ -2250,7 +2250,7 @@ pub(crate) fn end_list(
         };
         let origin = point(anchor_origin.x, top);
         let began = begin_row(window, list, row);
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        window.with_content_mask(Some(ContentMask::new(bounds)), |window| {
             element.prepaint_at(origin, window, cx);
         });
         if began {
@@ -2426,9 +2426,7 @@ pub(crate) fn begin_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Gl
         spans: Vec::new(),
     };
     if state.swapped {
-        window
-            .content_mask_stack
-            .push(ContentMask { bounds: region });
+        window.content_mask_stack.push(ContentMask::new(region));
         mem::swap(&mut window.next_frame.scene, &mut state.scene);
         state.recording = Some(cx.begin_recording_dependencies());
         state.reads_start = reads_len();

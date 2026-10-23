@@ -61,6 +61,12 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Clips hidden overflow to the element's rounded corners as well as its rectangle.
+    fn overflow_clips_corners(mut self) -> Self {
+        self.style().overflow_clips_corners = Some(true);
+        self
+    }
+
     /// Set the space to be reserved for rendering the scrollbar.
     ///
     /// This will only affect the layout of the element when overflow for this element is set to

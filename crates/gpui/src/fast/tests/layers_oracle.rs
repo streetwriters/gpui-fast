@@ -53,7 +53,7 @@ fn sp(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
 fn quad(bounds: Bounds<ScaledPixels>, mask: Bounds<ScaledPixels>, hue: f32) -> Quad {
     Quad {
         bounds,
-        content_mask: ContentMask { bounds: mask },
+        content_mask: ContentMask::new(mask),
         background: hsla(hue, 0.5, 0.5, 1.).into(),
         ..Default::default()
     }
@@ -130,7 +130,7 @@ fn scenes(tiles: &[TileCoord], nudge: f32) -> (Scene, Scene) {
                 origin: bounds.origin + translation,
                 size: bounds.size,
             },
-            content_mask: ContentMask { bounds: viewport },
+            content_mask: ContentMask::new(viewport),
             corner_radii: Default::default(),
             tile: crate::AtlasTile {
                 texture_id: layer_tile_texture_id(frame.key),

@@ -209,9 +209,9 @@ fn begin_scrolling_children(
             });
             // Culling works in the painted region, not in the viewport and
             // whatever clips it; the composite clips to those.
-            window.content_mask_stack.push(ContentMask {
-                bounds: painted_region,
-            });
+            window
+                .content_mask_stack
+                .push(ContentMask::new(painted_region));
         }
     }
     Children {
@@ -415,7 +415,7 @@ pub(crate) fn insert_layer(
     translation: Point<ScaledPixels>,
     dirtied: usize,
 ) {
-    let viewport = window.snapped_content_mask().bounds;
+    let mask = window.snapped_content_mask();
     let Some(layer) = window.fast_layers.layers.get(id) else {
         return;
     };
@@ -441,7 +441,7 @@ pub(crate) fn insert_layer(
         return;
     }
     let viewports = viewports(window);
-    insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
+    insert_tile_quads(&mut window.next_frame.scene, layer, mask, translation);
     insert_overlay(
         &mut window.next_frame.scene,
         &record.overlay,
@@ -461,9 +461,10 @@ pub(crate) fn insert_layer(
 pub(crate) fn insert_tile_quads(
     scene: &mut Scene,
     layer: &Layer,
-    viewport: Bounds<ScaledPixels>,
+    mask: ContentMask<ScaledPixels>,
     translation: Point<ScaledPixels>,
 ) {
+    let viewport = mask.bounds;
     let Some(record) = layer.record.as_ref() else {
         return;
     };
@@ -508,7 +509,9 @@ pub(crate) fn insert_tile_quads(
                     origin: tile.origin + translation,
                     size: tile.size,
                 },
-                content_mask: ContentMask { bounds: viewport },
+                // The whole mask, so a layer inside a rounded clip is rounded where it
+                // is composited.
+                content_mask: mask,
                 corner_radii: Corners::default(),
                 tile: AtlasTile {
                     texture_id,
@@ -553,12 +556,16 @@ fn insert_overlay(
 struct Viewports {
     snapped: Bounds<ScaledPixels>,
     exact: Bounds<ScaledPixels>,
+    /// The current mask, whose rounded rectangle content drawn here adopts.
+    mask: ContentMask<ScaledPixels>,
 }
 
 fn viewports(window: &Window) -> Viewports {
+    let mask = window.snapped_content_mask();
     Viewports {
-        snapped: window.snapped_content_mask().bounds,
+        snapped: mask.bounds,
         exact: snap_bounds(window.content_mask().bounds.scale(window.scale_factor())),
+        mask,
     }
 }
 
@@ -674,9 +681,8 @@ fn clip_primitive(primitive: &mut Primitive, viewports: Viewports) {
         Primitive::Path(_) => &viewports.exact,
         _ => &viewports.snapped,
     };
-    let clip = |content_mask: &mut ContentMask<ScaledPixels>| {
-        content_mask.bounds = content_mask.bounds.intersect(mask);
-    };
+    let outer = viewports.mask.with_bounds(*mask);
+    let clip = |content_mask: &mut ContentMask<ScaledPixels>| content_mask.clip_to(&outer);
     match primitive {
         Primitive::Shadow(p) => clip(&mut p.content_mask),
         Primitive::Quad(p) => clip(&mut p.content_mask),
@@ -712,9 +718,9 @@ fn repaint(
     background: Rgba,
     f: impl FnOnce(&mut Window, &mut App),
 ) {
-    window.content_mask_stack.push(ContentMask {
-        bounds: painting.painted_region,
-    });
+    window
+        .content_mask_stack
+        .push(ContentMask::new(painting.painted_region));
     mem::swap(&mut window.next_frame.scene, &mut painting.scene);
     let paint_start = window.paint_index();
     window.take_hover_reads();

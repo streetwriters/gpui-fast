@@ -311,6 +311,17 @@ fn hash_bounds(bounds: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
 
 fn hash_mask(mask: &ContentMask<ScaledPixels>, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
     hash_clipped(&mask.bounds, tile, hasher);
+    if mask.is_rounded() {
+        hash_bounds(&mask.rounded_bounds, hasher);
+        for radius in [
+            mask.corner_radii.top_left,
+            mask.corner_radii.top_right,
+            mask.corner_radii.bottom_right,
+            mask.corner_radii.bottom_left,
+        ] {
+            hash_f32(radius.0, hasher);
+        }
+    }
 }
 
 /// Hashes the part of `bounds` inside `tile`, all empty parts alike.

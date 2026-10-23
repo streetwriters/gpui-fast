@@ -329,6 +329,8 @@ fn rasterize_paths(
             st_position: v.st_position,
             color: path.color,
             bounds,
+            rounded_bounds: path.content_mask.rounded_bounds,
+            corner_radii: path.content_mask.corner_radii,
         }));
     }
     pipeline.update_buffer(device, context, vertices)?;

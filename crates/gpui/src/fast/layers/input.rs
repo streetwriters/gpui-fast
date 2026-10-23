@@ -96,13 +96,13 @@ impl LayerInput {
                 origin: hitbox.bounds.origin + delta,
                 size: hitbox.bounds.size,
             },
-            content_mask: ContentMask {
-                bounds: Bounds {
+            content_mask: ContentMask::new(
+                Bounds {
                     origin: hitbox.content_mask.bounds.origin + delta,
                     size: hitbox.content_mask.bounds.size,
                 }
                 .intersect(&viewport),
-            },
+            ),
             behavior: hitbox.behavior,
         })
     }
@@ -319,9 +319,7 @@ pub(crate) fn hitbox_mask(window: &mut Window) -> ContentMask<Pixels> {
         None => mask,
     };
     painting.input.hitbox_masks.push(noted);
-    ContentMask {
-        bounds: mask.bounds.intersect(&painting.viewport),
-    }
+    ContentMask::new(mask.bounds.intersect(&painting.viewport))
 }
 
 /// `mask`, a mask inside `viewport`, with each edge it shares with
@@ -361,9 +359,7 @@ fn unclip(
             region.bottom().max(viewport.bottom()),
         ),
     );
-    ContentMask {
-        bounds: Bounds::from_corners(top_left, bottom_right),
-    }
+    ContentMask::new(Bounds::from_corners(top_left, bottom_right))
 }
 
 /// Notes, as the element the scroll handle whose state is `handle` tracks

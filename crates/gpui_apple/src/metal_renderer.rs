@@ -3,8 +3,8 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use core_graphics::geometry::CGSize;
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, PaintSurface, Path,
+    Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -149,6 +149,8 @@ pub struct PathRasterizationVertex {
     pub st_position: Point<f32>,
     pub color: Background,
     pub bounds: Bounds<ScaledPixels>,
+    pub rounded_bounds: Bounds<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
 }
 
 impl MetalRenderer {
@@ -848,6 +850,8 @@ impl MetalRenderer {
                 st_position: v.st_position,
                 color: path.color,
                 bounds: path.bounds.intersect(&path.content_mask.bounds),
+                rounded_bounds: path.content_mask.rounded_bounds,
+                corner_radii: path.content_mask.corner_radii,
             }));
         }
         let vertex_instance_bindings = writer.write(&vertices)?;
@@ -1789,7 +1793,7 @@ mod tests {
         scene.insert_primitive(PaintSurface {
             order: 0,
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask::new(bounds),
             image_buffer: image_buffer.clone(),
         });
         drop(image_buffer);
@@ -1804,6 +1808,75 @@ mod tests {
             assert!(green.abs_diff(128) <= 2);
             assert!(blue.abs_diff(128) <= 2);
             assert_eq!(*alpha, 255);
+        }
+    }
+
+    /// A quad and a path that fill a rounded content mask: inside the square
+    /// but outside a rounded corner is the background, the edges are drawn.
+    #[test]
+    fn rounded_content_masks_clip_quads_and_paths() {
+        use gpui::{Hsla, Quad, px, rgba};
+
+        let square = Bounds {
+            origin: point(ScaledPixels(8.), ScaledPixels(8.)),
+            size: size(ScaledPixels(48.), ScaledPixels(48.)),
+        };
+        let mask = ContentMask {
+            bounds: square,
+            rounded_bounds: square,
+            corner_radii: Corners::all(ScaledPixels(16.)),
+        };
+        let background = Quad {
+            bounds: Bounds {
+                origin: Point::default(),
+                size: size(ScaledPixels(64.), ScaledPixels(64.)),
+            },
+            content_mask: ContentMask::new(Bounds {
+                origin: Point::default(),
+                size: size(ScaledPixels(64.), ScaledPixels(64.)),
+            }),
+            background: Hsla::from(rgba(0xffffffff)).into(),
+            ..Default::default()
+        };
+        let red = Hsla::from(rgba(0xff0000ff));
+
+        let mut quad_scene = Scene::default();
+        quad_scene.insert_primitive(background.clone());
+        quad_scene.insert_primitive(Quad {
+            bounds: square,
+            content_mask: mask,
+            background: red.into(),
+            ..Default::default()
+        });
+        quad_scene.finish();
+
+        let mut path = Path::new(point(px(8.), px(8.)));
+        path.line_to(point(px(56.), px(8.)));
+        path.line_to(point(px(56.), px(56.)));
+        path.line_to(point(px(8.), px(56.)));
+        path.line_to(point(px(8.), px(8.)));
+        path.content_mask = ContentMask {
+            bounds: square.map(|value| px(value.0)),
+            rounded_bounds: square.map(|value| px(value.0)),
+            corner_radii: Corners::all(px(16.)),
+        };
+        path.color = red.into();
+        let mut path_scene = Scene::default();
+        path_scene.insert_primitive(background);
+        path_scene.insert_primitive(path.scale(1.));
+        path_scene.finish();
+
+        let mut renderer = MetalRenderer::new_headless(Arc::new(Mutex::new(Default::default())));
+        for scene in [&quad_scene, &path_scene] {
+            let image = renderer
+                .render_scene_to_image(scene, size(DevicePixels(64), DevicePixels(64)))
+                .unwrap();
+            let at = |x, y| image.get_pixel(x, y).0;
+            assert_eq!(at(10, 10), [255, 255, 255, 255], "a rounded corner is cut");
+            assert_eq!(at(53, 53), [255, 255, 255, 255], "a rounded corner is cut");
+            for (x, y) in [(32, 32), (32, 9), (9, 32), (54, 32), (32, 54)] {
+                assert_eq!(at(x, y), [255, 0, 0, 255], "({x}, {y}) is inside the mask");
+            }
         }
     }
 }

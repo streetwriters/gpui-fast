@@ -2312,27 +2312,111 @@ pub struct DispatchEventResult {
 }
 
 /// Indicates which region of the window is visible. Content falling outside of this mask will not be
-/// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
-/// to leave room to support more complex shapes in the future.
+/// rendered.
+///
+/// The mask is a rectangle, optionally narrowed by one rounded rectangle. The two are kept apart
+/// because a rectangle that cuts into a rounded one moves its edges but not its corners: content
+/// scrolled half out of a rounded container is still rounded where the container is, not where the
+/// rectangle ends.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds
     pub bounds: Bounds<P>,
+    /// The rounded rectangle content must also be inside. Ignored while every radius is zero.
+    pub rounded_bounds: Bounds<P>,
+    /// The corner radii of `rounded_bounds`.
+    pub corner_radii: Corners<P>,
+}
+
+impl<P: Clone + Debug + Default + PartialEq> ContentMask<P> {
+    /// A rectangular mask.
+    pub fn new(bounds: Bounds<P>) -> Self {
+        ContentMask {
+            bounds,
+            rounded_bounds: Bounds::default(),
+            corner_radii: Corners::default(),
+        }
+    }
+
+    /// `self` with its rectangle replaced by `bounds`, keeping its rounded rectangle.
+    pub fn with_bounds(&self, bounds: Bounds<P>) -> Self {
+        ContentMask {
+            bounds,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the mask has a rounded rectangle.
+    pub fn is_rounded(&self) -> bool {
+        let zero = P::default();
+        self.corner_radii.top_left != zero
+            || self.corner_radii.top_right != zero
+            || self.corner_radii.bottom_right != zero
+            || self.corner_radii.bottom_left != zero
+    }
 }
 
 impl ContentMask<Pixels> {
+    /// A mask that also clips to `bounds` rounded by `corner_radii`.
+    pub fn rounded(bounds: Bounds<Pixels>, corner_radii: Corners<Pixels>) -> Self {
+        ContentMask {
+            bounds,
+            rounded_bounds: bounds,
+            corner_radii,
+        }
+    }
+
     /// Scale the content mask's pixel units by the given scaling factor.
     pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
+            rounded_bounds: self.rounded_bounds.scale(factor),
+            corner_radii: self.corner_radii.scale(factor),
         }
     }
 
     /// Intersect the content mask with the given content mask.
+    ///
+    /// Only one rounded rectangle is kept: `self`'s if it has one, as the mask nested inside
+    /// `other`, and `other`'s otherwise.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
+        let rounded = if self.is_rounded() { self } else { other };
+        ContentMask {
+            bounds,
+            rounded_bounds: rounded.rounded_bounds,
+            corner_radii: rounded.corner_radii,
+        }
+    }
+}
+
+impl ContentMask<ScaledPixels> {
+    /// `self` moved by `delta`. A mask with no rounded rectangle keeps its unused one as it is,
+    /// so it stays equal to the same mask built in place.
+    pub fn translate(&self, delta: Point<ScaledPixels>) -> Self {
+        let move_by = |bounds: Bounds<ScaledPixels>| Bounds {
+            origin: bounds.origin + delta,
+            size: bounds.size,
+        };
+        ContentMask {
+            bounds: move_by(self.bounds),
+            rounded_bounds: if self.is_rounded() {
+                move_by(self.rounded_bounds)
+            } else {
+                self.rounded_bounds
+            },
+            corner_radii: self.corner_radii,
+        }
+    }
+
+    /// Narrows `self` to `outer`, adopting `outer`'s rounded rectangle when `self` has none.
+    pub fn clip_to(&mut self, outer: &Self) {
+        self.bounds = self.bounds.intersect(&outer.bounds);
+        if !self.is_rounded() && outer.is_rounded() {
+            self.rounded_bounds = outer.rounded_bounds;
+            self.corner_radii = outer.corner_radii;
+        }
     }
 }
 
@@ -3332,12 +3416,10 @@ impl Window {
 
         let mut paint_span = |start, end| {
             self.next_frame.scene.insert_primitive(Underline {
-                content_mask: ContentMask {
-                    bounds: Bounds::from_corners(
-                        point(start, bounds.top()),
-                        point(end, bounds.bottom()),
-                    ),
-                },
+                content_mask: underline.content_mask.with_bounds(Bounds::from_corners(
+                    point(start, bounds.top()),
+                    point(end, bounds.bottom()),
+                )),
                 ..underline
             });
         };
@@ -3408,9 +3490,9 @@ impl Window {
 
     #[inline]
     pub(crate) fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
-        ContentMask {
-            bounds: self.cover_bounds(self.content_mask().bounds),
-        }
+        let mask = self.content_mask();
+        mask.scale(self.scale_factor())
+            .with_bounds(self.cover_bounds(mask.bounds))
     }
 
     /// Call to prevent the default action of an event. Currently only used to prevent
@@ -4420,15 +4502,12 @@ impl Window {
     /// Obtain the current content mask. This method should only be called during element drawing.
     pub fn content_mask(&self) -> ContentMask<Pixels> {
         self.invalidator.debug_assert_paint_or_prepaint();
-        self.content_mask_stack
-            .last()
-            .cloned()
-            .unwrap_or_else(|| ContentMask {
-                bounds: Bounds {
-                    origin: Point::default(),
-                    size: self.viewport_size,
-                },
+        self.content_mask_stack.last().cloned().unwrap_or_else(|| {
+            ContentMask::new(Bounds {
+                origin: Point::default(),
+                size: self.viewport_size,
             })
+        })
     }
 
     /// Provide elements in the called function with a new namespace in which their identifiers must be unique.
@@ -4851,9 +4930,7 @@ impl Window {
             let content_mask_bounds = quad.content_mask.bounds.intersect(&strip);
             if !content_mask_bounds.is_empty() {
                 self.next_frame.scene.insert_primitive(Quad {
-                    content_mask: ContentMask {
-                        bounds: content_mask_bounds,
-                    },
+                    content_mask: quad.content_mask.with_bounds(content_mask_bounds),
                     ..quad
                 });
             }
@@ -9559,9 +9636,10 @@ mod tests {
             let scale = window.scale_factor();
             let original_mask = window.content_mask();
             let original_opacity = window.element_opacity();
-            let mask = ContentMask {
-                bounds: Bounds::from_corners(point(px(4.), px(10.)), point(px(16.), px(12.))),
-            };
+            let mask = ContentMask::new(Bounds::from_corners(
+                point(px(4.), px(10.)),
+                point(px(16.), px(12.)),
+            ));
             let style = UnderlineStyle {
                 thickness: px(2.),
                 color: Some(hsla(0.25, 0.5, 0.75, 0.5)),
@@ -9704,12 +9782,12 @@ mod tests {
             canvas(
                 |_, _, _| {},
                 move |_, _, window, _| {
-                    window.content_mask_stack.push(ContentMask {
-                        bounds: Bounds::from_corners(
+                    window
+                        .content_mask_stack
+                        .push(ContentMask::new(Bounds::from_corners(
                             point(px(-1000.), px(-1000.)),
                             point(px(1000.), px(1000.)),
-                        ),
-                    });
+                        )));
                     paint(window);
                     window.content_mask_stack.pop();
                 },

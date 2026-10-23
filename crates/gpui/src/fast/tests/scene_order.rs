@@ -88,9 +88,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
         hsla(0.6, 0.7, 0.5, 1.0),
         hsla(0.3, 0.6, 0.4, 0.5),
     ];
-    let window_mask = ContentMask {
-        bounds: bounds(0., 0., WINDOW, WINDOW),
-    };
+    let window_mask = ContentMask::new(bounds(0., 0., WINDOW, WINDOW));
     let mut reference = Reference::default();
     let mut content_mask = window_mask;
     let mut painted = Vec::new();

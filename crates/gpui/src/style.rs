@@ -188,6 +188,9 @@ pub struct Style {
     /// How children overflowing their container should affect layout
     #[refineable]
     pub overflow: Point<Overflow>,
+    /// Whether hidden overflow is clipped to the rounded corners as well as the rectangle, as
+    /// CSS and React Native clip. Off by default, so existing elements keep a rectangular clip.
+    pub overflow_clips_corners: bool,
     /// How much space (in points) should be reserved for the scrollbars of `Overflow::Scroll` and `Overflow::Auto` nodes.
     pub scrollbar_width: AbsoluteLength,
     /// Whether both x and y axis should be scrollable at the same time.
@@ -646,6 +649,7 @@ impl Style {
                 y: Overflow::Visible,
             } => None,
             _ => {
+                let element = bounds;
                 let mut min = bounds.origin;
                 let mut max = bounds.bottom_right();
 
@@ -679,7 +683,35 @@ impl Style {
                     (false, false) => Bounds::from_corners(min, max),
                 };
 
-                Some(ContentMask { bounds })
+                if self.overflow_clips_corners
+                    && self.overflow.x != Overflow::Visible
+                    && self.overflow.y != Overflow::Visible
+                {
+                    // The clip is the padding box, so its radii are the outer radii less the
+                    // border on each side of the corner.
+                    let outer = self
+                        .corner_radii
+                        .to_pixels(rem_size)
+                        .clamp_radii_for_quad_size(element.size);
+                    let inset = |radius: Pixels, a: Pixels, b: Pixels| {
+                        (radius - a.max(b)).max(Pixels::ZERO)
+                    };
+                    let (top, right, bottom, left) = (
+                        min.y - element.origin.y,
+                        element.bottom_right().x - max.x,
+                        element.bottom_right().y - max.y,
+                        min.x - element.origin.x,
+                    );
+                    let corner_radii = Corners {
+                        top_left: inset(outer.top_left, top, left),
+                        top_right: inset(outer.top_right, top, right),
+                        bottom_right: inset(outer.bottom_right, bottom, right),
+                        bottom_left: inset(outer.bottom_left, bottom, left),
+                    };
+                    return Some(ContentMask::rounded(bounds, corner_radii));
+                }
+
+                Some(ContentMask::new(bounds))
             }
         }
     }
@@ -777,6 +809,7 @@ impl Default for Style {
                 x: Overflow::Visible,
                 y: Overflow::Visible,
             },
+            overflow_clips_corners: false,
             allow_concurrent_scroll: false,
             restrict_scroll_to_axis: false,
             scrollbar_width: AbsoluteLength::default(),
@@ -1330,11 +1363,82 @@ impl From<Position> for taffy::style::Position {
 
 #[cfg(test)]
 mod tests {
-    use crate::{blue, green, px, red, yellow};
+    use crate::{ScaledPixels, blue, green, px, red, yellow};
 
     use super::*;
 
     use util_macros::perf;
+
+    fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
+    }
+
+    #[test]
+    fn hidden_overflow_clips_to_the_rounded_padding_box_when_asked() {
+        let mut style = Style {
+            overflow: point(Overflow::Hidden, Overflow::Hidden),
+            corner_radii: Corners {
+                top_left: px(10.).into(),
+                top_right: px(10.).into(),
+                bottom_right: px(10.).into(),
+                bottom_left: px(10.).into(),
+            },
+            border_widths: Edges {
+                top: px(4.).into(),
+                left: px(2.).into(),
+                ..Default::default()
+            },
+            border_color: Some(red()),
+            ..Default::default()
+        };
+        let element = bounds(0., 0., 100., 50.);
+
+        let rectangular = style.overflow_mask(element, px(16.)).unwrap();
+        assert!(!rectangular.is_rounded());
+
+        style.overflow_clips_corners = true;
+        let mask = style.overflow_mask(element, px(16.)).unwrap();
+        assert_eq!(mask.bounds, bounds(2., 4., 98., 46.));
+        assert_eq!(mask.rounded_bounds, mask.bounds);
+        // Each corner loses the wider border beside it.
+        assert_eq!(mask.corner_radii.top_left, px(6.));
+        assert_eq!(mask.corner_radii.top_right, px(6.));
+        assert_eq!(mask.corner_radii.bottom_left, px(8.));
+        assert_eq!(mask.corner_radii.bottom_right, px(10.));
+
+        style.overflow.y = Overflow::Visible;
+        assert!(!style.overflow_mask(element, px(16.)).unwrap().is_rounded());
+    }
+
+    #[test]
+    fn nested_masks_keep_the_innermost_rounded_rectangle() {
+        let outer = ContentMask::rounded(bounds(0., 0., 100., 100.), Corners::all(px(20.)));
+        let inner = ContentMask::rounded(bounds(10., 10., 50., 50.), Corners::all(px(5.)));
+        let plain = ContentMask::new(bounds(-10., 50., 200., 200.));
+
+        let nested = inner.intersect(&outer);
+        assert_eq!(nested.rounded_bounds, inner.rounded_bounds);
+        assert_eq!(nested.corner_radii, inner.corner_radii);
+
+        // A rectangle cutting into a rounded mask moves its edges, not its corners.
+        let cut = plain.intersect(&outer);
+        assert_eq!(cut.bounds, bounds(0., 50., 100., 50.));
+        assert_eq!(cut.rounded_bounds, outer.rounded_bounds);
+        assert_eq!(cut.corner_radii, outer.corner_radii);
+
+        let mut drawn = plain.scale(2.);
+        drawn.clip_to(&outer.scale(2.));
+        assert_eq!(drawn.corner_radii, Corners::all(ScaledPixels(40.)));
+        let moved = drawn.translate(point(ScaledPixels(3.), ScaledPixels(4.)));
+        assert_eq!(
+            moved.rounded_bounds.origin,
+            point(ScaledPixels(3.), ScaledPixels(4.))
+        );
+        assert_eq!(
+            moved.bounds.origin,
+            drawn.bounds.origin + point(ScaledPixels(3.), ScaledPixels(4.))
+        );
+    }
 
     #[perf]
     fn test_basic_highlight_style_combination() {

@@ -63,6 +63,67 @@ fn harness_renders_a_quad_at_the_right_pixels() {
     assert_eq!(pixel(&pixels, 32, 1, 1), [255, 255, 255, 255]);
 }
 
+/// A quad and a path that fill a rounded content mask: inside the square but
+/// outside a rounded corner is the background, the edges are drawn.
+#[test]
+fn rounded_content_masks_clip_quads_and_paths() {
+    let Some(mut harness) = Harness::new() else {
+        eprintln!("skipped: no Direct3D 11 device");
+        return;
+    };
+    let square = sp(8., 8., 48., 48.);
+    let red = Hsla::from(rgba(0xff0000ff));
+
+    let mut quad_scene = Scene::default();
+    quad_scene.insert_primitive(Quad {
+        bounds: square,
+        content_mask: ContentMask {
+            bounds: square,
+            rounded_bounds: square,
+            corner_radii: Corners::all(ScaledPixels(16.)),
+        },
+        background: red.into(),
+        ..Default::default()
+    });
+    quad_scene.finish();
+
+    let mut path = Path::new(point(px(8.), px(8.)));
+    path.line_to(point(px(56.), px(8.)));
+    path.line_to(point(px(56.), px(56.)));
+    path.line_to(point(px(8.), px(56.)));
+    path.line_to(point(px(8.), px(8.)));
+    path.content_mask = ContentMask {
+        bounds: square.map(|value| px(value.0)),
+        rounded_bounds: square.map(|value| px(value.0)),
+        corner_radii: Corners::all(px(16.)),
+    };
+    path.color = red.into();
+    let mut path_scene = Scene::default();
+    path_scene.insert_primitive(path.scale(1.));
+    path_scene.finish();
+
+    for scene in [&quad_scene, &path_scene] {
+        let pixels = harness.render(scene, device_size(64, 64), rgba(0xffffffff));
+        assert_eq!(
+            pixel(&pixels, 64, 10, 10),
+            [255, 255, 255, 255],
+            "a rounded corner is cut"
+        );
+        assert_eq!(
+            pixel(&pixels, 64, 53, 53),
+            [255, 255, 255, 255],
+            "a rounded corner is cut"
+        );
+        for (x, y) in [(32, 32), (32, 9), (9, 32), (54, 32), (32, 54)] {
+            assert_eq!(
+                pixel(&pixels, 64, x, y),
+                [255, 0, 0, 255],
+                "({x}, {y}) is inside the mask"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_tile_is_cleared_to_the_bytes_an_opaque_quad_of_its_background_writes() {
     let Some(mut harness) = Harness::new() else {
@@ -243,7 +304,7 @@ fn composited_scene(
                 TILE as f32,
                 TILE as f32,
             ),
-            content_mask: ContentMask { bounds: viewport },
+            content_mask: ContentMask::new(viewport),
             corner_radii: Corners::default(),
             tile: AtlasTile {
                 texture_id: layer_tile_texture_id(key),
@@ -413,7 +474,7 @@ fn rasterize_and_assemble(harness: &mut Harness, content: Scene, tiles: &[(i32, 
             grayscale: false.into(),
             opacity: 1.,
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask::new(bounds),
             corner_radii: Corners::default(),
             tile: AtlasTile {
                 texture_id: layer_tile_texture_id(key),
@@ -497,9 +558,7 @@ fn add_content(
 ) {
     let (ox, oy) = offset;
     let at = |x: f32, y: f32, w: f32, h: f32| sp(x + ox, y + oy, w, h);
-    let mask = |bounds: Bounds<ScaledPixels>| ContentMask {
-        bounds: bounds.intersect(&clip),
-    };
+    let mask = |bounds: Bounds<ScaledPixels>| ContentMask::new(bounds.intersect(&clip));
 
     scene.insert_primitive(Quad {
         content_mask: mask(clip),
@@ -607,7 +666,7 @@ fn add_covered_paths(
     (ox, oy): (f32, f32),
     clip: Bounds<ScaledPixels>,
 ) {
-    let mask = ContentMask { bounds: clip };
+    let mask = ContentMask::new(clip);
     for (x, y, dx, dy) in [
         (200., 330., 1., 1.),
         (330.5, 330., -1., 1.),
@@ -618,9 +677,7 @@ fn add_covered_paths(
         path.line_to(corner + point(px(9. * dx), px(0.)));
         path.curve_to(corner + point(px(0.), px(9. * dy)), corner);
         path.line_to(corner);
-        path.content_mask = ContentMask {
-            bounds: clip.map(|c| px(c.0)),
-        };
+        path.content_mask = ContentMask::new(clip.map(|c| px(c.0)));
         path.color = Hsla::from(rgba(0x3366ccff)).into();
         scene.insert_primitive(path.scale(1.));
     }
@@ -649,9 +706,7 @@ fn add_covered_paths(
         point(px(300. + ox), px(395. + oy)),
     );
     path.line_to(point(px(250. + ox), px(360. + oy)));
-    path.content_mask = ContentMask {
-        bounds: clip.map(|c| px(c.0)),
-    };
+    path.content_mask = ContentMask::new(clip.map(|c| px(c.0)));
     path.color = Hsla::from(rgba(0x8800ffcc)).into();
     scene.insert_primitive(path.scale(1.));
 }
@@ -718,9 +773,7 @@ fn sp(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
 
 /// A content mask that clips nothing the tests draw.
 fn no_mask() -> ContentMask<ScaledPixels> {
-    ContentMask {
-        bounds: sp(-10_000., -10_000., 20_000., 20_000.),
-    }
+    ContentMask::new(sp(-10_000., -10_000., 20_000., 20_000.))
 }
 
 fn quad(bounds: Bounds<ScaledPixels>, color: Hsla) -> Quad {

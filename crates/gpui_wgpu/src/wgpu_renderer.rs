@@ -4,8 +4,8 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Path, Point, PrimitiveBatch,
-    ScaledPixels, Scene, Size, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, Corners, DevicePixels, GpuSpecs, Path, Point,
+    PrimitiveBatch, ScaledPixels, Scene, Size, get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -110,6 +110,8 @@ pub(crate) struct PathRasterizationVertex {
     pub(crate) st_position: Point<f32>,
     pub(crate) color: Background,
     pub(crate) bounds: Bounds<ScaledPixels>,
+    pub(crate) rounded_bounds: Bounds<ScaledPixels>,
+    pub(crate) corner_radii: Corners<ScaledPixels>,
 }
 
 pub struct WgpuSurfaceConfig {
@@ -1990,6 +1992,8 @@ impl WgpuRendererCore {
                 st_position: v.st_position,
                 color: path.color,
                 bounds,
+                rounded_bounds: path.content_mask.rounded_bounds,
+                corner_radii: path.content_mask.corner_radii,
             }));
         }
 
@@ -2798,7 +2802,7 @@ mod tests {
             order: 0,
             border_style: BorderStyle::Solid,
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask::new(bounds),
             background: color.into(),
             border_color: color,
             corner_radii: Corners::default(),
@@ -2950,16 +2954,93 @@ mod tests {
             .expect("shader should validate");
     }
 
+    /// A quad and a path that fill a rounded content mask: inside the square
+    /// but outside a rounded corner is the background, the edges are drawn.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn rounded_content_masks_clip_quads_and_paths() -> anyhow::Result<()> {
+        use gpui::{DevicePixels, Path, PlatformHeadlessRenderer, Scene, point, px, rgba, size};
+
+        let Ok(mut renderer) = WgpuHeadlessRenderer::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return Ok(());
+        };
+        let square = Bounds {
+            origin: point(ScaledPixels(8.), ScaledPixels(8.)),
+            size: size(ScaledPixels(48.), ScaledPixels(48.)),
+        };
+        let mask = ContentMask {
+            bounds: square,
+            rounded_bounds: square,
+            corner_radii: Corners::all(ScaledPixels(16.)),
+        };
+        let everything = Bounds {
+            origin: Point::default(),
+            size: size(ScaledPixels(64.), ScaledPixels(64.)),
+        };
+        let background = Quad {
+            bounds: everything,
+            content_mask: ContentMask::new(everything),
+            background: Hsla::from(rgba(0xffffffff)).into(),
+            ..Default::default()
+        };
+        let red = Hsla::from(rgba(0xff0000ff));
+
+        let mut quad_scene = Scene::default();
+        quad_scene.insert_primitive(background.clone());
+        quad_scene.insert_primitive(Quad {
+            bounds: square,
+            content_mask: mask,
+            background: red.into(),
+            ..Default::default()
+        });
+        quad_scene.finish();
+
+        let mut path = Path::new(point(px(8.), px(8.)));
+        path.line_to(point(px(56.), px(8.)));
+        path.line_to(point(px(56.), px(56.)));
+        path.line_to(point(px(8.), px(56.)));
+        path.line_to(point(px(8.), px(8.)));
+        path.content_mask = ContentMask {
+            bounds: square.map(|value| px(value.0)),
+            rounded_bounds: square.map(|value| px(value.0)),
+            corner_radii: Corners::all(px(16.)),
+        };
+        path.color = red.into();
+        let mut path_scene = Scene::default();
+        path_scene.insert_primitive(background);
+        path_scene.insert_primitive(path.scale(1.));
+        path_scene.finish();
+
+        for scene in [&quad_scene, &path_scene] {
+            let image =
+                renderer.render_scene_to_image(scene, size(DevicePixels(64), DevicePixels(64)))?;
+            let near = |x: u32, y: u32, expected: [u8; 4]| {
+                let actual = image.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 3),
+                    "pixel ({x}, {y}) was {actual:?}, expected {expected:?}"
+                );
+            };
+            near(10, 10, [255, 255, 255, 255]);
+            near(53, 53, [255, 255, 255, 255]);
+            for (x, y) in [(32, 32), (32, 9), (9, 32), (54, 32), (32, 54)] {
+                near(x, y, [255, 0, 0, 255]);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn webgl_record_sizes_match_shader_word_strides() {
-        assert_eq!(std::mem::size_of::<Quad>(), 40 * 4);
-        assert_eq!(std::mem::size_of::<Shadow>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 26 * 4);
+        assert_eq!(std::mem::size_of::<Quad>(), 48 * 4);
+        assert_eq!(std::mem::size_of::<Shadow>(), 36 * 4);
+        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 34 * 4);
         assert_eq!(std::mem::size_of::<PathSprite>(), 4 * 4);
-        assert_eq!(std::mem::size_of::<Underline>(), 16 * 4);
-        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 24 * 4);
+        assert_eq!(std::mem::size_of::<Underline>(), 24 * 4);
+        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 36 * 4);
+        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 36 * 4);
+        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 32 * 4);
     }
 
     #[test]
@@ -2987,6 +3068,22 @@ mod tests {
                         width: 7.0.into(),
                         height: 8.0.into(),
                     },
+                },
+                rounded_bounds: Bounds {
+                    origin: Point {
+                        x: 34.0.into(),
+                        y: 35.0.into(),
+                    },
+                    size: Size {
+                        width: 36.0.into(),
+                        height: 37.0.into(),
+                    },
+                },
+                corner_radii: Corners {
+                    top_left: 38.0.into(),
+                    top_right: 39.0.into(),
+                    bottom_right: 40.0.into(),
+                    bottom_left: 41.0.into(),
                 },
             },
             background: linear_gradient(
@@ -3046,6 +3143,14 @@ mod tests {
                 6.0_f32.to_bits(),
                 7.0_f32.to_bits(),
                 8.0_f32.to_bits(),
+                34.0_f32.to_bits(),
+                35.0_f32.to_bits(),
+                36.0_f32.to_bits(),
+                37.0_f32.to_bits(),
+                38.0_f32.to_bits(),
+                39.0_f32.to_bits(),
+                40.0_f32.to_bits(),
+                41.0_f32.to_bits(),
                 1,
                 1,
                 0,

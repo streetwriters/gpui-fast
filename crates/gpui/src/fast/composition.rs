@@ -1370,7 +1370,7 @@ mod tests {
         let bounds = square(100.);
         scene.insert_primitive(Quad {
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask::new(bounds),
             ..Default::default()
         });
 
@@ -1397,9 +1397,7 @@ mod tests {
         source.push_layer(inner_bounds);
         source.insert_primitive(Quad {
             bounds: inner_bounds,
-            content_mask: ContentMask {
-                bounds: inner_bounds,
-            },
+            content_mask: ContentMask::new(inner_bounds),
             ..Default::default()
         });
         source.pop_layer();

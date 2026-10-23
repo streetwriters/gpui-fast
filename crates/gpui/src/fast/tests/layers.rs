@@ -53,9 +53,7 @@ fn sp(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
 }
 
 fn wide_mask() -> ContentMask<ScaledPixels> {
-    ContentMask {
-        bounds: sp(-10_000., -10_000., 20_000., 20_000.),
-    }
+    ContentMask::new(sp(-10_000., -10_000., 20_000., 20_000.))
 }
 
 fn quad(bounds: Bounds<ScaledPixels>) -> Quad {
@@ -128,9 +126,7 @@ fn a_tile_scene_leaves_out_primitives_masked_off_the_tile() {
     let mut content = Scene::default();
     // Spans tiles (0,0) and (1,0), but its mask keeps it inside tile (0,0).
     content.insert_primitive(Quad {
-        content_mask: ContentMask {
-            bounds: sp(0., 0., 512., 512.),
-        },
+        content_mask: ContentMask::new(sp(0., 0., 512., 512.)),
         ..quad(sp(500., 100., 40., 10.))
     });
     content.finish();
@@ -279,9 +275,7 @@ fn atlas_tile() -> AtlasTile {
 #[test]
 fn translation_moves_every_position_a_primitive_carries() {
     let delta = point(ScaledPixels(7.), ScaledPixels(-3.));
-    let mask = ContentMask {
-        bounds: sp(0., 0., 100., 100.),
-    };
+    let mask = ContentMask::new(sp(0., 0., 100., 100.));
     let moved_mask = sp(7., -3., 100., 100.);
     let translate = |primitive: Primitive| translate_primitive(&primitive, delta);
 
@@ -613,9 +607,7 @@ mod paint {
     fn quad(bounds: Bounds<ScaledPixels>, color: Hsla) -> Quad {
         Quad {
             bounds,
-            content_mask: ContentMask {
-                bounds: sp(-10_000., -10_000., 20_000., 20_000.),
-            },
+            content_mask: ContentMask::new(sp(-10_000., -10_000., 20_000., 20_000.)),
             background: color.into(),
             ..Default::default()
         }
@@ -724,7 +716,7 @@ mod paint {
     fn a_primitive_moved_by_whole_tiles_hashes_like_its_old_tile() {
         // Its mask moves with it, so it draws the same pixels in its tile.
         let at = |bounds: Bounds<ScaledPixels>| Quad {
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask::new(bounds),
             ..quad(bounds, Hsla::red())
         };
         let a = tile_hashes(&scene(&[at(sp(10., 10., 20., 20.))]), 512, region());
@@ -739,11 +731,11 @@ mod paint {
         let masked = |mask: Bounds<ScaledPixels>| {
             [
                 Quad {
-                    content_mask: ContentMask { bounds: mask },
+                    content_mask: ContentMask::new(mask),
                     ..quad(sp(10., 10., 20., 900.), Hsla::red())
                 },
                 Quad {
-                    content_mask: ContentMask { bounds: mask },
+                    content_mask: ContentMask::new(mask),
                     ..quad(sp(600., 10., 20., 900.), Hsla::blue())
                 },
             ]
@@ -1172,9 +1164,7 @@ mod paint {
         assert_eq!(bake(&[short], true), None, "does not cover the viewport");
 
         let clipped = Quad {
-            content_mask: ContentMask {
-                bounds: sp(0., 0., 1000., 200.),
-            },
+            content_mask: ContentMask::new(sp(0., 0., 1000., 200.)),
             ..panel
         };
         assert_eq!(
@@ -1825,9 +1815,7 @@ mod footprints {
     #[test]
     fn a_shadow_masked_off_a_tile_leaves_it_alone() {
         let masked = |color| Shadow {
-            content_mask: crate::ContentMask {
-                bounds: sp(0., 0., 512., 512.),
-            },
+            content_mask: crate::ContentMask::new(sp(0., 0., 512., 512.)),
             ..shadow(color)
         };
         assert_eq!(

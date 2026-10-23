@@ -3,7 +3,8 @@
 //! atlas allocates, and the content those tiles are rasterized from.
 
 use crate::{
-    AtlasTextureId, AtlasTextureKind, Bounds, Point, Rgba, ScaledPixels, Scene, TileId, point,
+    AtlasTextureId, AtlasTextureKind, Bounds, ContentMask, Point, Rgba, ScaledPixels, Scene,
+    TileId, point,
     scene::{PaintOperation, Primitive, TransformationMatrix},
     size,
 };
@@ -311,53 +312,54 @@ pub(crate) fn translate_primitive(primitive: &Primitive, delta: Point<ScaledPixe
 /// Moves `primitive` by `delta`, as [`translate_primitive`] does, in place.
 pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixels>) {
     let mv = |bounds: &mut Bounds<ScaledPixels>| *bounds = translate_bounds(*bounds, delta);
+    let mv_mask = |mask: &mut ContentMask<ScaledPixels>| *mask = mask.translate(delta);
     match primitive {
         Primitive::Shadow(shadow) => {
             mv(&mut shadow.bounds);
             mv(&mut shadow.element_bounds);
-            mv(&mut shadow.content_mask.bounds);
+            mv_mask(&mut shadow.content_mask);
         }
         Primitive::Quad(quad) => {
             mv(&mut quad.bounds);
-            mv(&mut quad.content_mask.bounds);
+            mv_mask(&mut quad.content_mask);
         }
         Primitive::Path(path) => {
             mv(&mut path.bounds);
-            mv(&mut path.content_mask.bounds);
+            mv_mask(&mut path.content_mask);
             for vertex in &mut path.vertices {
                 vertex.xy_position = vertex.xy_position + delta;
                 // `Window::paint_path` leaves vertices' masks empty, at the
                 // origin, and no renderer reads them: they stay so.
                 if !vertex.content_mask.bounds.is_empty() {
-                    mv(&mut vertex.content_mask.bounds);
+                    mv_mask(&mut vertex.content_mask);
                 }
             }
         }
         Primitive::Underline(underline) => {
             mv(&mut underline.bounds);
-            mv(&mut underline.content_mask.bounds);
+            mv_mask(&mut underline.content_mask);
         }
         Primitive::MonochromeSprite(sprite) => {
             mv(&mut sprite.bounds);
-            mv(&mut sprite.content_mask.bounds);
+            mv_mask(&mut sprite.content_mask);
             translate_transformation(&mut sprite.transformation, delta);
         }
         Primitive::SubpixelSprite(sprite) => {
             mv(&mut sprite.bounds);
-            mv(&mut sprite.content_mask.bounds);
+            mv_mask(&mut sprite.content_mask);
             translate_transformation(&mut sprite.transformation, delta);
         }
         Primitive::PolychromeSprite(sprite) => {
             mv(&mut sprite.bounds);
-            mv(&mut sprite.content_mask.bounds);
+            mv_mask(&mut sprite.content_mask);
         }
         Primitive::Surface(surface) => {
             mv(&mut surface.bounds);
-            mv(&mut surface.content_mask.bounds);
+            mv_mask(&mut surface.content_mask);
         }
         Primitive::ExternalTexture(texture) => {
             mv(&mut texture.bounds);
-            mv(&mut texture.content_mask.bounds);
+            mv_mask(&mut texture.content_mask);
         }
     }
 }

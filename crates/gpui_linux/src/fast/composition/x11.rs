@@ -1207,7 +1207,7 @@ mod tests {
     fn quad(bounds: Bounds<ScaledPixels>, mask: Bounds<ScaledPixels>) -> Quad {
         Quad {
             bounds,
-            content_mask: ContentMask { bounds: mask },
+            content_mask: ContentMask::new(mask),
             ..Default::default()
         }
     }
@@ -1235,7 +1235,7 @@ mod tests {
             blur_radius: ScaledPixels(24.),
             bounds: scaled(500., 500., 100., 100.),
             corner_radii: Default::default(),
-            content_mask: ContentMask { bounds: everything },
+            content_mask: ContentMask::new(everything),
             color: Default::default(),
             element_bounds: scaled(500., 500., 100., 100.),
             element_corner_radii: Default::default(),
