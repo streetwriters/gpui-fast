@@ -966,6 +966,28 @@ impl TransformationMatrix {
         })
     }
 
+    /// `matrix` applied about the point `(x, y)`: the point stays where it is.
+    pub fn about(x: f32, y: f32, matrix: TransformationMatrix) -> TransformationMatrix {
+        let toward = TransformationMatrix {
+            rotation_scale: [[1.0, 0.0], [0.0, 1.0]],
+            translation: [x, y],
+        };
+        let back = TransformationMatrix {
+            rotation_scale: [[1.0, 0.0], [0.0, 1.0]],
+            translation: [-x, -y],
+        };
+        toward.compose(matrix).compose(back)
+    }
+
+    /// Where the matrix puts a point in logical pixels.
+    pub fn transform_logical_point(&self, point: Point<Pixels>) -> Point<Pixels> {
+        let (x, y) = (point.x.0, point.y.0);
+        crate::point(
+            Pixels(self.rotation_scale[0][0] * x + self.rotation_scale[0][1] * y + self.translation[0]),
+            Pixels(self.rotation_scale[1][0] * x + self.rotation_scale[1][1] * y + self.translation[1]),
+        )
+    }
+
     /// Apply transformation to a point, mainly useful for debugging
     pub fn apply(&self, point: Point<Pixels>) -> Point<Pixels> {
         let input = [point.x.0, point.y.0];
@@ -1255,5 +1277,187 @@ impl PathVertex<Pixels> {
             st_position: self.st_position,
             content_mask: self.content_mask.scale(factor),
         }
+    }
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+    use crate::{Corners, Edges, point, size};
+
+    fn quad_at(x: f32, y: f32) -> Quad {
+        Quad {
+            order: 0,
+            border_style_and_transform: Quad::pack_border_style(
+                BorderStyle::Dashed,
+                TransformIndex::IDENTITY,
+            ),
+            bounds: Bounds {
+                origin: point(ScaledPixels(x), ScaledPixels(y)),
+                size: size(ScaledPixels(10.), ScaledPixels(10.)),
+            },
+            content_mask: ContentMask::new(Bounds {
+                origin: point(ScaledPixels(-1000.), ScaledPixels(-1000.)),
+                size: size(ScaledPixels(2000.), ScaledPixels(2000.)),
+            }),
+            background: Background::default(),
+            border_color: Hsla::default(),
+            corner_radii: Corners::default(),
+            border_widths: Edges::default(),
+        }
+    }
+
+    fn rotation(degrees: f32) -> TransformationMatrix {
+        TransformationMatrix::unit().rotate(Radians(degrees.to_radians()))
+    }
+
+    fn translation(x: f32, y: f32) -> TransformationMatrix {
+        TransformationMatrix::unit().translate(point(ScaledPixels(x), ScaledPixels(y)))
+    }
+
+    #[test]
+    fn the_table_starts_with_the_identity_and_resets_on_clear() {
+        let mut scene = Scene::default();
+        assert_eq!(scene.transforms.entries(), &[TransformationMatrix::unit()]);
+        let previous = scene.push_transform(rotation(30.));
+        assert_eq!(scene.transforms.entries().len(), 2);
+        scene.pop_transform(previous);
+        scene.clear();
+        assert_eq!(scene.transforms.entries(), &[TransformationMatrix::unit()]);
+        assert!(scene.current_transform().is_identity());
+    }
+
+    #[test]
+    fn equal_matrices_share_an_entry_and_nesting_composes() {
+        let mut scene = Scene::default();
+        let outer = scene.push_transform(translation(10., 0.));
+        let inner = scene.push_transform(translation(0., 5.));
+        let composed = scene.transforms.get(scene.current_transform());
+        assert_eq!(composed.translation, [10., 5.]);
+        scene.pop_transform(inner);
+        let again = scene.push_transform(translation(0., 5.));
+        assert_eq!(scene.transforms.entries().len(), 3);
+        scene.pop_transform(again);
+        scene.pop_transform(outer);
+        assert!(scene.current_transform().is_identity());
+    }
+
+    #[test]
+    fn primitives_are_stamped_with_the_current_transform() {
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad_at(0., 0.));
+        let previous = scene.push_transform(rotation(45.));
+        scene.insert_primitive(quad_at(0., 0.));
+        scene.pop_transform(previous);
+        scene.insert_primitive(quad_at(0., 0.));
+        let indices: Vec<u32> = scene
+            .quads
+            .iter()
+            .map(|quad| quad.transform_index().0)
+            .collect();
+        assert_eq!(indices, vec![0, 1, 0]);
+        // The border style survives the stamping.
+        assert!(scene.quads.iter().all(|q| q.border_style() == BorderStyle::Dashed));
+    }
+
+    #[test]
+    fn a_quad_packs_its_style_and_index_into_one_word() {
+        let mut quad = quad_at(0., 0.);
+        quad.set_transform_index(TransformIndex(0xabcdef));
+        assert_eq!(quad.border_style(), BorderStyle::Dashed);
+        assert_eq!(quad.transform_index(), TransformIndex(0xabcdef));
+        quad.set_border_style(BorderStyle::Solid);
+        assert_eq!(quad.transform_index(), TransformIndex(0xabcdef));
+        assert_eq!(quad.border_style_and_transform & 0xff, 0);
+    }
+
+    #[test]
+    fn a_rotated_primitive_is_ordered_by_where_it_lands() {
+        let mut scene = Scene::default();
+        // A 10 px quad at the origin, turned a quarter about (5, 5), still
+        // covers (0..10); turned 45° its corners reach past 10 along the axes.
+        let about = TransformationMatrix::about(5., 5., rotation(45.));
+        let previous = scene.push_transform(about);
+        scene.insert_primitive(quad_at(0., 0.));
+        scene.pop_transform(previous);
+        // This one lies where only the rotated corner reaches.
+        scene.insert_primitive(quad_at(11., 4.));
+        let orders: Vec<u32> = scene.quads.iter().map(|quad| quad.order).collect();
+        assert!(orders[1] > orders[0], "{orders:?}");
+    }
+
+    #[test]
+    fn replay_carries_absolute_transforms_into_the_new_table() {
+        let mut previous_scene = Scene::default();
+        let before = previous_scene.push_transform(rotation(20.));
+        previous_scene.insert_primitive(quad_at(0., 0.));
+        previous_scene.pop_transform(before);
+        previous_scene.insert_primitive(quad_at(30., 0.));
+
+        let mut scene = Scene::default();
+        // An unrelated transform is already in this table.
+        let unrelated = scene.push_transform(translation(99., 99.));
+        scene.pop_transform(unrelated);
+        scene.replay(0..previous_scene.len(), &previous_scene);
+        let matrices: Vec<TransformationMatrix> = scene
+            .quads
+            .iter()
+            .map(|quad| scene.transforms.get(quad.transform_index()))
+            .collect();
+        assert_eq!(matrices[0], rotation(20.));
+        assert!(matrices[1].is_unit());
+        // Replaying under another transform does not compose with it.
+        let mut replayed = Scene::default();
+        let current = replayed.push_transform(translation(5., 5.));
+        replayed.replay(0..previous_scene.len(), &previous_scene);
+        replayed.pop_transform(current);
+        assert_eq!(
+            replayed.transforms.get(replayed.quads[0].transform_index()),
+            rotation(20.)
+        );
+    }
+
+    #[test]
+    fn the_inverse_undoes_the_matrix_and_a_flattened_one_has_none() {
+        let matrix = TransformationMatrix::about(30., 40., rotation(33.))
+            .compose(translation(7., -3.))
+            .scale(size(2., 3.));
+        let inverse = matrix.inverse().expect("a rotation and scale is invertible");
+        let start = point(ScaledPixels(12.), ScaledPixels(-8.));
+        let back = inverse.transform_point(matrix.transform_point(start));
+        assert!((back.x.0 - start.x.0).abs() < 1e-3 && (back.y.0 - start.y.0).abs() < 1e-3);
+        assert!(
+            TransformationMatrix::unit()
+                .scale(size(0., 1.))
+                .inverse()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_path_is_transformed_when_it_is_inserted() {
+        let mut scene = Scene::default();
+        let mut path = Path::new(point(crate::px(0.), crate::px(0.)));
+        path.line_to(point(crate::px(10.), crate::px(0.)));
+        path.line_to(point(crate::px(10.), crate::px(10.)));
+        let scaled = Path {
+            id: path.id,
+            order: path.order,
+            bounds: path.bounds.scale(1.0),
+            content_mask: ContentMask::new(Bounds {
+                origin: point(ScaledPixels(-100.), ScaledPixels(-100.)),
+                size: size(ScaledPixels(300.), ScaledPixels(300.)),
+            }),
+            vertices: path.vertices.iter().map(|v| v.scale(1.0)).collect(),
+            color: path.color,
+            start: path.start.scale(1.0),
+            current: path.current.scale(1.0),
+            contour_count: path.contour_count,
+        };
+        let previous = scene.push_transform(translation(100., 50.));
+        scene.insert_primitive(scaled);
+        scene.pop_transform(previous);
+        let first = scene.paths[0].vertices[0].xy_position;
+        assert_eq!((first.x.0, first.y.0), (100., 50.));
     }
 }

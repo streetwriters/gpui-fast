@@ -135,6 +135,7 @@ pub(crate) struct RetainedContext {
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
     pub(crate) opacity: f32,
+    pub(crate) transformation: crate::TransformationMatrix,
 }
 
 /// What it takes to lay a view out as it was laid out last frame without
@@ -609,6 +610,7 @@ impl Window {
         !crate::fast::layers::paint::inside_layer(self)
             && context.bounds == bounds
             && context.opacity == self.element_opacity
+            && context.transformation == self.transformation
             && context.content_mask == self.content_mask()
             && context.text_style == self.text_style()
     }
@@ -884,6 +886,7 @@ impl Window {
                     content_mask: ContentMask::default(),
                     text_style: TextStyle::default(),
                     opacity: 1.,
+                    transformation: crate::TransformationMatrix::unit(),
                 }),
                 dependencies: RenderDependencies::default(),
                 own_dependencies: RenderDependencies::default(),
@@ -953,6 +956,7 @@ impl Window {
             content_mask: self.content_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
+            transformation: self.transformation,
         };
         let end = self.prepaint_index();
         let retained = &mut self.next_frame.retained;

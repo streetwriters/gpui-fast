@@ -161,7 +161,11 @@ pub(crate) fn decide(
     window.fast_layers.scrolls.take_offsets_set();
     drop_layers_on_resize(window);
     // A scroll container inside a layer is painted into it (spec §6.6).
-    if !super::active(window, cx) || window.fast_layers.painting.is_some() {
+    // Tiles are rasterized and composited in untransformed space.
+    if !super::active(window, cx)
+        || window.fast_layers.painting.is_some()
+        || window.transformation != crate::TransformationMatrix::unit()
+    {
         return Decision::Bypass;
     }
     let frame = window.fast_layers.frame;

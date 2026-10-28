@@ -842,6 +842,9 @@ pub struct Hitbox {
     pub content_mask: ContentMask<Pixels>,
     /// Flags that specify hitbox behavior.
     pub behavior: HitboxBehavior,
+    /// The transformation, in logical pixels, that places the space `bounds`
+    /// and `content_mask` are in on the window.
+    pub transform: TransformationMatrix,
 }
 
 impl Hitbox {
@@ -1178,7 +1181,16 @@ impl Frame {
         let mut hit_test = HitTest::default();
         for hitbox in self.hitboxes.iter().rev() {
             let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
-            if bounds.contains(&position) {
+            let local = if hitbox.transform == TransformationMatrix::unit() {
+                position
+            } else {
+                // A box that is flattened to a line or a point is never hit.
+                let Some(inverse) = hitbox.transform.inverse() else {
+                    continue;
+                };
+                inverse.transform_logical_point(position)
+            };
+            if bounds.contains(&local) {
                 hit_test.ids.push(hitbox.id);
                 if !set_hover_hitbox_count
                     && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
@@ -1256,6 +1268,7 @@ pub struct Window {
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
+    pub(crate) transformation: TransformationMatrix,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     /// The [`TextInputConfiguration`] most recently forwarded to the platform
@@ -2232,6 +2245,7 @@ impl Window {
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
+            transformation: TransformationMatrix::unit(),
             requested_autoscroll: None,
             last_text_input_configuration: None,
             focused_text_input_active: false,
@@ -4369,6 +4383,57 @@ impl Window {
         }
     }
 
+    /// Draws and hit-tests what `f` does under `matrix`, which places the
+    /// current space on the window; transforms nest. Translations are in
+    /// logical pixels. Usable in prepaint, for hitboxes, and in paint.
+    ///
+    /// To turn about a point, use [`Window::with_transformation_about`].
+    pub fn with_transformation<R>(
+        &mut self,
+        matrix: TransformationMatrix,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if matrix == TransformationMatrix::unit() {
+            return f(self);
+        }
+        let scale = self.scale_factor();
+        let scaled = TransformationMatrix {
+            rotation_scale: matrix.rotation_scale,
+            translation: [matrix.translation[0] * scale, matrix.translation[1] * scale],
+        };
+        let previous = self.transformation;
+        self.transformation = previous.compose(matrix);
+        let scene_previous = self.next_frame.scene.push_transform(scaled);
+        let result = f(self);
+        self.next_frame.scene.pop_transform(scene_previous);
+        self.transformation = previous;
+        result
+    }
+
+    /// Like [`Window::with_transformation`], with `matrix` applied about
+    /// `origin`, a point of the current space.
+    pub fn with_transformation_about<R>(
+        &mut self,
+        origin: Point<Pixels>,
+        matrix: TransformationMatrix,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let about = TransformationMatrix::about(origin.x.0, origin.y.0, matrix);
+        self.with_transformation(about, f)
+    }
+
+    /// The transformation, in logical pixels, that places the current space on
+    /// the window.
+    pub fn transformation(&self) -> TransformationMatrix {
+        self.transformation
+    }
+
+    /// A point of the window, mapped into the space transformed by `matrix`
+    /// (as a hitbox's `transform`); `None` when it flattens the plane.
+    pub fn to_local(&self, matrix: &TransformationMatrix, point: Point<Pixels>) -> Option<Point<Pixels>> {
+        Some(matrix.inverse()?.transform_logical_point(point))
+    }
+
     /// Updates the global element offset relative to the current offset. This is used to implement
     /// scrolling. This method should only be called during the prepaint phase of element drawing.
     pub fn with_element_offset<R>(
@@ -5539,6 +5604,7 @@ impl Window {
             bounds,
             content_mask,
             behavior,
+            transform: self.transformation,
         };
         self.next_frame.hitboxes.push(hitbox.clone());
         hitbox

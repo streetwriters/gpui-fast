@@ -104,6 +104,7 @@ impl LayerInput {
                 .intersect(&viewport),
             ),
             behavior: hitbox.behavior,
+            transform: hitbox.transform,
         })
     }
 }
