@@ -3438,7 +3438,7 @@ impl Window {
     fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
         Underline {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             bounds: self.underline_bounds(origin, width, style),
             content_mask: self.snapped_content_mask(),
             color: style
@@ -4773,7 +4773,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 0,
-                pad: 0,
+                transform_index: 0,
             });
         }
     }
@@ -4818,7 +4818,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 1,
-                pad: 0,
+                transform_index: 0,
             });
         }
     }
@@ -4885,7 +4885,7 @@ impl Window {
             border_color: quad.border_color.opacity(opacity),
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
             border_widths: snapped_border_widths,
-            border_style: quad.border_style,
+            border_style_and_transform: Quad::pack_border_style(quad.border_style, crate::TransformIndex::IDENTITY),
         };
 
         if !quad.background.is_transparent() {
@@ -4991,7 +4991,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             bounds,
             content_mask: self.snapped_content_mask(),
             thickness: self.snap_stroke(style.thickness),
@@ -5054,7 +5054,7 @@ impl Window {
             if subpixel_rendering {
                 self.next_frame.scene.insert_primitive(SubpixelSprite {
                     order: 0,
-                    pad: 0,
+                    transform_index: 0,
                     bounds,
                     content_mask,
                     color: color.opacity(element_opacity),
@@ -5064,7 +5064,7 @@ impl Window {
             } else {
                 self.next_frame.scene.insert_primitive(MonochromeSprite {
                     order: 0,
-                    pad: 0,
+                    transform_index: 0,
                     bounds,
                     content_mask,
                     color: color.opacity(element_opacity),
@@ -5145,7 +5145,7 @@ impl Window {
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                transform_index: 0,
                 grayscale: false.into(),
                 bounds,
                 corner_radii: Default::default(),
@@ -5211,7 +5211,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(MonochromeSprite {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             bounds: final_bounds,
             content_mask,
             color: color.opacity(element_opacity),
@@ -5317,7 +5317,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,
@@ -9819,7 +9819,7 @@ mod tests {
         assert_eq!(actual.thickness, expected.thickness);
         assert_eq!(actual.wavy, expected.wavy);
         assert_eq!(actual.color, expected.color);
-        assert_eq!(actual.pad, expected.pad);
+        assert_eq!(actual.transform_index, expected.transform_index);
     }
 
     fn underline_device_columns(underlines: &[Underline]) -> Vec<i32> {

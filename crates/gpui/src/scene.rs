@@ -36,6 +36,73 @@ impl From<bool> for PaddedBool32 {
     }
 }
 
+/// An index into a scene's transform table. Index 0 is the identity.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TransformIndex(pub u32);
+
+impl TransformIndex {
+    /// The identity transform, which every scene's table starts with.
+    pub const IDENTITY: TransformIndex = TransformIndex(0);
+
+    /// Whether this is the identity.
+    pub fn is_identity(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// The transforms a scene's primitives are drawn under, uploaded to the GPU
+/// once per frame. Entries are absolute: each is the composition of every
+/// transform from the window down to the primitive, so a shader reads one.
+#[derive(Debug)]
+pub struct TransformTable {
+    entries: Vec<TransformationMatrix>,
+    lookup: std::collections::HashMap<[u32; 6], u32>,
+}
+
+impl Default for TransformTable {
+    fn default() -> Self {
+        Self {
+            entries: vec![TransformationMatrix::unit()],
+            lookup: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl TransformTable {
+    /// The entries, with the identity first.
+    pub fn entries(&self) -> &[TransformationMatrix] {
+        &self.entries
+    }
+
+    /// The matrix at `index`; the identity for an index the table does not hold.
+    pub fn get(&self, index: TransformIndex) -> TransformationMatrix {
+        self.entries
+            .get(index.0 as usize)
+            .copied()
+            .unwrap_or_else(TransformationMatrix::unit)
+    }
+
+    /// The index of `matrix`, adding it if the table does not hold it yet.
+    pub fn intern(&mut self, matrix: TransformationMatrix) -> TransformIndex {
+        if matrix == TransformationMatrix::unit() {
+            return TransformIndex::IDENTITY;
+        }
+        let key = matrix.bits();
+        if let Some(index) = self.lookup.get(&key) {
+            return TransformIndex(*index);
+        }
+        let index = self.entries.len() as u32;
+        self.entries.push(matrix);
+        self.lookup.insert(key, index);
+        TransformIndex(index)
+    }
+
+    fn clear(&mut self) {
+        self.entries.truncate(1);
+        self.lookup.clear();
+    }
+}
+
 #[derive(Default)]
 #[expect(missing_docs)]
 pub struct Scene {
@@ -53,6 +120,8 @@ pub struct Scene {
     pub external_textures: Vec<PaintExternalTexture>,
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
     pub layers: crate::fast::layers::scene::SceneLayers,
+    pub transforms: TransformTable,
+    current_transform: TransformIndex,
 }
 
 #[expect(missing_docs)]
@@ -70,7 +139,28 @@ impl Scene {
         self.polychrome_sprites.clear();
         self.surfaces.clear();
         self.external_textures.clear();
+        self.transforms.clear();
+        self.current_transform = TransformIndex::IDENTITY;
         crate::fast::layers::scene::SceneLayers::clear(&mut self.layers);
+    }
+
+    /// The transform primitives inserted now are drawn under.
+    pub fn current_transform(&self) -> TransformIndex {
+        self.current_transform
+    }
+
+    /// Draws what is inserted next under `matrix` applied in the current
+    /// transform's space. Returns the previous index for [`Self::pop_transform`].
+    pub fn push_transform(&mut self, matrix: TransformationMatrix) -> TransformIndex {
+        let previous = self.current_transform;
+        let composed = self.transforms.get(previous).compose(matrix);
+        self.current_transform = self.transforms.intern(composed);
+        previous
+    }
+
+    /// Restores the transform [`Self::push_transform`] returned.
+    pub fn pop_transform(&mut self, previous: TransformIndex) {
+        self.current_transform = previous;
     }
 
     pub fn len(&self) -> usize {
@@ -90,13 +180,36 @@ impl Scene {
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
-        let mut primitive = primitive.into();
-        let clipped_bounds = primitive
+        self.insert_under(primitive.into(), self.current_transform, true);
+    }
+
+    /// Inserts `primitive` under the transform at `transform`. A path is
+    /// transformed on the CPU when `transform_paths` is set; one replayed from
+    /// an earlier scene already is.
+    fn insert_under(
+        &mut self,
+        mut primitive: Primitive,
+        transform: TransformIndex,
+        transform_paths: bool,
+    ) {
+        let local_bounds = primitive
             .bounds()
             .intersect(&primitive.content_mask().bounds);
 
-        if clipped_bounds.is_empty() {
+        if local_bounds.is_empty() {
             return;
+        }
+        // Order and damage are decided by where the primitive lands on screen.
+        let clipped_bounds = if transform.is_identity() {
+            local_bounds
+        } else {
+            self.transforms.get(transform).transform_bounds(&local_bounds)
+        };
+        primitive.set_transform_index(transform);
+        if transform_paths && !transform.is_identity() {
+            if let Primitive::Path(path) = &mut primitive {
+                path.apply_transform(&self.transforms.get(transform));
+            }
         }
 
         let order = self
@@ -151,7 +264,14 @@ impl Scene {
         crate::fast::layers::paint::replay_layers(self, range.clone(), prev_scene);
         for operation in &prev_scene.paint_operations[range] {
             match operation {
-                PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+                PaintOperation::Primitive(primitive) => {
+                    // The previous scene's table holds absolute transforms, so
+                    // they are carried over, not composed with the current one.
+                    let transform = self
+                        .transforms
+                        .intern(prev_scene.transforms.get(primitive.transform_index()));
+                    self.insert_under(primitive.clone(), transform, false);
+                }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
             }
@@ -247,6 +367,39 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => &sprite.bounds,
             Primitive::Surface(surface) => &surface.bounds,
             Primitive::ExternalTexture(texture) => &texture.bounds,
+        }
+    }
+
+    /// The transform the primitive is drawn under. Paths, surfaces and
+    /// external textures carry none: a path is transformed when inserted.
+    pub fn transform_index(&self) -> TransformIndex {
+        match self {
+            Primitive::Shadow(shadow) => TransformIndex(shadow.transform_index),
+            Primitive::Quad(quad) => quad.transform_index(),
+            Primitive::Underline(underline) => TransformIndex(underline.transform_index),
+            Primitive::MonochromeSprite(sprite) => TransformIndex(sprite.transform_index),
+            Primitive::SubpixelSprite(sprite) => TransformIndex(sprite.transform_index),
+            Primitive::PolychromeSprite(sprite) => TransformIndex(sprite.transform_index),
+            Primitive::Path(_) | Primitive::Surface(_) | Primitive::ExternalTexture(_) => {
+                TransformIndex::IDENTITY
+            }
+        }
+    }
+
+    fn set_transform_index(&mut self, index: TransformIndex) {
+        match self {
+            Primitive::Shadow(shadow) => shadow.transform_index = index.0,
+            Primitive::Quad(quad) => quad.set_transform_index(index),
+            Primitive::Underline(underline) => underline.transform_index = index.0,
+            Primitive::MonochromeSprite(sprite) => sprite.transform_index = index.0,
+            Primitive::SubpixelSprite(sprite) => sprite.transform_index = index.0,
+            Primitive::PolychromeSprite(sprite) => sprite.transform_index = index.0,
+            Primitive::Path(_) => {}
+            Primitive::Surface(_) | Primitive::ExternalTexture(_) => {
+                if !index.is_identity() {
+                    log::debug!("a surface or external texture is drawn axis-aligned under a transform");
+                }
+            }
         }
     }
 
@@ -562,13 +715,46 @@ impl PrimitiveBatch {
 #[expect(missing_docs)]
 pub struct Quad {
     pub order: DrawOrder,
-    pub border_style: BorderStyle,
+    /// The border style in the low 8 bits and the transform index in the
+    /// high 24. Use [`Quad::border_style`] and [`Quad::transform_index`].
+    pub border_style_and_transform: u32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub background: Background,
     pub border_color: Hsla,
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
+}
+
+impl Quad {
+    /// The word packing a border style with a transform index.
+    pub fn pack_border_style(style: BorderStyle, transform: TransformIndex) -> u32 {
+        (style as u32) | (transform.0 << 8)
+    }
+
+    /// The style of the border.
+    pub fn border_style(&self) -> BorderStyle {
+        match self.border_style_and_transform & 0xff {
+            1 => BorderStyle::Dashed,
+            _ => BorderStyle::Solid,
+        }
+    }
+
+    /// Sets the style of the border.
+    pub fn set_border_style(&mut self, style: BorderStyle) {
+        self.border_style_and_transform =
+            Self::pack_border_style(style, self.transform_index());
+    }
+
+    /// The transform the quad is drawn under.
+    pub fn transform_index(&self) -> TransformIndex {
+        TransformIndex(self.border_style_and_transform >> 8)
+    }
+
+    /// Sets the transform the quad is drawn under.
+    pub fn set_transform_index(&mut self, index: TransformIndex) {
+        self.border_style_and_transform = Self::pack_border_style(self.border_style(), index);
+    }
 }
 
 impl From<Quad> for Primitive {
@@ -582,7 +768,7 @@ impl From<Quad> for Primitive {
 #[expect(missing_docs)]
 pub struct Underline {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub transform_index: u32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -610,7 +796,7 @@ pub struct Shadow {
     pub element_corner_radii: Corners<ScaledPixels>,
     /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
     pub inset: u32,
-    pub pad: u32, // align to 8 bytes
+    pub transform_index: u32,
 }
 
 impl From<Shadow> for Primitive {
@@ -714,6 +900,72 @@ impl TransformationMatrix {
         }
     }
 
+    /// The matrix as the bits of its six numbers, for use as a key.
+    pub fn bits(&self) -> [u32; 6] {
+        [
+            self.rotation_scale[0][0].to_bits(),
+            self.rotation_scale[0][1].to_bits(),
+            self.rotation_scale[1][0].to_bits(),
+            self.rotation_scale[1][1].to_bits(),
+            self.translation[0].to_bits(),
+            self.translation[1].to_bits(),
+        ]
+    }
+
+    /// Whether this is the unit matrix.
+    pub fn is_unit(&self) -> bool {
+        *self == Self::unit()
+    }
+
+    /// Where the matrix puts a point.
+    pub fn transform_point(&self, point: Point<ScaledPixels>) -> Point<ScaledPixels> {
+        let (x, y) = (point.x.0, point.y.0);
+        crate::point(
+            ScaledPixels(
+                self.rotation_scale[0][0] * x + self.rotation_scale[0][1] * y + self.translation[0],
+            ),
+            ScaledPixels(
+                self.rotation_scale[1][0] * x + self.rotation_scale[1][1] * y + self.translation[1],
+            ),
+        )
+    }
+
+    /// The smallest axis-aligned rectangle holding `bounds` after the matrix.
+    pub fn transform_bounds(&self, bounds: &Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
+        let corners = [
+            bounds.origin,
+            bounds.top_right(),
+            bounds.bottom_left(),
+            bounds.bottom_right(),
+        ];
+        let mapped = corners.map(|corner| self.transform_point(corner));
+        let min_x = mapped.iter().map(|p| p.x.0).fold(f32::INFINITY, f32::min);
+        let min_y = mapped.iter().map(|p| p.y.0).fold(f32::INFINITY, f32::min);
+        let max_x = mapped.iter().map(|p| p.x.0).fold(f32::NEG_INFINITY, f32::max);
+        let max_y = mapped.iter().map(|p| p.y.0).fold(f32::NEG_INFINITY, f32::max);
+        Bounds {
+            origin: crate::point(ScaledPixels(min_x), ScaledPixels(min_y)),
+            size: crate::size(ScaledPixels(max_x - min_x), ScaledPixels(max_y - min_y)),
+        }
+    }
+
+    /// The matrix that undoes this one, or `None` when it flattens the plane.
+    pub fn inverse(&self) -> Option<TransformationMatrix> {
+        let [[a, b], [c, d]] = self.rotation_scale;
+        let determinant = a * d - b * c;
+        if determinant.abs() < f32::EPSILON || !determinant.is_finite() {
+            return None;
+        }
+        let (ia, ib, ic, id) = (d / determinant, -b / determinant, -c / determinant, a / determinant);
+        Some(TransformationMatrix {
+            rotation_scale: [[ia, ib], [ic, id]],
+            translation: [
+                -(ia * self.translation[0] + ib * self.translation[1]),
+                -(ic * self.translation[0] + id * self.translation[1]),
+            ],
+        })
+    }
+
     /// Apply transformation to a point, mainly useful for debugging
     pub fn apply(&self, point: Point<Pixels>) -> Point<Pixels> {
         let input = [point.x.0, point.y.0];
@@ -738,7 +990,7 @@ impl Default for TransformationMatrix {
 #[expect(missing_docs)]
 pub struct MonochromeSprite {
     pub order: DrawOrder,
-    pub pad: u32,
+    pub transform_index: u32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -757,7 +1009,7 @@ impl From<MonochromeSprite> for Primitive {
 #[expect(missing_docs)]
 pub struct SubpixelSprite {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub transform_index: u32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -776,7 +1028,7 @@ impl From<SubpixelSprite> for Primitive {
 #[expect(missing_docs)]
 pub struct PolychromeSprite {
     pub order: DrawOrder,
-    pub pad: u32,
+    pub transform_index: u32,
     pub grayscale: PaddedBool32,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
@@ -841,6 +1093,19 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     start: Point<P>,
     current: Point<P>,
     contour_count: usize,
+}
+
+impl Path<ScaledPixels> {
+    /// Moves every vertex by `matrix` and clips to the transformed masks'
+    /// bounding boxes.
+    pub(crate) fn apply_transform(&mut self, matrix: &TransformationMatrix) {
+        for vertex in &mut self.vertices {
+            vertex.xy_position = matrix.transform_point(vertex.xy_position);
+            vertex.content_mask.bounds = matrix.transform_bounds(&vertex.content_mask.bounds);
+        }
+        self.bounds = matrix.transform_bounds(&self.bounds);
+        self.content_mask.bounds = matrix.transform_bounds(&self.content_mask.bounds);
+    }
 }
 
 impl Path<Pixels> {

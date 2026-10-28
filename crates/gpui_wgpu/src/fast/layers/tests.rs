@@ -153,7 +153,7 @@ fn composite_and_compare(harness: &mut Harness, translation: (f32, f32), paths: 
         let bounds = layer.tile_bounds(tile);
         composited.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             grayscale: false.into(),
             opacity: 1.,
             bounds: sp(
@@ -339,7 +339,7 @@ fn rasterize_and_assemble(harness: &mut Harness, content: Scene, tiles: &[(i32, 
         let bounds = layer.tile_bounds(tile);
         frame.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             grayscale: false.into(),
             opacity: 1.,
             bounds,
@@ -471,7 +471,7 @@ fn add_content(
         element_bounds: at(380., 420., 120., 70.),
         element_corner_radii: Corners::all(ScaledPixels(6.)),
         inset: 0,
-        pad: 0,
+        transform_index: 0,
     });
     scene.insert_primitive(Quad {
         bounds: at(600., 600., 300., 200.),
@@ -486,7 +486,7 @@ fn add_content(
     });
     scene.insert_primitive(Underline {
         order: 0,
-        pad: 0,
+        transform_index: 0,
         bounds: at(50., 505., 900., 8.),
         content_mask: mask(clip),
         color: Hsla::from(rgba(0xffcc00ff)),
@@ -508,7 +508,7 @@ fn add_content(
     let mono = glyph_tile(harness, 1, false);
     scene.insert_primitive(MonochromeSprite {
         order: 0,
-        pad: 0,
+        transform_index: 0,
         bounds: at(505., 700., 16., 16.),
         content_mask: mask(clip),
         color: Hsla::from(rgba(0xffffffff)),
@@ -521,7 +521,7 @@ fn add_content(
         let subpixel = glyph_tile(harness, 2, true);
         scene.insert_primitive(SubpixelSprite {
             order: 0,
-            pad: 0,
+            transform_index: 0,
             bounds: at(520., 505., 16., 16.),
             content_mask: mask(clip),
             color: Hsla::from(rgba(0x000000ff)),
@@ -531,7 +531,7 @@ fn add_content(
     }
     scene.insert_primitive(PolychromeSprite {
         order: 0,
-        pad: 0,
+        transform_index: 0,
         grayscale: false.into(),
         opacity: 1.,
         bounds: at(300., 500., 20., 20.),
@@ -590,7 +590,7 @@ fn add_covered_paths(
     });
     scene.insert_primitive(MonochromeSprite {
         order: 0,
-        pad: 0,
+        transform_index: 0,
         bounds: sp(204. + ox, 334. + oy, 16., 16.),
         content_mask: mask,
         color: Hsla::from(rgba(0xff8800ff)),

@@ -913,6 +913,11 @@ impl MetalRenderer {
 
         command_encoder.set_render_pipeline_state(&self.shadows_pipeline_state);
         command_encoder.set_vertex_buffer(
+            TRANSFORMS_BUFFER_INDEX,
+            Some(&instance_bindings.transforms.buffer),
+            instance_bindings.transforms.offset as u64,
+        );
+        command_encoder.set_vertex_buffer(
             ShadowInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
             0,
@@ -954,6 +959,11 @@ impl MetalRenderer {
         }
 
         command_encoder.set_render_pipeline_state(&self.quads_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            TRANSFORMS_BUFFER_INDEX,
+            Some(&instance_bindings.transforms.buffer),
+            instance_bindings.transforms.offset as u64,
+        );
         command_encoder.set_vertex_buffer(
             QuadInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1068,6 +1078,11 @@ impl MetalRenderer {
 
         command_encoder.set_render_pipeline_state(&self.underlines_pipeline_state);
         command_encoder.set_vertex_buffer(
+            TRANSFORMS_BUFFER_INDEX,
+            Some(&instance_bindings.transforms.buffer),
+            instance_bindings.transforms.offset as u64,
+        );
+        command_encoder.set_vertex_buffer(
             UnderlineInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
             0,
@@ -1117,6 +1132,11 @@ impl MetalRenderer {
             DevicePixels(texture.height() as i32),
         );
         command_encoder.set_render_pipeline_state(&self.monochrome_sprites_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            TRANSFORMS_BUFFER_INDEX,
+            Some(&instance_bindings.transforms.buffer),
+            instance_bindings.transforms.offset as u64,
+        );
         command_encoder.set_vertex_buffer(
             SpriteInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1183,6 +1203,11 @@ impl MetalRenderer {
             DevicePixels(texture.height() as i32),
         );
         command_encoder.set_render_pipeline_state(&self.polychrome_sprites_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            TRANSFORMS_BUFFER_INDEX,
+            Some(&instance_bindings.transforms.buffer),
+            instance_bindings.transforms.offset as u64,
+        );
         command_encoder.set_vertex_buffer(
             SpriteInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1497,7 +1522,11 @@ pub(crate) struct InstanceBindings {
     pub(crate) monochrome_sprites: InstanceBinding,
     pub(crate) polychrome_sprites: InstanceBinding,
     pub(crate) surfaces: InstanceBinding,
+    pub(crate) transforms: InstanceBinding,
 }
+
+/// The vertex buffer slot of the scene's transform table, in every pipeline.
+pub(crate) const TRANSFORMS_BUFFER_INDEX: u64 = 8;
 
 fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
     Ok(InstanceBindings {
@@ -1510,6 +1539,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
+        transforms: writer.write(scene.transforms.entries())?,
     })
 }
 
@@ -1745,6 +1775,135 @@ mod tests {
         CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
         CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey,
     };
+
+    fn quad_under(
+        scene: &mut Scene,
+        matrix: gpui::TransformationMatrix,
+        bounds: Bounds<ScaledPixels>,
+        corner: f32,
+        mask: Option<Bounds<ScaledPixels>>,
+    ) {
+        let previous = scene.push_transform(matrix);
+        scene.insert_primitive(gpui::Quad {
+            order: 0,
+            border_style_and_transform: 0,
+            bounds,
+            content_mask: gpui::ContentMask::new(mask.unwrap_or(Bounds {
+                origin: gpui::point(ScaledPixels(0.), ScaledPixels(0.)),
+                size: gpui::size(ScaledPixels(200.), ScaledPixels(200.)),
+            })),
+            background: gpui::rgb(0xff0000).into(),
+            border_color: gpui::Hsla::default(),
+            corner_radii: gpui::Corners::all(ScaledPixels(corner)),
+            border_widths: gpui::Edges::default(),
+        });
+        scene.pop_transform(previous);
+    }
+
+    fn scaled_bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: gpui::point(ScaledPixels(x), ScaledPixels(y)),
+            size: gpui::size(ScaledPixels(width), ScaledPixels(height)),
+        }
+    }
+
+    /// A matrix turning by `degrees` about `(cx, cy)`.
+    fn rotation_about(degrees: f32, cx: f32, cy: f32) -> gpui::TransformationMatrix {
+        gpui::TransformationMatrix::unit()
+            .translate(gpui::point(ScaledPixels(cx), ScaledPixels(cy)))
+            .rotate(gpui::Radians(degrees.to_radians()))
+            .translate(gpui::point(ScaledPixels(-cx), ScaledPixels(-cy)))
+    }
+
+    fn render(scene: &mut Scene) -> image::RgbaImage {
+        scene.finish();
+        let mut renderer = MetalHeadlessRenderer::new();
+        gpui::PlatformHeadlessRenderer::render_scene_to_image(
+            &mut renderer,
+            scene,
+            gpui::size(DevicePixels(200), DevicePixels(200)),
+        )
+        .expect("the scene renders")
+    }
+
+    fn is_red(image: &image::RgbaImage, x: u32, y: u32) -> bool {
+        let pixel = image.get_pixel(x, y).0;
+        pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] > 200
+    }
+
+    #[test]
+    fn a_rotated_quad_covers_the_rotated_rectangle() {
+        let mut scene = Scene::default();
+        quad_under(
+            &mut scene,
+            rotation_about(45., 100., 100.),
+            scaled_bounds(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        let image = render(&mut scene);
+        // The square's corners now sit on the axes, 70.7 from the centre.
+        assert!(is_red(&image, 100, 100));
+        assert!(is_red(&image, 100, 45));
+        assert!(is_red(&image, 155, 100));
+        // The unrotated corner is outside the diamond.
+        assert!(!is_red(&image, 54, 54));
+        assert!(!is_red(&image, 146, 146));
+    }
+
+    #[test]
+    fn a_rotated_quad_keeps_its_rounded_corners_exact() {
+        let mut scene = Scene::default();
+        quad_under(
+            &mut scene,
+            rotation_about(90., 100., 100.),
+            scaled_bounds(50., 50., 100., 100.),
+            30.,
+            None,
+        );
+        let image = render(&mut scene);
+        // A quarter turn maps the square onto itself, so the corner stays cut.
+        assert!(is_red(&image, 100, 100));
+        assert!(!is_red(&image, 53, 53));
+        assert!(is_red(&image, 70, 70));
+    }
+
+    #[test]
+    fn a_transformed_clip_is_the_rotated_rectangle() {
+        let mut scene = Scene::default();
+        // The mask is in the transform's local space: a 40 px strip of the quad.
+        quad_under(
+            &mut scene,
+            rotation_about(90., 100., 100.),
+            scaled_bounds(50., 50., 100., 100.),
+            0.,
+            Some(scaled_bounds(50., 50., 100., 40.)),
+        );
+        let image = render(&mut scene);
+        // Turned a quarter, the strip that was along the top runs down the right.
+        assert!(is_red(&image, 140, 100));
+        assert!(!is_red(&image, 60, 100));
+        assert!(!is_red(&image, 100, 60));
+    }
+
+    #[test]
+    fn a_translated_and_scaled_quad_lands_where_the_matrix_puts_it() {
+        let mut scene = Scene::default();
+        let matrix = gpui::TransformationMatrix::unit()
+            .translate(gpui::point(ScaledPixels(20.), ScaledPixels(10.)))
+            .scale(gpui::size(-1., 1.));
+        // Mirrored, the quad at x 100..140 lands at x -140..-100, then +20.
+        quad_under(
+            &mut scene,
+            matrix,
+            scaled_bounds(-140., 50., 40., 40.),
+            0.,
+            Some(scaled_bounds(-200., 0., 200., 200.)),
+        );
+        let image = render(&mut scene);
+        assert!(is_red(&image, 140, 80));
+        assert!(!is_red(&image, 60, 80));
+    }
 
     #[test]
     fn render_core_video_surface() {

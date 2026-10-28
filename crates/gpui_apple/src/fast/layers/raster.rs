@@ -179,6 +179,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
+        transforms: writer.write(scene.transforms.entries())?,
     })
 }
 

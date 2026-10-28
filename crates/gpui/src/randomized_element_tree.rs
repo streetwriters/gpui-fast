@@ -1472,7 +1472,7 @@ mod tests {
         fn from(quad: &crate::Quad) -> Self {
             Self {
                 order: quad.order,
-                border_style: quad.border_style,
+                border_style: quad.border_style(),
                 bounds: quad.bounds,
                 content_mask: quad.content_mask,
                 background: quad.background,

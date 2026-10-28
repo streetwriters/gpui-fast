@@ -188,7 +188,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                     match kind {
                         Kind::Monochrome => scene.insert_primitive(MonochromeSprite {
                             order: 0,
-                            pad: 0,
+                            transform_index: 0,
                             bounds: b,
                             content_mask,
                             color,
@@ -197,7 +197,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                         }),
                         Kind::Subpixel => scene.insert_primitive(SubpixelSprite {
                             order: 0,
-                            pad: 0,
+                            transform_index: 0,
                             bounds: b,
                             content_mask,
                             color,
@@ -206,7 +206,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                         }),
                         Kind::Polychrome => scene.insert_primitive(PolychromeSprite {
                             order: 0,
-                            pad: 0,
+                            transform_index: 0,
                             grayscale: false.into(),
                             opacity: 1.,
                             bounds: b,

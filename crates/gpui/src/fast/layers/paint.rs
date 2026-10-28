@@ -502,7 +502,7 @@ pub(crate) fn insert_tile_quads(
             let tile = frame.tile_bounds(coord);
             scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                transform_index: 0,
                 grayscale: false.into(),
                 opacity: 1.,
                 bounds: Bounds {

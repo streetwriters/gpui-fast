@@ -225,7 +225,7 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
         }
         Primitive::Quad(quad) => {
             hasher.write_u8(1);
-            hasher.write_u8(quad.border_style as u8);
+            hasher.write_u8(quad.border_style() as u8);
             hash_bounds(&quad.bounds, hasher);
             hash_mask(&quad.content_mask, tile, hasher);
             hash_background(&quad.background, hasher);
