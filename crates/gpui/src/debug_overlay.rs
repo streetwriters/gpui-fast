@@ -216,7 +216,7 @@ fn solid_quad(
 ) -> Quad {
     Quad {
         order: 0,
-        border_style_and_transform: Quad::pack_border_style(BorderStyle::Solid, TransformIndex::IDENTITY),
+        border_style_and_transform: Quad::pack_border_style(BorderStyle::Solid, crate::TransformIndex::IDENTITY),
         bounds,
         content_mask: *content_mask,
         background: color.into(),

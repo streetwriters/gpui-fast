@@ -3047,7 +3047,7 @@ mod tests {
     fn webgl_quad_layout_matches_fixed_decoder() {
         let quad = Quad {
             order: 41,
-            border_style: BorderStyle::Dashed,
+            border_style_and_transform: gpui::Quad::pack_border_style(BorderStyle::Dashed, gpui::TransformIndex::IDENTITY),
             bounds: Bounds {
                 origin: Point {
                     x: 1.0.into(),
