@@ -469,6 +469,13 @@ fn prepare_gradient_color(tag: u32, color_space: u32,
     return result;
 }
 
+// Interleaved gradient noise, triangular over about +-1/255.
+fn dither_noise(p: vec2<f32>) -> f32 {
+    let a = fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+    let b = fract(52.9829189 * fract(dot(p + vec2<f32>(0.5), vec2<f32>(0.06711056, 0.00583715))));
+    return (a + b - 1.0) / 255.0;
+}
+
 fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
     solid_color: vec4<f32>, color0: vec4<f32>, color1: vec4<f32>) -> vec4<f32> {
     var background_color = vec4<f32>(0.0);
@@ -511,7 +518,11 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
 
             switch (background.color_space) {
                 default: {
-                    background_color = srgba_to_linear(mix(color0, color1, t));
+                    // Dither the encoded colour, where 8-bit steps are visible.
+                    let noise = dither_noise(position - bounds.origin);
+                    var encoded = mix(color0, color1, t);
+                    encoded = vec4<f32>(encoded.rgb + noise * 2.0, encoded.a + noise * 3.0);
+                    background_color = srgba_to_linear(encoded);
                 }
                 case 1u: {
                     let oklab_color = mix(color0, color1, t);
@@ -1105,6 +1116,7 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
         alpha *= saturate(0.5 - element_distance);
     }
 
+    alpha = max(alpha + dither_noise(frag_pos - shadow.bounds.origin) * min(alpha * 2.0, 1.0), 0.0);
     return blend_color(input.color, alpha * content_mask_alpha(frag_pos, shadow.content_mask));
 }
 

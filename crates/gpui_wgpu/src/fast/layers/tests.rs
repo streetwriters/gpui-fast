@@ -1255,4 +1255,34 @@ mod transforms {
         assert!(is_red(&pixels, 100, 45));
         assert!(!is_red(&pixels, 54, 54));
     }
+
+    #[test]
+    fn a_dithered_shadow_stays_zero_outside_its_blur() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        scene.insert_primitive(Shadow {
+            order: 0,
+            blur_radius: ScaledPixels(10.),
+            bounds: sp(80., 80., 40., 40.),
+            corner_radii: Corners::default(),
+            content_mask: no_mask(),
+            color: Hsla::from(rgba(0xff0000ff)),
+            element_bounds: sp(80., 80., 40., 40.),
+            element_corner_radii: Corners::default(),
+            inset: 0,
+            transform_index: 0,
+        });
+        let pixels = render(&mut harness, scene);
+        for (x, y) in [(2, 2), (197, 3), (3, 197), (100, 20)] {
+            assert_eq!(
+                pixel(&pixels, 200, x, y),
+                [255, 255, 255, 255],
+                "({x}, {y})"
+            );
+        }
+        assert!(is_red(&pixels, 100, 100));
+    }
 }

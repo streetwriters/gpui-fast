@@ -591,6 +591,13 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
     alpha *= saturate(0.5 - element_distance);
   }
 
+  {
+    // Interleaved gradient noise, triangular over about +-1/255.
+    float2 p = frag_pos - float2(shadow.bounds.origin.x, shadow.bounds.origin.y);
+    float a = fract(52.9829189 * fract(dot(p, float2(0.06711056, 0.00583715))));
+    float b = fract(52.9829189 * fract(dot(p + 0.5, float2(0.06711056, 0.00583715))));
+    alpha = max(alpha + (a + b - 1.0) / 255.0 * min(alpha * 2.0, 1.0), 0.0);
+  }
   alpha *= content_mask_alpha(frag_pos, shadow.content_mask);
   return input.color * float4(1., 1., 1., alpha);
 }
