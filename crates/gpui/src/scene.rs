@@ -377,11 +377,14 @@ impl Scene {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
-                    // The previous scene's table holds absolute transforms, so
-                    // they are carried over, not composed with the current one.
-                    let transform = self
-                        .transforms
-                        .intern(prev_scene.transforms.get(primitive.transform_index()));
+                    // The previous scene's table holds absolute transforms and
+                    // filters, so they are carried over, not composed with the
+                    // current ones.
+                    let index = primitive.transform_index();
+                    let transform = self.transforms.intern_with(
+                        prev_scene.transforms.get(index),
+                        prev_scene.transforms.filter(index),
+                    );
                     self.insert_under(primitive.clone(), transform, false);
                 }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
