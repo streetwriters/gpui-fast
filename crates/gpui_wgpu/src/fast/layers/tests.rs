@@ -6,7 +6,6 @@
 //! through `fast::frame` as the renderer does, into a texture it reads back.
 
 use std::borrow::Cow;
-use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -707,6 +706,7 @@ pub(super) struct Harness {
     atlas_sampler: wgpu::Sampler,
     rendering_params: RenderingParameters,
     globals_buffer: wgpu::Buffer,
+    transform_buffer: wgpu::Buffer,
     path_globals_offset: u64,
     gamma_offset: u64,
     globals_bind_group: wgpu::BindGroup,
@@ -733,7 +733,7 @@ impl Harness {
     /// `None` when there is none (the tests then skip).
     pub(super) fn new() -> Option<Harness> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL | wgpu::Backends::METAL,
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
@@ -792,28 +792,16 @@ impl Harness {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let transform_buffer = crate::wgpu_renderer::create_transform_buffer(&device);
         let globals_bind_group = |label: &str, offset: u64| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout: &bind_group_layouts.globals,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &globals_buffer,
-                            offset,
-                            size: NonZeroU64::new(globals_size),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &globals_buffer,
-                            offset: gamma_offset,
-                            size: NonZeroU64::new(gamma_size),
-                        }),
-                    },
-                ],
+                entries: &crate::wgpu_renderer::globals_entries(
+                    (&globals_buffer, offset, globals_size),
+                    (&globals_buffer, gamma_offset, gamma_size),
+                    Some(&transform_buffer),
+                ),
             })
         };
         let path_globals_bind_group =
@@ -834,6 +822,7 @@ impl Harness {
             atlas_sampler,
             rendering_params,
             globals_buffer,
+            transform_buffer,
             path_globals_offset,
             gamma_offset,
             globals_bind_group,
@@ -897,6 +886,12 @@ impl Harness {
             b: clear.b as f64,
             a: clear.a as f64,
         };
+        crate::fast::globals::write_transforms(
+            &mut Default::default(),
+            &self.queue,
+            &self.transform_buffer,
+            scene.transforms.entries(),
+        );
         crate::fast::frame::record_into(self, scene, &view, clear).expect("frame recorded");
         read_back(&self.device, &self.queue, &texture, self.format)
     }
@@ -989,6 +984,7 @@ impl FrameHost for Harness {
             path_msaa_view: path_targets.and_then(|targets| targets.msaa_view.as_ref()),
             instance_buffer: &self.instance_buffer,
             globals_buffer: &self.globals_buffer,
+            transform_buffer: &self.transform_buffer,
             gamma_offset: self.gamma_offset,
             gamma_size: size_of::<GammaParams>() as u64,
             format: self.format,
@@ -1072,4 +1068,191 @@ pub(super) fn read_back(
         }
     }
     pixels
+}
+
+mod transforms {
+    use super::*;
+    use gpui::{Corners, Radians, TransformationMatrix};
+
+    const SIZE: usize = 200;
+
+    fn rotation_about(degrees: f32, cx: f32, cy: f32) -> TransformationMatrix {
+        TransformationMatrix::unit()
+            .translate(point(ScaledPixels(cx), ScaledPixels(cy)))
+            .rotate(Radians(degrees.to_radians()))
+            .translate(point(ScaledPixels(-cx), ScaledPixels(-cy)))
+    }
+
+    fn red_quad(
+        scene: &mut Scene,
+        matrix: TransformationMatrix,
+        bounds: Bounds<ScaledPixels>,
+        corner: f32,
+        mask: Option<Bounds<ScaledPixels>>,
+    ) {
+        let previous = scene.push_transform(matrix);
+        let mut quad = quad(bounds, Hsla::from(rgba(0xff0000ff)));
+        quad.corner_radii = Corners::all(ScaledPixels(corner));
+        if let Some(mask) = mask {
+            quad.content_mask = ContentMask::new(mask);
+        }
+        scene.insert_primitive(quad);
+        scene.pop_transform(previous);
+    }
+
+    fn render(harness: &mut Harness, mut scene: Scene) -> Vec<u8> {
+        scene.finish();
+        harness.render(
+            &scene,
+            device_size(SIZE as i32, SIZE as i32),
+            rgba(0xffffffff),
+        )
+    }
+
+    fn is_red(pixels: &[u8], x: usize, y: usize) -> bool {
+        let [r, g, b, a] = pixel(pixels, SIZE, x, y);
+        r > 200 && g < 60 && b < 60 && a > 200
+    }
+
+    #[test]
+    fn a_rotated_quad_covers_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        red_quad(
+            &mut scene,
+            rotation_about(45., 100., 100.),
+            sp(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 100, 100));
+        assert!(is_red(&pixels, 100, 45));
+        assert!(is_red(&pixels, 155, 100));
+        assert!(!is_red(&pixels, 54, 54));
+        assert!(!is_red(&pixels, 146, 146));
+    }
+
+    #[test]
+    fn a_rotated_quad_keeps_its_rounded_corners_exact() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        red_quad(
+            &mut scene,
+            rotation_about(90., 100., 100.),
+            sp(50., 50., 100., 100.),
+            30.,
+            None,
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 100, 100));
+        assert!(!is_red(&pixels, 53, 53));
+        assert!(is_red(&pixels, 70, 70));
+    }
+
+    #[test]
+    fn a_transformed_clip_is_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        red_quad(
+            &mut scene,
+            rotation_about(90., 100., 100.),
+            sp(50., 50., 100., 100.),
+            0.,
+            Some(sp(50., 50., 100., 40.)),
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 140, 100));
+        assert!(!is_red(&pixels, 60, 100));
+        assert!(!is_red(&pixels, 100, 60));
+    }
+
+    #[test]
+    fn a_translated_and_mirrored_quad_lands_where_the_matrix_puts_it() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let matrix = TransformationMatrix::unit()
+            .translate(point(ScaledPixels(20.), ScaledPixels(10.)))
+            .scale(size(-1., 1.));
+        red_quad(
+            &mut scene,
+            matrix,
+            sp(-140., 50., 40., 40.),
+            0.,
+            Some(sp(-200., 0., 200., 200.)),
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 140, 80));
+        assert!(!is_red(&pixels, 60, 80));
+    }
+
+    fn is_painted(pixels: &[u8], x: usize, y: usize) -> bool {
+        pixel(pixels, SIZE, x, y) != [255, 255, 255, 255]
+    }
+
+    #[test]
+    fn a_rotated_image_covers_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let previous = scene.push_transform(rotation_about(45., 100., 100.));
+        scene.insert_primitive(PolychromeSprite {
+            order: 0,
+            transform_index: 0,
+            grayscale: false.into(),
+            opacity: 1.,
+            bounds: sp(50., 50., 100., 100.),
+            content_mask: no_mask(),
+            corner_radii: Corners::default(),
+            tile: image_tile(&harness),
+        });
+        scene.pop_transform(previous);
+        let pixels = render(&mut harness, scene);
+        assert!(is_painted(&pixels, 100, 100));
+        assert!(is_painted(&pixels, 100, 45));
+        assert!(is_painted(&pixels, 155, 100));
+        assert!(!is_painted(&pixels, 54, 54));
+        assert!(!is_painted(&pixels, 146, 146));
+    }
+
+    #[test]
+    fn a_rotated_shadow_covers_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let previous = scene.push_transform(rotation_about(45., 100., 100.));
+        scene.insert_primitive(Shadow {
+            order: 0,
+            blur_radius: ScaledPixels(0.),
+            bounds: sp(50., 50., 100., 100.),
+            corner_radii: Corners::default(),
+            content_mask: no_mask(),
+            color: Hsla::from(rgba(0xff0000ff)),
+            element_bounds: sp(50., 50., 100., 100.),
+            element_corner_radii: Corners::default(),
+            inset: 0,
+            transform_index: 0,
+        });
+        scene.pop_transform(previous);
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 100, 100));
+        assert!(is_red(&pixels, 100, 45));
+        assert!(!is_red(&pixels, 54, 54));
+    }
 }

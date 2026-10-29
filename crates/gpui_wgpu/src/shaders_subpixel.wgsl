@@ -2,7 +2,7 @@
 
 struct SubpixelSprite {
     order: u32,
-    pad: u32,
+    transform_index: u32,
     bounds: Bounds,
     content_mask: ContentMask,
     color: Hsla,
@@ -17,6 +17,7 @@ struct SubpixelSpriteOutput {
     @location(1) @interpolate(flat) color: vec4<f32>,
     @location(3) clip_distances: vec4<f32>,
     @location(4) @interpolate(flat) sprite_id: u32,
+    @location(5) local_position: vec2<f32>,
 }
 
 struct SubpixelSpriteFragmentOutput {
@@ -30,10 +31,12 @@ fn vs_subpixel_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_i
     let sprite = b_subpixel_sprites[instance_id];
 
     var out = SubpixelSpriteOutput();
-    out.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
+    let local_position = apply_transform(sprite.transformation, unit_vertex * sprite.bounds.size + sprite.bounds.origin);
+    out.position = to_device_position_impl(apply_transform(transform_at(sprite.transform_index), local_position));
+    out.local_position = local_position;
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
     out.color = hsla_to_rgba(sprite.color);
-    out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask.bounds, sprite.transformation);
+    out.clip_distances = distance_from_clip_rect_impl(local_position, sprite.content_mask.bounds);
     out.sprite_id = instance_id;
     return out;
 }
@@ -53,7 +56,9 @@ fn fs_subpixel_sprite(input: SubpixelSpriteOutput) -> SubpixelSpriteFragmentOutp
 
     var out = SubpixelSpriteFragmentOutput();
     out.foreground = vec4<f32>(input.color.rgb, 1.0);
-    let mask_alpha = content_mask_alpha(input.position.xy, b_subpixel_sprites[input.sprite_id].content_mask);
+    let sprite = b_subpixel_sprites[input.sprite_id];
+    let frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
+    let mask_alpha = content_mask_alpha(frag_pos, sprite.content_mask);
     out.alpha = vec4<f32>(input.color.a * alpha_corrected * mask_alpha, 1.0);
     return out;
 }

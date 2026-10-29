@@ -225,3 +225,9 @@ fn load_poly_sprite(instance_id: u32) -> PolychromeSprite {
         read_atlas_tile(&cursor),
     );
 }
+
+// The WebGL2 transport has no storage buffer for the transform table, so
+// primitives are drawn untransformed.
+fn transform_at(index: u32) -> TransformationMatrix {
+    return TransformationMatrix(mat2x2<f32>(1.0, 0.0, 0.0, 1.0), vec2<f32>(0.0));
+}

@@ -13,6 +13,16 @@
 @group(1) @binding(0) var<storage, read> b_mono_sprites: array<MonochromeSprite>;
 @group(1) @binding(0) var<storage, read> b_poly_sprites: array<PolychromeSprite>;
 
+@group(0) @binding(2) var<storage, read> b_transforms: array<TransformationMatrix>;
+
+// Index 0 is the identity and the table is not read for it.
+fn transform_at(index: u32) -> TransformationMatrix {
+    if (index == 0u) {
+        return TransformationMatrix(mat2x2<f32>(1.0, 0.0, 0.0, 1.0), vec2<f32>(0.0));
+    }
+    return b_transforms[index];
+}
+
 fn load_quad(instance_id: u32) -> Quad {
     return b_quads[instance_id];
 }

@@ -51,3 +51,32 @@ pub(crate) fn write_globals(
     );
     queue.write_buffer(buffer, renderer.gamma_offset, &bytes[2 * GLOBALS..]);
 }
+
+/// The transform table last written to the transform buffer.
+#[derive(Default)]
+pub(crate) struct UploadedTransforms(Vec<u8>);
+
+/// Writes the scene's transform table to `buffer` when it differs from the
+/// one there. Entries past the buffer's capacity are dropped, so the
+/// primitives that use them are drawn as if the table did not reach them.
+pub(crate) fn write_transforms(
+    uploaded: &mut UploadedTransforms,
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    entries: &[gpui::TransformationMatrix],
+) {
+    let count = entries
+        .len()
+        .min(crate::wgpu_renderer::TRANSFORM_CAPACITY as usize);
+    let mut bytes = Vec::with_capacity(count * crate::wgpu_renderer::TRANSFORM_SIZE as usize);
+    for entry in &entries[..count] {
+        for bits in entry.bits() {
+            bytes.extend_from_slice(&bits.to_le_bytes());
+        }
+    }
+    if bytes.is_empty() || uploaded.0 == bytes {
+        return;
+    }
+    queue.write_buffer(buffer, 0, &bytes);
+    uploaded.0 = bytes;
+}

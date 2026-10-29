@@ -64,6 +64,54 @@ pub(crate) struct GlobalParams {
     pub(crate) pad: u32,
 }
 
+/// Entries the transform table's storage buffer holds; a frame with more
+/// draws the rest untransformed.
+pub(crate) const TRANSFORM_CAPACITY: u64 = 16384;
+/// A `TransformationMatrix` in the shader: a 2x2 matrix then a translation.
+pub(crate) const TRANSFORM_SIZE: u64 = 24;
+
+pub(crate) fn create_transform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("transform_buffer"),
+        size: TRANSFORM_CAPACITY * TRANSFORM_SIZE,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// The globals bind group's entries: the globals at `globals_offset`, the
+/// gamma parameters, and the transform table when the backend has one.
+pub(crate) fn globals_entries<'a>(
+    globals: (&'a wgpu::Buffer, u64, u64),
+    gamma: (&'a wgpu::Buffer, u64, u64),
+    transforms: Option<&'a wgpu::Buffer>,
+) -> Vec<wgpu::BindGroupEntry<'a>> {
+    let range = |(buffer, offset, size): (&'a wgpu::Buffer, u64, u64)| {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer,
+            offset,
+            size: NonZeroU64::new(size),
+        })
+    };
+    let mut entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: range(globals),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: range(gamma),
+        },
+    ];
+    if let Some(buffer) = transforms {
+        entries.push(wgpu::BindGroupEntry {
+            binding: 2,
+            resource: buffer.as_entire_binding(),
+        });
+    }
+    entries
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PodBounds {
@@ -196,6 +244,8 @@ pub(crate) struct WgpuResources {
     pub(crate) atlas_sampler: wgpu::Sampler,
     atlas_texture_bind_groups: FxHashMap<AtlasTextureId, CachedTextureBindGroup>,
     pub(crate) globals_buffer: wgpu::Buffer,
+    /// The frame's transform table; absent on the backend without storage buffers.
+    pub(crate) transform_buffer: Option<wgpu::Buffer>,
     pub(crate) globals_bind_group: wgpu::BindGroup,
     pub(crate) path_globals_bind_group: wgpu::BindGroup,
     pub(crate) instance_data: InstanceData,
@@ -497,36 +547,44 @@ impl WgpuRendererCore {
         device: &wgpu::Device,
         uses_webgl_instance_data: bool,
     ) -> WgpuBindGroupLayouts {
-        let globals =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("globals_layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                std::mem::size_of::<GlobalParams>() as u64
-                            ),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                std::mem::size_of::<GammaParams>() as u64
-                            ),
-                        },
-                        count: None,
-                    },
-                ],
+        let mut globals_entries = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(std::mem::size_of::<GlobalParams>() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(std::mem::size_of::<GammaParams>() as u64),
+                },
+                count: None,
+            },
+        ];
+        if !uses_webgl_instance_data {
+            globals_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(TRANSFORM_SIZE),
+                },
+                count: None,
             });
+        }
+        let globals = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("globals_layout"),
+            entries: &globals_entries,
+        });
 
         let instance_data_entry = wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -1426,50 +1484,22 @@ impl WgpuRendererCore {
                 device.limits().min_storage_buffer_offset_alignment as u64,
             )
         };
-        let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals_bind_group"),
-            layout: &bind_group_layouts.globals,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &globals_buffer,
-                        offset: 0,
-                        size: NonZeroU64::new(globals_size),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &globals_buffer,
-                        offset: gamma_offset,
-                        size: NonZeroU64::new(gamma_size),
-                    }),
-                },
-            ],
-        });
-        let path_globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("path_globals_bind_group"),
-            layout: &bind_group_layouts.globals,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &globals_buffer,
-                        offset: path_globals_offset,
-                        size: NonZeroU64::new(globals_size),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &globals_buffer,
-                        offset: gamma_offset,
-                        size: NonZeroU64::new(gamma_size),
-                    }),
-                },
-            ],
-        });
+        let transform_buffer =
+            (!uses_webgl_instance_data).then(|| create_transform_buffer(&device));
+        let globals_bind_group = |label: &str, offset: u64| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &bind_group_layouts.globals,
+                entries: &globals_entries(
+                    (&globals_buffer, offset, globals_size),
+                    (&globals_buffer, gamma_offset, gamma_size),
+                    transform_buffer.as_ref(),
+                ),
+            })
+        };
+        let path_globals_bind_group =
+            globals_bind_group("path_globals_bind_group", path_globals_offset);
+        let globals_bind_group = globals_bind_group("globals_bind_group", 0);
         let max_texture_size = device.limits().max_texture_dimension_2d;
 
         Self {
@@ -1481,6 +1511,7 @@ impl WgpuRendererCore {
                 atlas_sampler,
                 atlas_texture_bind_groups: FxHashMap::default(),
                 globals_buffer,
+                transform_buffer,
                 globals_bind_group,
                 path_globals_bind_group,
                 instance_data,
@@ -1589,6 +1620,14 @@ impl WgpuRendererCore {
             ..globals
         };
         crate::fast::globals::write_globals(self, &globals, &path_globals, &gamma_params);
+        if let Some(buffer) = &self.resources.transform_buffer {
+            crate::fast::globals::write_transforms(
+                &mut self.fast_frame.transforms,
+                &self.resources.queue,
+                buffer,
+                scene.transforms.entries(),
+            );
+        }
 
         self.record_frame(scene, target_view, clear_color)
             .inspect_err(|_| {
@@ -3047,7 +3086,10 @@ mod tests {
     fn webgl_quad_layout_matches_fixed_decoder() {
         let quad = Quad {
             order: 41,
-            border_style_and_transform: gpui::Quad::pack_border_style(BorderStyle::Dashed, gpui::TransformIndex::IDENTITY),
+            border_style_and_transform: gpui::Quad::pack_border_style(
+                BorderStyle::Dashed,
+                gpui::TransformIndex::IDENTITY,
+            ),
             bounds: Bounds {
                 origin: Point {
                     x: 1.0.into(),

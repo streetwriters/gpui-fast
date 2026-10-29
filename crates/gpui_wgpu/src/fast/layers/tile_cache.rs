@@ -8,8 +8,6 @@
 //! of the previous generation stays as it is. A tile the cache has missed a
 //! generation of could have changed in it, so it is rasterized again.
 
-use std::num::NonZeroU64;
-
 use collections::{FxHashMap, FxHashSet};
 use gpui::{LayerKey, SceneLayers, TileCoord};
 
@@ -390,24 +388,15 @@ impl TileCache {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout: &target.bind_group_layouts.globals,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &buffer,
-                            offset,
-                            size: NonZeroU64::new(globals_size),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: target.globals_buffer,
-                            offset: target.gamma_offset,
-                            size: NonZeroU64::new(target.gamma_size),
-                        }),
-                    },
-                ],
+                entries: &crate::wgpu_renderer::globals_entries(
+                    (&buffer, offset, globals_size),
+                    (
+                        target.globals_buffer,
+                        target.gamma_offset,
+                        target.gamma_size,
+                    ),
+                    Some(target.transform_buffer),
+                ),
             })
         };
         let tile_globals = TileGlobals {

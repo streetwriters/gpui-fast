@@ -63,6 +63,7 @@ const MAX_GROUP_PATH_BATCHES: usize = 64;
 pub(crate) struct FrameState {
     pub(crate) bind_groups: BindGroupCache,
     pub(crate) globals: UploadedGlobals,
+    pub(crate) transforms: crate::fast::globals::UploadedTransforms,
     pub(crate) layers: TileCache,
     pub(crate) external_textures: ExternalTextures,
     vertices: Vec<PathRasterizationVertex>,
@@ -87,6 +88,7 @@ pub(crate) struct FrameTarget<'a> {
     /// The buffer behind the globals bind groups, and where in it the gamma
     /// parameters are, for tile globals to share them.
     pub(crate) globals_buffer: &'a wgpu::Buffer,
+    pub(crate) transform_buffer: &'a wgpu::Buffer,
     pub(crate) gamma_offset: u64,
     pub(crate) gamma_size: u64,
     /// The format of the frame's texture, which tiles share.
@@ -126,6 +128,9 @@ impl FrameHost for WgpuRendererCore {
         let InstanceData::Storage(instance_buffer) = &resources.instance_data else {
             anyhow::bail!("the storage buffer transport has no instance buffer");
         };
+        let Some(transform_buffer) = &resources.transform_buffer else {
+            anyhow::bail!("the storage buffer transport has no transform buffer");
+        };
         Ok(FrameTarget {
             device: &resources.device,
             queue: &resources.queue,
@@ -139,6 +144,7 @@ impl FrameHost for WgpuRendererCore {
             path_msaa_view: resources.path_msaa_view.as_ref(),
             instance_buffer,
             globals_buffer: &resources.globals_buffer,
+            transform_buffer,
             gamma_offset: self.gamma_offset,
             gamma_size: size_of::<crate::wgpu_renderer::GammaParams>() as u64,
             format: self.target_format,
