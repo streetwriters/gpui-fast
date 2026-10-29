@@ -911,6 +911,8 @@ impl Harness {
                 .VSSetConstantBuffers(1, Some(slice::from_ref(&self.globals.batch_params_buffer)));
             context.PSSetConstantBuffers(0, Some(slice::from_ref(&globals)));
         }
+        self.globals
+            .bind_transforms(context, scene.transforms.entries())?;
         upload(&target, &mut self.pipelines, scene)?;
         draw_scene(&target, &mut self.pipelines, &mut self.frame, scene)?;
         unsafe { context.OMSetRenderTargets(None, None) };
@@ -1031,4 +1033,133 @@ fn read_back(
         pixel.swap(0, 2);
     }
     Ok(pixels)
+}
+
+mod transforms {
+    use super::*;
+    use gpui::{Corners, Radians, TransformationMatrix, point, size};
+
+    const SIZE: usize = 200;
+
+    fn rotation_about(degrees: f32, cx: f32, cy: f32) -> TransformationMatrix {
+        TransformationMatrix::unit()
+            .translate(point(ScaledPixels(cx), ScaledPixels(cy)))
+            .rotate(Radians(degrees.to_radians()))
+            .translate(point(ScaledPixels(-cx), ScaledPixels(-cy)))
+    }
+
+    fn red_quad(
+        scene: &mut Scene,
+        matrix: TransformationMatrix,
+        bounds: Bounds<ScaledPixels>,
+        corner: f32,
+        mask: Option<Bounds<ScaledPixels>>,
+    ) {
+        let previous = scene.push_transform(matrix);
+        let mut quad = quad(bounds, Hsla::from(rgba(0xff0000ff)));
+        quad.corner_radii = Corners::all(ScaledPixels(corner));
+        if let Some(mask) = mask {
+            quad.content_mask = ContentMask::new(mask);
+        }
+        scene.insert_primitive(quad);
+        scene.pop_transform(previous);
+    }
+
+    fn render(harness: &mut Harness, mut scene: Scene) -> Vec<u8> {
+        scene.finish();
+        harness.render(
+            &scene,
+            device_size(SIZE as i32, SIZE as i32),
+            rgba(0xffffffff),
+        )
+    }
+
+    fn is_red(pixels: &[u8], x: usize, y: usize) -> bool {
+        let [r, g, b, a] = pixel(pixels, SIZE, x, y);
+        r > 200 && g < 60 && b < 60 && a > 200
+    }
+
+    #[test]
+    fn a_rotated_quad_covers_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let mut scene = Scene::default();
+        red_quad(
+            &mut scene,
+            rotation_about(45., 100., 100.),
+            sp(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 100, 100));
+        assert!(is_red(&pixels, 100, 45));
+        assert!(is_red(&pixels, 155, 100));
+        assert!(!is_red(&pixels, 54, 54));
+        assert!(!is_red(&pixels, 146, 146));
+    }
+
+    #[test]
+    fn a_rotated_quad_keeps_its_rounded_corners_exact() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let mut scene = Scene::default();
+        red_quad(
+            &mut scene,
+            rotation_about(90., 100., 100.),
+            sp(50., 50., 100., 100.),
+            30.,
+            None,
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 100, 100));
+        assert!(!is_red(&pixels, 53, 53));
+        assert!(is_red(&pixels, 70, 70));
+    }
+
+    #[test]
+    fn a_transformed_clip_is_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let mut scene = Scene::default();
+        red_quad(
+            &mut scene,
+            rotation_about(90., 100., 100.),
+            sp(50., 50., 100., 100.),
+            0.,
+            Some(sp(50., 50., 100., 40.)),
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 140, 100));
+        assert!(!is_red(&pixels, 60, 100));
+        assert!(!is_red(&pixels, 100, 60));
+    }
+
+    #[test]
+    fn a_translated_and_mirrored_quad_lands_where_the_matrix_puts_it() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let mut scene = Scene::default();
+        let matrix = TransformationMatrix::unit()
+            .translate(point(ScaledPixels(20.), ScaledPixels(10.)))
+            .scale(size(-1., 1.));
+        red_quad(
+            &mut scene,
+            matrix,
+            sp(-140., 50., 40., 40.),
+            0.,
+            Some(sp(-200., 0., 200., 200.)),
+        );
+        let pixels = render(&mut harness, scene);
+        assert!(is_red(&pixels, 140, 80));
+        assert!(!is_red(&pixels, 60, 80));
+    }
 }

@@ -100,7 +100,16 @@ pub(crate) struct DirectXGlobalElements {
     pub(crate) global_params_buffer: Option<ID3D11Buffer>,
     pub(crate) batch_params_buffer: Option<ID3D11Buffer>,
     pub(crate) sampler: Option<ID3D11SamplerState>,
+    /// The frame's transform table, which the vertex stage reads at `t2`.
+    pub(crate) transform_buffer: ID3D11Buffer,
+    pub(crate) transform_view: Option<ID3D11ShaderResourceView>,
 }
+
+/// Entries the transform table's buffer holds; a frame with more draws the
+/// rest untransformed.
+const TRANSFORM_CAPACITY: usize = 16384;
+/// A `TransformationMatrix` in the shader: a 2x2 matrix then a translation.
+const TRANSFORM_SIZE: usize = 24;
 
 struct Annotation<'a>(&'a ID3DUserDefinedAnnotation);
 
@@ -365,6 +374,14 @@ impl DirectXRenderer {
             _ => [0.0f32; 4],
         })?;
         self.upload_scene_buffers(scene)?;
+        self.globals.bind_transforms(
+            &self
+                .devices
+                .as_ref()
+                .context("devices missing")?
+                .device_context,
+            scene.transforms.entries(),
+        )?;
         if crate::fast::frame::draw_batches(self, scene)? {
             return Ok(());
         }
@@ -1075,11 +1092,32 @@ impl DirectXGlobalElements {
             output
         };
 
+        let transform_buffer = create_buffer(device, TRANSFORM_SIZE, TRANSFORM_CAPACITY)?;
+        let transform_view = create_buffer_view(device, &transform_buffer)?;
+
         Ok(Self {
             global_params_buffer,
             batch_params_buffer,
             sampler,
+            transform_buffer,
+            transform_view,
         })
+    }
+
+    /// Writes the scene's transform table and binds it for the vertex stage.
+    pub(crate) fn bind_transforms(
+        &self,
+        device_context: &ID3D11DeviceContext,
+        entries: &[TransformationMatrix],
+    ) -> Result<()> {
+        let count = entries.len().min(TRANSFORM_CAPACITY);
+        if count > 0 {
+            update_buffer(device_context, &self.transform_buffer, &entries[..count])?;
+        }
+        unsafe {
+            device_context.VSSetShaderResources(2, Some(slice::from_ref(&self.transform_view)));
+        }
+        Ok(())
     }
 }
 
