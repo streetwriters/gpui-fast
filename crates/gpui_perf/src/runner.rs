@@ -576,7 +576,7 @@ fn describe_quad(quad: &Quad) -> String {
         quad.bounds,
         quad.content_mask,
         quad.background,
-        quad.border_style,
+        quad.border_style(),
         quad.border_widths,
         quad.border_color,
         quad.corner_radii,
