@@ -202,6 +202,11 @@ impl MetalRenderer {
         let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
         objc2_layer.setAllowsNextDrawableTimeout(false);
         objc2_layer.setNeedsDisplayOnBoundsChange(true);
+        // The shaders write sRGB values, so say so: untagged, WindowServer
+        // treats them as device RGB and a wide-gamut display shows them
+        // differently from the same colour drawn by AppKit.
+        #[cfg(target_os = "macos")]
+        tag_layer_as_srgb(objc2_layer);
         // UIKit sizes a view's backing layer itself; only AppKit-hosted
         // layers need to track their superlayer's bounds.
         #[cfg(target_os = "macos")]
@@ -2037,5 +2042,55 @@ mod tests {
                 assert_eq!(at(x, y), [255, 0, 0, 255], "({x}, {y}) is inside the mask");
             }
         }
+    }
+}
+
+/// A `CGColorSpaceRef`, which objc2 needs to know the encoding of to pass it.
+#[cfg(target_os = "macos")]
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct ColorSpaceRef(*const std::ffi::c_void);
+
+#[cfg(target_os = "macos")]
+unsafe impl objc2::Encode for ColorSpaceRef {
+    const ENCODING: objc2::Encoding =
+        objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGColorSpace", &[]));
+}
+
+#[cfg(target_os = "macos")]
+fn tag_layer_as_srgb(layer: &objc2_quartz_core::CAMetalLayer) {
+    use core_graphics::color_space::{CGColorSpace, kCGColorSpaceSRGB};
+    use foreign_types::ForeignType as _;
+
+    // SAFETY: `kCGColorSpaceSRGB` is a constant CFString, and `setColorspace:`
+    // retains the colour space it is given.
+    let Some(space) = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB }) else {
+        return;
+    };
+    let _: () =
+        unsafe { objc2::msg_send![layer, setColorspace: ColorSpaceRef(space.as_ptr().cast())] };
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod colour_space_tests {
+    use super::*;
+    use core_graphics::color_space::CGColorSpace;
+    use foreign_types::ForeignType as _;
+
+    #[test]
+    fn the_layer_is_tagged_as_srgb() {
+        let Some(device) = metal::Device::system_default() else {
+            return;
+        };
+        let layer = metal::MetalLayer::new();
+        MetalRenderer::configure_layer(&layer, &device, false);
+        let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
+        let space: ColorSpaceRef = unsafe { objc2::msg_send![objc2_layer, colorspace] };
+        assert!(!space.0.is_null());
+        let srgb = CGColorSpace::create_with_name(unsafe {
+            core_graphics::color_space::kCGColorSpaceSRGB
+        })
+        .unwrap();
+        assert_eq!(space.0, srgb.as_ptr().cast_const().cast());
     }
 }

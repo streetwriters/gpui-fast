@@ -5,8 +5,8 @@
 //! owns GPU resources, text rendering, Keychain access, and thermal notifications
 //! while leaving application lifecycle, windowing, and input to each platform backend.
 
-mod fast;
 mod dispatcher;
+mod fast;
 pub mod keychain;
 mod metal_atlas;
 pub mod metal_renderer;
