@@ -842,10 +842,9 @@ pub struct Hitbox {
     pub content_mask: ContentMask<Pixels>,
     /// Flags that specify hitbox behavior.
     pub behavior: HitboxBehavior,
-    /// Index into the frame's hitbox transforms: the transformation, in
-    /// logical pixels, that places the space `bounds` and `content_mask` are
-    /// in on the window. 0 is the identity.
-    pub(crate) transform: u32,
+    /// The transformation, in logical pixels, that places the space `bounds`
+    /// and `content_mask` are in on the window; `None` is the identity.
+    pub(crate) transform: Option<std::rc::Rc<TransformationMatrix>>,
 }
 
 impl Hitbox {
@@ -1051,8 +1050,6 @@ pub(crate) struct Frame {
     pub(crate) scene: Scene,
     pub(crate) fast_composition_starts: crate::fast::composition::SurfaceStarts,
     pub(crate) hitboxes: Vec<Hitbox>,
-    /// What `Hitbox::transform` indexes; the identity is first.
-    pub(crate) hitbox_transforms: Vec<TransformationMatrix>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -1113,7 +1110,6 @@ impl Frame {
             scene: Scene::default(),
             fast_composition_starts: crate::fast::composition::SurfaceStarts::default(),
             hitboxes: Vec::new(),
-            hitbox_transforms: vec![TransformationMatrix::unit()],
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -1146,7 +1142,6 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.hitboxes.clear();
-        self.hitbox_transforms.truncate(1);
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
@@ -1181,36 +1176,20 @@ impl Frame {
             .into_inner()
     }
 
-    /// The index of `matrix` in this frame's hitbox transforms.
-    pub(crate) fn hitbox_transform(&mut self, matrix: TransformationMatrix) -> u32 {
-        if matrix == TransformationMatrix::unit() {
-            return 0;
-        }
-        let index = self
-            .hitbox_transforms
-            .iter()
-            .rposition(|existing| *existing == matrix)
-            .unwrap_or_else(|| {
-                self.hitbox_transforms.push(matrix);
-                self.hitbox_transforms.len() - 1
-            });
-        index as u32
-    }
-
     pub(crate) fn hit_test(&self, position: Point<Pixels>) -> HitTest {
         let mut set_hover_hitbox_count = false;
         let mut hit_test = HitTest::default();
         for hitbox in self.hitboxes.iter().rev() {
             let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
-            let local = if hitbox.transform == 0 {
-                position
-            } else {
-                // A box that is flattened to a line or a point is never hit.
-                let matrix = self.hitbox_transforms[hitbox.transform as usize];
-                let Some(inverse) = matrix.inverse() else {
-                    continue;
-                };
-                inverse.transform_logical_point(position)
+            let local = match &hitbox.transform {
+                None => position,
+                Some(matrix) => {
+                    // A box that is flattened to a line or a point is never hit.
+                    let Some(inverse) = matrix.inverse() else {
+                        continue;
+                    };
+                    inverse.transform_logical_point(position)
+                }
             };
             if bounds.contains(&local) {
                 hit_test.ids.push(hitbox.id);
@@ -4218,17 +4197,11 @@ impl Window {
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
         crate::fast::a11y::reuse_prepaint(self, &range);
-        for hitbox in &self.rendered_frame.hitboxes
-            [range.start.hitboxes_index..range.end.hitboxes_index]
-        {
-            let mut hitbox = hitbox.clone();
-            if hitbox.transform != 0 {
-                // The index belongs to the frame the hitbox came from.
-                let matrix = self.rendered_frame.hitbox_transforms[hitbox.transform as usize];
-                hitbox.transform = self.next_frame.hitbox_transform(matrix);
-            }
-            self.next_frame.hitboxes.push(hitbox);
-        }
+        self.next_frame.hitboxes.extend(
+            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                .iter()
+                .cloned(),
+        );
         self.next_frame.tooltip_requests.extend(
             self.rendered_frame.tooltip_requests
                 [range.start.tooltips_index..range.end.tooltips_index]
@@ -5652,7 +5625,8 @@ impl Window {
             bounds,
             content_mask,
             behavior,
-            transform: self.next_frame.hitbox_transform(self.transformation),
+            transform: (self.transformation != TransformationMatrix::unit())
+                .then(|| std::rc::Rc::new(self.transformation)),
         };
         self.next_frame.hitboxes.push(hitbox.clone());
         hitbox
