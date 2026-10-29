@@ -316,22 +316,20 @@ struct ColorFilter {
 
 StructuredBuffer<ColorFilter> color_filters: register(t3);
 
-// Runs the colour filter at `index` over a premultiplied colour. The matrix is
-// defined on unpremultiplied colour, so the colour is divided by its alpha
-// first and multiplied by the filtered alpha after.
-float4 apply_color_filter(uint index, float4 premultiplied) {
-    if (index == 0u || premultiplied.a <= 0.0) {
-        return premultiplied;
+// Runs the colour filter at `index` over a fragment colour. The blend state
+// uses the source alpha, so the colour is not premultiplied and the matrix
+// applies to it as it is.
+float4 apply_color_filter(uint index, float4 c) {
+    if (index == 0u || c.a <= 0.0) {
+        return c;
     }
     ColorFilter f = color_filters[index];
-    float4 c = float4(premultiplied.rgb / premultiplied.a, premultiplied.a);
     float4 result;
     result.r = dot(c, f.c0) + f.c1.x;
     result.g = dot(c, float4(f.c1.y, f.c1.z, f.c1.w, f.c2.x)) + f.c2.y;
     result.b = dot(c, float4(f.c2.z, f.c2.w, f.c3.x, f.c3.y)) + f.c3.z;
     result.a = dot(c, float4(f.c3.w, f.c4.x, f.c4.y, f.c4.z)) + f.c4.w;
-    result = saturate(result);
-    return float4(result.rgb * result.a, result.a);
+    return saturate(result);
 }
 
 float2 apply_transform(TransformationMatrix transformation, float2 position) {

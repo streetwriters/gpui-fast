@@ -22,22 +22,20 @@ struct ColorFilter {
   float rows[20];
 };
 
-// Runs the colour filter at `index` over a premultiplied colour. The matrix is
-// defined on unpremultiplied colour, so the colour is divided by its alpha
-// first and multiplied by the filtered alpha after.
-float4 apply_color_filter(constant ColorFilter *filters, uint index, float4 premultiplied) {
-  if (index == 0u || premultiplied.a <= 0.0) {
-    return premultiplied;
+// Runs the colour filter at `index` over a fragment colour. The pipelines blend
+// with the source alpha, so the colour is not premultiplied and the matrix
+// applies to it as it is.
+float4 apply_color_filter(constant ColorFilter *filters, uint index, float4 c) {
+  if (index == 0u || c.a <= 0.0) {
+    return c;
   }
   constant float *m = filters[index].rows;
-  float4 c = float4(premultiplied.rgb / premultiplied.a, premultiplied.a);
   float4 out;
   out.r = m[0] * c.r + m[1] * c.g + m[2] * c.b + m[3] * c.a + m[4];
   out.g = m[5] * c.r + m[6] * c.g + m[7] * c.b + m[8] * c.a + m[9];
   out.b = m[10] * c.r + m[11] * c.g + m[12] * c.b + m[13] * c.a + m[14];
   out.a = m[15] * c.r + m[16] * c.g + m[17] * c.b + m[18] * c.a + m[19];
-  out = saturate(out);
-  return float4(out.rgb * out.a, out.a);
+  return saturate(out);
 }
 
 float4 clip_distances(float2 position, Bounds_ScaledPixels clip_bounds);
