@@ -374,6 +374,7 @@ impl Scene {
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         crate::fast::layers::paint::replay_layers(self, range.clone(), prev_scene);
+        let mut carried = (TransformIndex::IDENTITY, TransformIndex::IDENTITY);
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
@@ -381,11 +382,16 @@ impl Scene {
                     // filters, so they are carried over, not composed with the
                     // current ones.
                     let index = primitive.transform_index();
-                    let transform = self.transforms.intern_with(
-                        prev_scene.transforms.get(index),
-                        prev_scene.transforms.filter(index),
-                    );
-                    self.insert_under(primitive.clone(), transform, false);
+                    if index != carried.0 {
+                        carried = (
+                            index,
+                            self.transforms.intern_with(
+                                prev_scene.transforms.get(index),
+                                prev_scene.transforms.filter(index),
+                            ),
+                        );
+                    }
+                    self.insert_under(primitive.clone(), carried.1, false);
                 }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
