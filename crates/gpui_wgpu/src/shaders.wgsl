@@ -436,6 +436,34 @@ fn blend_color(color: vec4<f32>, alpha_factor: f32) -> vec4<f32> {
 }
 
 
+
+// The colour filter at `index`, applied to a colour as `blend_color` leaves it.
+// The matrix is defined on unpremultiplied colour, so the colour is unpremultiplied
+// first when it is premultiplied. Colours leave this renderer as the display
+// values, so the matrix works on them directly.
+fn apply_color_filter(index: u32, color: vec4<f32>) -> vec4<f32> {
+    if (index == 0u || color.a <= 0.0 || !color_filters_available()) {
+        return color;
+    }
+    var straight = color;
+    if (globals.premultiplied_alpha != 0u) {
+        straight = vec4<f32>(color.rgb / color.a, color.a);
+    }
+    let c = straight;
+    let m = color_filter_at(index);
+    var out = vec4<f32>(
+        m[0] * c.r + m[1] * c.g + m[2] * c.b + m[3] * c.a + m[4],
+        m[5] * c.r + m[6] * c.g + m[7] * c.b + m[8] * c.a + m[9],
+        m[10] * c.r + m[11] * c.g + m[12] * c.b + m[13] * c.a + m[14],
+        m[15] * c.r + m[16] * c.g + m[17] * c.b + m[18] * c.a + m[19],
+    );
+    out = clamp(out, vec4<f32>(0.0), vec4<f32>(1.0));
+    if (globals.premultiplied_alpha != 0u) {
+        return vec4<f32>(out.rgb * out.a, out.a);
+    }
+    return out;
+}
+
 struct GradientColor {
     solid: vec4<f32>,
     color0: vec4<f32>,
@@ -628,8 +656,7 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     return out;
 }
 
-@fragment
-fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
+fn fs_quad_body(input: QuadVarying) -> vec4<f32> {
     // Alpha clip first, since we don't have `clip_distance`.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
@@ -962,6 +989,11 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
     return blend_color(color, saturate(antialias_threshold - outer_sdf) * mask_alpha);
 }
 
+@fragment
+fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
+    return apply_color_filter(load_quad(input.quad_id).border_style_and_transform >> 8u, fs_quad_body(input));
+}
+
 // Returns the dash velocity of a corner given the dash velocity of the two
 // sides, by returning the slower velocity (larger dashes).
 //
@@ -1069,8 +1101,7 @@ fn vs_shadow(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) ins
     return out;
 }
 
-@fragment
-fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
+fn fs_shadow_body(input: ShadowVarying) -> vec4<f32> {
     // Alpha clip first, since we don't have `clip_distance`.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
@@ -1118,6 +1149,11 @@ fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
 
     alpha = max(alpha + dither_noise(frag_pos - shadow.bounds.origin) * min(alpha * 2.0, 1.0), 0.0);
     return blend_color(input.color, alpha * content_mask_alpha(frag_pos, shadow.content_mask));
+}
+
+@fragment
+fn fs_shadow(input: ShadowVarying) -> @location(0) vec4<f32> {
+    return apply_color_filter(load_shadow(input.shadow_id).transform_index, fs_shadow_body(input));
 }
 
 // --- path rasterization --- //
@@ -1259,8 +1295,7 @@ fn vs_underline(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) 
     return out;
 }
 
-@fragment
-fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
+fn fs_underline_body(input: UnderlineVarying) -> vec4<f32> {
     const WAVE_FREQUENCY: f32 = 2.0;
     const WAVE_HEIGHT_RATIO: f32 = 0.8;
 
@@ -1291,6 +1326,11 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
     let distance_from_bottom_border = distance_in_pixels + half_thickness;
     let alpha = saturate(0.5 - max(-distance_from_bottom_border, distance_from_top_border));
     return blend_color(input.color, alpha * input.color.a * mask_alpha);
+}
+
+@fragment
+fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
+    return apply_color_filter(load_underline(input.underline_id).transform_index, fs_underline_body(input));
 }
 
 // --- monochrome sprites --- //
@@ -1334,8 +1374,7 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     return out;
 }
 
-@fragment
-fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
+fn fs_mono_sprite_body(input: MonoSpriteVarying) -> vec4<f32> {
     let sample = textureSample(t_sprite, s_sprite, input.tile_position).r;
     let alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, gamma_params.grayscale_enhanced_contrast, gamma_params.gamma_ratios);
 
@@ -1347,6 +1386,11 @@ fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
     let sprite = load_mono_sprite(input.sprite_id);
     let frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
     return blend_color(input.color, alpha_corrected * content_mask_alpha(frag_pos, sprite.content_mask));
+}
+
+@fragment
+fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
+    return apply_color_filter(load_mono_sprite(input.sprite_id).transform_index, fs_mono_sprite_body(input));
 }
 
 // --- polychrome sprites --- //
@@ -1399,8 +1443,7 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     return out;
 }
 
-@fragment
-fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
+fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
     let sample = textureSample(t_sprite, s_sprite, input.tile_position);
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
@@ -1418,6 +1461,11 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     }
     return blend_color(color, sprite.opacity * saturate(0.5 - distance) *
         content_mask_alpha(frag_pos, sprite.content_mask));
+}
+
+@fragment
+fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
+    return apply_color_filter(load_poly_sprite(input.sprite_id).transform_index, fs_poly_sprite_body(input));
 }
 
 // --- surfaces --- //

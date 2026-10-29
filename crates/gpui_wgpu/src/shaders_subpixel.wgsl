@@ -55,8 +55,9 @@ fn fs_subpixel_sprite(input: SubpixelSpriteOutput) -> SubpixelSpriteFragmentOutp
     }
 
     var out = SubpixelSpriteFragmentOutput();
-    out.foreground = vec4<f32>(input.color.rgb, 1.0);
     let sprite = b_subpixel_sprites[input.sprite_id];
+    // The filter recolours the text colour; the coverage stays as sampled.
+    out.foreground = vec4<f32>(apply_color_filter(sprite.transform_index, vec4<f32>(input.color.rgb, 1.0)).rgb, 1.0);
     let frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
     let mask_alpha = content_mask_alpha(frag_pos, sprite.content_mask);
     out.alpha = vec4<f32>(input.color.a * alpha_corrected * mask_alpha, 1.0);

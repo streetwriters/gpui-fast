@@ -13,14 +13,32 @@
 @group(1) @binding(0) var<storage, read> b_mono_sprites: array<MonochromeSprite>;
 @group(1) @binding(0) var<storage, read> b_poly_sprites: array<PolychromeSprite>;
 
-@group(0) @binding(2) var<storage, read> b_transforms: array<TransformationMatrix>;
+struct ColorFilter {
+    m: array<f32, 20>,
+}
+
+// One buffer holds both tables: the matrices, then the colour filters.
+struct Tables {
+    transforms: array<TransformationMatrix, 16384>,
+    filters: array<ColorFilter, 16384>,
+}
+
+@group(0) @binding(2) var<storage, read> b_tables: Tables;
+
+fn color_filters_available() -> bool {
+    return true;
+}
+
+fn color_filter_at(index: u32) -> array<f32, 20> {
+    return b_tables.filters[index].m;
+}
 
 // Index 0 is the identity and the table is not read for it.
 fn transform_at(index: u32) -> TransformationMatrix {
     if (index == 0u) {
         return TransformationMatrix(mat2x2<f32>(1.0, 0.0, 0.0, 1.0), vec2<f32>(0.0));
     }
-    return b_transforms[index];
+    return b_tables.transforms[index];
 }
 
 fn load_quad(instance_id: u32) -> Quad {

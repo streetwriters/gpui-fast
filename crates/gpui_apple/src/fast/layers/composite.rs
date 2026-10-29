@@ -58,6 +58,11 @@ pub(crate) fn draw_tiles(
                 Some(&polychrome_sprites.buffer),
                 polychrome_sprites.offset as u64,
             );
+            command_encoder.set_fragment_buffer(
+                crate::metal_renderer::COLOR_FILTERS_BUFFER_INDEX,
+                Some(&instance_bindings.color_filters.buffer),
+                instance_bindings.color_filters.offset as u64,
+            );
         }
         let texture_size = size(
             DevicePixels(texture.width() as i32),

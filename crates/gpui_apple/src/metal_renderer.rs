@@ -922,6 +922,11 @@ impl MetalRenderer {
             Some(&instance_bindings.transforms.buffer),
             instance_bindings.transforms.offset as u64,
         );
+        command_encoder.set_fragment_buffer(
+            COLOR_FILTERS_BUFFER_INDEX,
+            Some(&instance_bindings.color_filters.buffer),
+            instance_bindings.color_filters.offset as u64,
+        );
         command_encoder.set_vertex_buffer(
             ShadowInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -968,6 +973,11 @@ impl MetalRenderer {
             TRANSFORMS_BUFFER_INDEX,
             Some(&instance_bindings.transforms.buffer),
             instance_bindings.transforms.offset as u64,
+        );
+        command_encoder.set_fragment_buffer(
+            COLOR_FILTERS_BUFFER_INDEX,
+            Some(&instance_bindings.color_filters.buffer),
+            instance_bindings.color_filters.offset as u64,
         );
         command_encoder.set_vertex_buffer(
             QuadInputIndex::Vertices as u64,
@@ -1087,6 +1097,11 @@ impl MetalRenderer {
             Some(&instance_bindings.transforms.buffer),
             instance_bindings.transforms.offset as u64,
         );
+        command_encoder.set_fragment_buffer(
+            COLOR_FILTERS_BUFFER_INDEX,
+            Some(&instance_bindings.color_filters.buffer),
+            instance_bindings.color_filters.offset as u64,
+        );
         command_encoder.set_vertex_buffer(
             UnderlineInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1141,6 +1156,11 @@ impl MetalRenderer {
             TRANSFORMS_BUFFER_INDEX,
             Some(&instance_bindings.transforms.buffer),
             instance_bindings.transforms.offset as u64,
+        );
+        command_encoder.set_fragment_buffer(
+            COLOR_FILTERS_BUFFER_INDEX,
+            Some(&instance_bindings.color_filters.buffer),
+            instance_bindings.color_filters.offset as u64,
         );
         command_encoder.set_vertex_buffer(
             SpriteInputIndex::Vertices as u64,
@@ -1212,6 +1232,11 @@ impl MetalRenderer {
             TRANSFORMS_BUFFER_INDEX,
             Some(&instance_bindings.transforms.buffer),
             instance_bindings.transforms.offset as u64,
+        );
+        command_encoder.set_fragment_buffer(
+            COLOR_FILTERS_BUFFER_INDEX,
+            Some(&instance_bindings.color_filters.buffer),
+            instance_bindings.color_filters.offset as u64,
         );
         command_encoder.set_vertex_buffer(
             SpriteInputIndex::Vertices as u64,
@@ -1528,10 +1553,14 @@ pub(crate) struct InstanceBindings {
     pub(crate) polychrome_sprites: InstanceBinding,
     pub(crate) surfaces: InstanceBinding,
     pub(crate) transforms: InstanceBinding,
+    pub(crate) color_filters: InstanceBinding,
 }
 
 /// The vertex buffer slot of the scene's transform table, in every pipeline.
 pub(crate) const TRANSFORMS_BUFFER_INDEX: u64 = 8;
+
+/// The fragment buffer slot of the scene's colour filters, in every pipeline.
+pub(crate) const COLOR_FILTERS_BUFFER_INDEX: u64 = 9;
 
 fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
     Ok(InstanceBindings {
@@ -1545,6 +1574,7 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
             content_mask: surface.content_mask,
         }))?,
         transforms: writer.write(scene.transforms.entries())?,
+        color_filters: writer.write(scene.transforms.filters())?,
     })
 }
 
@@ -1834,6 +1864,64 @@ mod tests {
     fn is_red(image: &image::RgbaImage, x: u32, y: u32) -> bool {
         let pixel = image.get_pixel(x, y).0;
         pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] > 200
+    }
+
+    fn grayscale() -> gpui::ColorFilter {
+        let row = [0.2126, 0.7152, 0.0722, 0., 0.];
+        gpui::ColorFilter {
+            rows: [row, row, row, [0., 0., 0., 1., 0.]],
+        }
+    }
+
+    #[test]
+    fn a_color_filter_recolours_what_is_drawn_under_it() {
+        let mut scene = Scene::default();
+        let previous = scene.push_color_filter(grayscale());
+        quad_under(
+            &mut scene,
+            gpui::TransformationMatrix::unit(),
+            scaled_bounds(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        scene.pop_transform(previous);
+        // Drawn outside the filter, it keeps its colour.
+        quad_under(
+            &mut scene,
+            gpui::TransformationMatrix::unit(),
+            scaled_bounds(0., 0., 20., 20.),
+            0.,
+            None,
+        );
+        let image = render(&mut scene);
+        let [r, g, b, a] = image.get_pixel(100, 100).0;
+        assert!(
+            r.abs_diff(54) < 6 && g.abs_diff(54) < 6 && b.abs_diff(54) < 6,
+            "{r} {g} {b}"
+        );
+        assert_eq!(a, 255);
+        assert!(is_red(&image, 5, 5));
+    }
+
+    #[test]
+    fn a_color_filter_composes_with_a_transform() {
+        let mut scene = Scene::default();
+        let previous = scene.push_color_filter(grayscale());
+        quad_under(
+            &mut scene,
+            rotation_about(45., 100., 100.),
+            scaled_bounds(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        scene.pop_transform(previous);
+        let image = render(&mut scene);
+        let [r, g, b, _] = image.get_pixel(100, 45).0;
+        assert!(
+            r.abs_diff(g) < 3 && g.abs_diff(b) < 3 && r > 40,
+            "{r} {g} {b}"
+        );
+        assert!(!is_red(&image, 100, 100));
     }
 
     #[test]

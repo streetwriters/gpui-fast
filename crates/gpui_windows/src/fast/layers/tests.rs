@@ -911,8 +911,7 @@ impl Harness {
                 .VSSetConstantBuffers(1, Some(slice::from_ref(&self.globals.batch_params_buffer)));
             context.PSSetConstantBuffers(0, Some(slice::from_ref(&globals)));
         }
-        self.globals
-            .bind_transforms(context, scene.transforms.entries())?;
+        self.globals.bind_transforms(context, &scene.transforms)?;
         upload(&target, &mut self.pipelines, scene)?;
         draw_scene(&target, &mut self.pipelines, &mut self.frame, scene)?;
         unsafe { context.OMSetRenderTargets(None, None) };
@@ -1161,5 +1160,42 @@ mod transforms {
         let pixels = render(&mut harness, scene);
         assert!(is_red(&pixels, 140, 80));
         assert!(!is_red(&pixels, 60, 80));
+    }
+
+    #[test]
+    fn a_color_filter_recolours_what_is_drawn_under_it() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let row = [0.2126, 0.7152, 0.0722, 0., 0.];
+        let grayscale = gpui::ColorFilter {
+            rows: [row, row, row, [0., 0., 0., 1., 0.]],
+        };
+        let mut scene = Scene::default();
+        let previous = scene.push_color_filter(grayscale);
+        red_quad(
+            &mut scene,
+            TransformationMatrix::unit(),
+            sp(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        scene.pop_transform(previous);
+        red_quad(
+            &mut scene,
+            TransformationMatrix::unit(),
+            sp(0., 0., 20., 20.),
+            0.,
+            None,
+        );
+        let pixels = render(&mut harness, scene);
+        let [r, g, b, a] = pixel(&pixels, SIZE, 100, 100);
+        assert!(
+            r.abs_diff(54) < 6 && g.abs_diff(54) < 6 && b.abs_diff(54) < 6,
+            "{r} {g} {b}"
+        );
+        assert_eq!(a, 255);
+        assert!(is_red(&pixels, 5, 5));
     }
 }

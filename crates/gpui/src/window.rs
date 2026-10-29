@@ -4410,6 +4410,23 @@ impl Window {
         result
     }
 
+    /// Paints what `f` does through `filter`, after any filter already in force.
+    /// Each primitive is filtered on its own, so overlapping content is not
+    /// filtered as a group.
+    pub fn with_color_filter<R>(
+        &mut self,
+        filter: crate::ColorFilter,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if filter.is_identity() {
+            return f(self);
+        }
+        let previous = self.next_frame.scene.push_color_filter(filter);
+        let result = f(self);
+        self.next_frame.scene.pop_transform(previous);
+        result
+    }
+
     /// Like [`Window::with_transformation`], with `matrix` applied about
     /// `origin`, a point of the current space.
     pub fn with_transformation_about<R>(
@@ -4430,7 +4447,11 @@ impl Window {
 
     /// A point of the window, mapped into the space transformed by `matrix`
     /// (as a hitbox's `transform`); `None` when it flattens the plane.
-    pub fn to_local(&self, matrix: &TransformationMatrix, point: Point<Pixels>) -> Option<Point<Pixels>> {
+    pub fn to_local(
+        &self,
+        matrix: &TransformationMatrix,
+        point: Point<Pixels>,
+    ) -> Option<Point<Pixels>> {
         Some(matrix.inverse()?.transform_logical_point(point))
     }
 
@@ -4950,7 +4971,10 @@ impl Window {
             border_color: quad.border_color.opacity(opacity),
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
             border_widths: snapped_border_widths,
-            border_style_and_transform: Quad::pack_border_style(quad.border_style, crate::TransformIndex::IDENTITY),
+            border_style_and_transform: Quad::pack_border_style(
+                quad.border_style,
+                crate::TransformIndex::IDENTITY,
+            ),
         };
 
         if !quad.background.is_transparent() {

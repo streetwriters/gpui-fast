@@ -231,3 +231,12 @@ fn load_poly_sprite(instance_id: u32) -> PolychromeSprite {
 fn transform_at(index: u32) -> TransformationMatrix {
     return TransformationMatrix(mat2x2<f32>(1.0, 0.0, 0.0, 1.0), vec2<f32>(0.0));
 }
+
+// The WebGL2 transport has no storage buffer for the colour filters either.
+fn color_filters_available() -> bool {
+    return false;
+}
+
+fn color_filter_at(index: u32) -> array<f32, 20> {
+    return array<f32, 20>();
+}

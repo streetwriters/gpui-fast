@@ -303,9 +303,7 @@ impl WindowsPlatform {
             .for_each(|handle| unsafe {
                 // A window that was closed but is not yet untracked is gone,
                 // which is expected and not worth an error.
-                if let Err(error) =
-                    PostMessageW(Some(handle.as_raw()), message, wparam, lparam)
-                {
+                if let Err(error) = PostMessageW(Some(handle.as_raw()), message, wparam, lparam) {
                     if error.code() != HRESULT::from_win32(ERROR_INVALID_WINDOW_HANDLE.0) {
                         log::error!("{error:#}");
                     }

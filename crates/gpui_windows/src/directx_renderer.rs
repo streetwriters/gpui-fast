@@ -103,6 +103,8 @@ pub(crate) struct DirectXGlobalElements {
     /// The frame's transform table, which the vertex stage reads at `t2`.
     pub(crate) transform_buffer: ID3D11Buffer,
     pub(crate) transform_view: Option<ID3D11ShaderResourceView>,
+    pub(crate) filter_buffer: ID3D11Buffer,
+    pub(crate) filter_view: Option<ID3D11ShaderResourceView>,
 }
 
 /// Entries the transform table's buffer holds; a frame with more draws the
@@ -110,6 +112,8 @@ pub(crate) struct DirectXGlobalElements {
 const TRANSFORM_CAPACITY: usize = 16384;
 /// A `TransformationMatrix` in the shader: a 2x2 matrix then a translation.
 const TRANSFORM_SIZE: usize = 24;
+/// A `ColorFilter` in the shader: twenty floats.
+const FILTER_SIZE: usize = 80;
 
 struct Annotation<'a>(&'a ID3DUserDefinedAnnotation);
 
@@ -380,7 +384,7 @@ impl DirectXRenderer {
                 .as_ref()
                 .context("devices missing")?
                 .device_context,
-            scene.transforms.entries(),
+            &scene.transforms,
         )?;
         if crate::fast::frame::draw_batches(self, scene)? {
             return Ok(());
@@ -1094,6 +1098,8 @@ impl DirectXGlobalElements {
 
         let transform_buffer = create_buffer(device, TRANSFORM_SIZE, TRANSFORM_CAPACITY)?;
         let transform_view = create_buffer_view(device, &transform_buffer)?;
+        let filter_buffer = create_buffer(device, FILTER_SIZE, TRANSFORM_CAPACITY)?;
+        let filter_view = create_buffer_view(device, &filter_buffer)?;
 
         Ok(Self {
             global_params_buffer,
@@ -1101,6 +1107,8 @@ impl DirectXGlobalElements {
             sampler,
             transform_buffer,
             transform_view,
+            filter_buffer,
+            filter_view,
         })
     }
 
@@ -1108,14 +1116,21 @@ impl DirectXGlobalElements {
     pub(crate) fn bind_transforms(
         &self,
         device_context: &ID3D11DeviceContext,
-        entries: &[TransformationMatrix],
+        table: &gpui::TransformTable,
     ) -> Result<()> {
+        let entries = table.entries();
         let count = entries.len().min(TRANSFORM_CAPACITY);
         if count > 0 {
             update_buffer(device_context, &self.transform_buffer, &entries[..count])?;
+            update_buffer(
+                device_context,
+                &self.filter_buffer,
+                &table.filters()[..count],
+            )?;
         }
         unsafe {
             device_context.VSSetShaderResources(2, Some(slice::from_ref(&self.transform_view)));
+            device_context.PSSetShaderResources(3, Some(slice::from_ref(&self.filter_view)));
         }
         Ok(())
     }

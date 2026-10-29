@@ -50,20 +50,84 @@ impl TransformIndex {
     }
 }
 
-/// The transforms a scene's primitives are drawn under, uploaded to the GPU
-/// once per frame. Entries are absolute: each is the composition of every
-/// transform from the window down to the primitive, so a shader reads one.
+/// A colour matrix applied to what a primitive paints, in the form of an SVG
+/// `feColorMatrix`: each row gives one of red, green, blue and alpha as a
+/// weighted sum of the four and an offset, on unpremultiplied colour.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(C)]
+pub struct ColorFilter {
+    /// Rows for red, green, blue and alpha; columns r, g, b, a, offset.
+    pub rows: [[f32; 5]; 4],
+}
+
+impl ColorFilter {
+    /// The filter that leaves colour alone.
+    pub const IDENTITY: ColorFilter = ColorFilter {
+        rows: [
+            [1., 0., 0., 0., 0.],
+            [0., 1., 0., 0., 0.],
+            [0., 0., 1., 0., 0.],
+            [0., 0., 0., 1., 0.],
+        ],
+    };
+
+    /// Whether this leaves colour alone.
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+
+    /// The filter that applies `first`, then `self`.
+    pub fn after(&self, first: &ColorFilter) -> ColorFilter {
+        let mut rows = [[0.; 5]; 4];
+        for (row, out) in self.rows.iter().zip(rows.iter_mut()) {
+            for column in 0..5 {
+                let mut sum = 0.;
+                for k in 0..4 {
+                    sum += row[k] * first.rows[k][column];
+                }
+                if column == 4 {
+                    sum += row[4];
+                }
+                out[column] = sum;
+            }
+        }
+        ColorFilter { rows }
+    }
+
+    fn bits(&self) -> [u32; 20] {
+        let mut bits = [0; 20];
+        for (i, value) in self.rows.iter().flatten().enumerate() {
+            bits[i] = value.to_bits();
+        }
+        bits
+    }
+}
+
+impl Default for ColorFilter {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+/// The transforms and colour filters a scene's primitives are drawn under,
+/// uploaded to the GPU once per frame. Entries are absolute: each is the
+/// composition of every transform (and filter) from the window down to the
+/// primitive, so a shader reads one.
 #[derive(Debug)]
 pub struct TransformTable {
     entries: Vec<TransformationMatrix>,
-    lookup: std::collections::HashMap<[u32; 6], u32>,
+    filters: Vec<ColorFilter>,
+    lookup: std::collections::HashMap<[u32; 26], u32>,
+    filtered: bool,
 }
 
 impl Default for TransformTable {
     fn default() -> Self {
         Self {
             entries: vec![TransformationMatrix::unit()],
+            filters: vec![ColorFilter::IDENTITY],
             lookup: std::collections::HashMap::new(),
+            filtered: false,
         }
     }
 }
@@ -74,6 +138,16 @@ impl TransformTable {
         &self.entries
     }
 
+    /// The colour filters, one per entry.
+    pub fn filters(&self) -> &[ColorFilter] {
+        &self.filters
+    }
+
+    /// Whether any entry has a colour filter.
+    pub fn has_filters(&self) -> bool {
+        self.filtered
+    }
+
     /// The matrix at `index`; the identity for an index the table does not hold.
     pub fn get(&self, index: TransformIndex) -> TransformationMatrix {
         self.entries
@@ -82,24 +156,49 @@ impl TransformTable {
             .unwrap_or_else(TransformationMatrix::unit)
     }
 
+    /// The colour filter at `index`; the identity for an index the table does
+    /// not hold.
+    pub fn filter(&self, index: TransformIndex) -> ColorFilter {
+        self.filters
+            .get(index.0 as usize)
+            .copied()
+            .unwrap_or(ColorFilter::IDENTITY)
+    }
+
     /// The index of `matrix`, adding it if the table does not hold it yet.
     pub fn intern(&mut self, matrix: TransformationMatrix) -> TransformIndex {
-        if matrix == TransformationMatrix::unit() {
+        self.intern_with(matrix, ColorFilter::IDENTITY)
+    }
+
+    /// The index of `matrix` with `filter`, adding it if the table does not
+    /// hold it yet.
+    pub fn intern_with(
+        &mut self,
+        matrix: TransformationMatrix,
+        filter: ColorFilter,
+    ) -> TransformIndex {
+        if matrix == TransformationMatrix::unit() && filter.is_identity() {
             return TransformIndex::IDENTITY;
         }
-        let key = matrix.bits();
+        let mut key = [0u32; 26];
+        key[..6].copy_from_slice(&matrix.bits());
+        key[6..].copy_from_slice(&filter.bits());
         if let Some(index) = self.lookup.get(&key) {
             return TransformIndex(*index);
         }
         let index = self.entries.len() as u32;
         self.entries.push(matrix);
+        self.filters.push(filter);
+        self.filtered |= !filter.is_identity();
         self.lookup.insert(key, index);
         TransformIndex(index)
     }
 
     fn clear(&mut self) {
         self.entries.truncate(1);
+        self.filters.truncate(1);
         self.lookup.clear();
+        self.filtered = false;
     }
 }
 
@@ -154,7 +253,18 @@ impl Scene {
     pub fn push_transform(&mut self, matrix: TransformationMatrix) -> TransformIndex {
         let previous = self.current_transform;
         let composed = self.transforms.get(previous).compose(matrix);
-        self.current_transform = self.transforms.intern(composed);
+        let filter = self.transforms.filter(previous);
+        self.current_transform = self.transforms.intern_with(composed, filter);
+        previous
+    }
+
+    /// Colours what is inserted next through `filter`, after any filter already
+    /// in force. Returns the previous index for [`Self::pop_transform`].
+    pub fn push_color_filter(&mut self, filter: ColorFilter) -> TransformIndex {
+        let previous = self.current_transform;
+        let combined = self.transforms.filter(previous).after(&filter);
+        let matrix = self.transforms.get(previous);
+        self.current_transform = self.transforms.intern_with(matrix, combined);
         previous
     }
 
@@ -203,7 +313,9 @@ impl Scene {
         let clipped_bounds = if transform.is_identity() {
             local_bounds
         } else {
-            self.transforms.get(transform).transform_bounds(&local_bounds)
+            self.transforms
+                .get(transform)
+                .transform_bounds(&local_bounds)
         };
         primitive.set_transform_index(transform);
         if transform_paths && !transform.is_identity() {
@@ -397,7 +509,9 @@ impl Primitive {
             Primitive::Path(_) => {}
             Primitive::Surface(_) | Primitive::ExternalTexture(_) => {
                 if !index.is_identity() {
-                    log::debug!("a surface or external texture is drawn axis-aligned under a transform");
+                    log::debug!(
+                        "a surface or external texture is drawn axis-aligned under a transform"
+                    );
                 }
             }
         }
@@ -742,8 +856,7 @@ impl Quad {
 
     /// Sets the style of the border.
     pub fn set_border_style(&mut self, style: BorderStyle) {
-        self.border_style_and_transform =
-            Self::pack_border_style(style, self.transform_index());
+        self.border_style_and_transform = Self::pack_border_style(style, self.transform_index());
     }
 
     /// The transform the quad is drawn under.
@@ -941,8 +1054,14 @@ impl TransformationMatrix {
         let mapped = corners.map(|corner| self.transform_point(corner));
         let min_x = mapped.iter().map(|p| p.x.0).fold(f32::INFINITY, f32::min);
         let min_y = mapped.iter().map(|p| p.y.0).fold(f32::INFINITY, f32::min);
-        let max_x = mapped.iter().map(|p| p.x.0).fold(f32::NEG_INFINITY, f32::max);
-        let max_y = mapped.iter().map(|p| p.y.0).fold(f32::NEG_INFINITY, f32::max);
+        let max_x = mapped
+            .iter()
+            .map(|p| p.x.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = mapped
+            .iter()
+            .map(|p| p.y.0)
+            .fold(f32::NEG_INFINITY, f32::max);
         Bounds {
             origin: crate::point(ScaledPixels(min_x), ScaledPixels(min_y)),
             size: crate::size(ScaledPixels(max_x - min_x), ScaledPixels(max_y - min_y)),
@@ -956,7 +1075,12 @@ impl TransformationMatrix {
         if determinant.abs() < f32::EPSILON || !determinant.is_finite() {
             return None;
         }
-        let (ia, ib, ic, id) = (d / determinant, -b / determinant, -c / determinant, a / determinant);
+        let (ia, ib, ic, id) = (
+            d / determinant,
+            -b / determinant,
+            -c / determinant,
+            a / determinant,
+        );
         Some(TransformationMatrix {
             rotation_scale: [[ia, ib], [ic, id]],
             translation: [
@@ -983,8 +1107,12 @@ impl TransformationMatrix {
     pub fn transform_logical_point(&self, point: Point<Pixels>) -> Point<Pixels> {
         let (x, y) = (point.x.0, point.y.0);
         crate::point(
-            Pixels(self.rotation_scale[0][0] * x + self.rotation_scale[0][1] * y + self.translation[0]),
-            Pixels(self.rotation_scale[1][0] * x + self.rotation_scale[1][1] * y + self.translation[1]),
+            Pixels(
+                self.rotation_scale[0][0] * x + self.rotation_scale[0][1] * y + self.translation[0],
+            ),
+            Pixels(
+                self.rotation_scale[1][0] * x + self.rotation_scale[1][1] * y + self.translation[1],
+            ),
         )
     }
 
@@ -1315,6 +1443,45 @@ mod transform_tests {
         TransformationMatrix::unit().translate(point(ScaledPixels(x), ScaledPixels(y)))
     }
 
+    fn halve_red() -> ColorFilter {
+        let mut filter = ColorFilter::IDENTITY;
+        filter.rows[0][0] = 0.5;
+        filter
+    }
+
+    #[test]
+    fn color_filters_nest_and_restore() {
+        let mut scene = Scene::default();
+        assert!(!scene.transforms.has_filters());
+        let outer = scene.push_color_filter(halve_red());
+        let inner = scene.push_color_filter(halve_red());
+        let filter = scene.transforms.filter(scene.current_transform());
+        assert_eq!(filter.rows[0][0], 0.25);
+        scene.pop_transform(inner);
+        assert_eq!(
+            scene.transforms.filter(scene.current_transform()).rows[0][0],
+            0.5
+        );
+        scene.pop_transform(outer);
+        assert!(scene.current_transform().is_identity());
+        assert!(scene.transforms.has_filters());
+        scene.clear();
+        assert!(!scene.transforms.has_filters());
+        assert_eq!(scene.transforms.filters().len(), 1);
+    }
+
+    #[test]
+    fn a_filter_survives_a_transform_pushed_inside_it() {
+        let mut scene = Scene::default();
+        let filtered = scene.push_color_filter(halve_red());
+        let moved = scene.push_transform(translation(4., 0.));
+        let index = scene.current_transform();
+        assert_eq!(scene.transforms.filter(index).rows[0][0], 0.5);
+        assert_eq!(scene.transforms.get(index), translation(4., 0.));
+        scene.pop_transform(moved);
+        scene.pop_transform(filtered);
+    }
+
     #[test]
     fn the_table_starts_with_the_identity_and_resets_on_clear() {
         let mut scene = Scene::default();
@@ -1357,7 +1524,12 @@ mod transform_tests {
             .collect();
         assert_eq!(indices, vec![0, 1, 0]);
         // The border style survives the stamping.
-        assert!(scene.quads.iter().all(|q| q.border_style() == BorderStyle::Dashed));
+        assert!(
+            scene
+                .quads
+                .iter()
+                .all(|q| q.border_style() == BorderStyle::Dashed)
+        );
     }
 
     #[test]
@@ -1422,7 +1594,9 @@ mod transform_tests {
         let matrix = TransformationMatrix::about(30., 40., rotation(33.))
             .compose(translation(7., -3.))
             .scale(size(2., 3.));
-        let inverse = matrix.inverse().expect("a rotation and scale is invertible");
+        let inverse = matrix
+            .inverse()
+            .expect("a rotation and scale is invertible");
         let start = point(ScaledPixels(12.), ScaledPixels(-8.));
         let back = inverse.transform_point(matrix.transform_point(start));
         assert!((back.x.0 - start.x.0).abs() < 1e-3 && (back.y.0 - start.y.0).abs() < 1e-3);

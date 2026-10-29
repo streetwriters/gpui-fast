@@ -890,7 +890,7 @@ impl Harness {
             &mut Default::default(),
             &self.queue,
             &self.transform_buffer,
-            scene.transforms.entries(),
+            &scene.transforms,
         );
         crate::fast::frame::record_into(self, scene, &view, clear).expect("frame recorded");
         read_back(&self.device, &self.queue, &texture, self.format)
@@ -1284,5 +1284,70 @@ mod transforms {
             );
         }
         assert!(is_red(&pixels, 100, 100));
+    }
+
+    fn grayscale() -> gpui::ColorFilter {
+        let row = [0.2126, 0.7152, 0.0722, 0., 0.];
+        gpui::ColorFilter {
+            rows: [row, row, row, [0., 0., 0., 1., 0.]],
+        }
+    }
+
+    #[test]
+    fn a_color_filter_recolours_what_is_drawn_under_it() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let previous = scene.push_color_filter(grayscale());
+        red_quad(
+            &mut scene,
+            TransformationMatrix::unit(),
+            sp(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        scene.pop_transform(previous);
+        red_quad(
+            &mut scene,
+            TransformationMatrix::unit(),
+            sp(0., 0., 20., 20.),
+            0.,
+            None,
+        );
+        let pixels = render(&mut harness, scene);
+        let [r, g, b, a] = pixel(&pixels, SIZE, 100, 100);
+        assert!(
+            r.abs_diff(54) < 6 && g.abs_diff(54) < 6 && b.abs_diff(54) < 6,
+            "{r} {g} {b}"
+        );
+        assert_eq!(a, 255);
+        assert!(is_red(&pixels, 5, 5));
+    }
+
+    #[test]
+    fn a_color_filter_composes_with_a_transform() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let previous = scene.push_color_filter(grayscale());
+        red_quad(
+            &mut scene,
+            rotation_about(45., 100., 100.),
+            sp(50., 50., 100., 100.),
+            0.,
+            None,
+        );
+        scene.pop_transform(previous);
+        let pixels = render(&mut harness, scene);
+        let [r, g, b, _] = pixel(&pixels, SIZE, 100, 45);
+        assert!(
+            r.abs_diff(g) < 3 && g.abs_diff(b) < 3 && r > 40,
+            "{r} {g} {b}"
+        );
+        assert!(!is_red(&pixels, 100, 100));
     }
 }

@@ -305,6 +305,35 @@ TransformationMatrix transform_at(uint index) {
     return transforms[index];
 }
 
+
+struct ColorFilter {
+    float4 c0;
+    float4 c1;
+    float4 c2;
+    float4 c3;
+    float4 c4;
+};
+
+StructuredBuffer<ColorFilter> color_filters: register(t3);
+
+// Runs the colour filter at `index` over a premultiplied colour. The matrix is
+// defined on unpremultiplied colour, so the colour is divided by its alpha
+// first and multiplied by the filtered alpha after.
+float4 apply_color_filter(uint index, float4 premultiplied) {
+    if (index == 0u || premultiplied.a <= 0.0) {
+        return premultiplied;
+    }
+    ColorFilter f = color_filters[index];
+    float4 c = float4(premultiplied.rgb / premultiplied.a, premultiplied.a);
+    float4 result;
+    result.r = dot(c, f.c0) + f.c1.x;
+    result.g = dot(c, float4(f.c1.y, f.c1.z, f.c1.w, f.c2.x)) + f.c2.y;
+    result.b = dot(c, float4(f.c2.z, f.c2.w, f.c3.x, f.c3.y)) + f.c3.z;
+    result.a = dot(c, float4(f.c3.w, f.c4.x, f.c4.y, f.c4.z)) + f.c4.w;
+    result = saturate(result);
+    return float4(result.rgb * result.a, result.a);
+}
+
 float2 apply_transform(TransformationMatrix transformation, float2 position) {
     return mul(position, transformation.rotation_scale) + transformation.translation;
 }
@@ -626,7 +655,7 @@ QuadVertexOutput quad_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_I
     return output;
 }
 
-float4 quad_fragment(QuadFragmentInput input): SV_Target {
+float4 quad_fragment_body(QuadFragmentInput input) {
     Quad quad = quads[input.quad_id];
     uint transform_index = quad.border_style_and_transform >> 8u;
     float2 frag_pos = fragment_position(input.position, input.local_position, transform_index);
@@ -920,6 +949,10 @@ float4 quad_fragment(QuadFragmentInput input): SV_Target {
     return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf) * mask_alpha);
 }
 
+float4 quad_fragment(QuadFragmentInput input): SV_Target {
+    return apply_color_filter(quads[input.quad_id].border_style_and_transform >> 8u, quad_fragment_body(input));
+}
+
 /*
 **
 **              Shadows
@@ -987,7 +1020,7 @@ ShadowVertexOutput shadow_vertex(uint vertex_id: SV_VertexID, uint instance_id: 
     return output;
 }
 
-float4 shadow_fragment(ShadowFragmentInput input): SV_TARGET {
+float4 shadow_fragment_body(ShadowFragmentInput input) {
     Shadow shadow = shadows[input.shadow_id];
     float2 frag_pos = fragment_position(input.position, input.local_position, shadow.transform_index);
 
@@ -1037,6 +1070,10 @@ float4 shadow_fragment(ShadowFragmentInput input): SV_TARGET {
     }
     alpha *= content_mask_alpha(frag_pos, shadow.content_mask);
     return input.color * float4(1., 1., 1., alpha);
+}
+
+float4 shadow_fragment(ShadowFragmentInput input): SV_Target {
+    return apply_color_filter(shadows[input.shadow_id].transform_index, shadow_fragment_body(input));
 }
 
 /*
@@ -1196,7 +1233,7 @@ UnderlineVertexOutput underline_vertex(uint vertex_id: SV_VertexID, uint instanc
     return output;
 }
 
-float4 underline_fragment(UnderlineFragmentInput input): SV_Target {
+float4 underline_fragment_body(UnderlineFragmentInput input) {
     const float WAVE_FREQUENCY = 2.0;
     const float WAVE_HEIGHT_RATIO = 0.8;
 
@@ -1223,6 +1260,10 @@ float4 underline_fragment(UnderlineFragmentInput input): SV_Target {
     } else {
         return input.color * float4(1., 1., 1., mask_alpha);
     }
+}
+
+float4 underline_fragment(UnderlineFragmentInput input): SV_Target {
+    return apply_color_filter(underlines[input.underline_id].transform_index, underline_fragment_body(input));
 }
 
 /*
@@ -1283,13 +1324,17 @@ MonochromeSpriteVertexOutput monochrome_sprite_vertex(uint vertex_id: SV_VertexI
     return output;
 }
 
-float4 monochrome_sprite_fragment(MonochromeSpriteFragmentInput input): SV_Target {
+float4 monochrome_sprite_fragment_body(MonochromeSpriteFragmentInput input) {
     float sample = t_sprite.Sample(s_sprite, input.tile_position).r;
     float alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, grayscale_enhanced_contrast, gamma_ratios);
     MonochromeSprite sprite = mono_sprites[input.sprite_id];
     float2 frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
     float mask_alpha = content_mask_alpha(frag_pos, sprite.content_mask);
     return float4(input.color.rgb, input.color.a * alpha_corrected * mask_alpha);
+}
+
+float4 monochrome_sprite_fragment(MonochromeSpriteFragmentInput input): SV_Target {
+    return apply_color_filter(mono_sprites[input.sprite_id].transform_index, monochrome_sprite_fragment_body(input));
 }
 
 MonochromeSpriteVertexOutput subpixel_sprite_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
@@ -1376,7 +1421,7 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
     return output;
 }
 
-float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
+float4 polychrome_sprite_fragment_body(PolychromeSpriteFragmentInput input) {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
     float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
     float2 frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
@@ -1390,4 +1435,8 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     color.a *= sprite.opacity * saturate(0.5 - distance) *
         content_mask_alpha(frag_pos, sprite.content_mask);
     return color;
+}
+
+float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
+    return apply_color_filter(poly_sprites[input.sprite_id].transform_index, polychrome_sprite_fragment_body(input));
 }

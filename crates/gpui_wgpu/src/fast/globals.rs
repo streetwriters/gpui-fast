@@ -52,31 +52,45 @@ pub(crate) fn write_globals(
     queue.write_buffer(buffer, renderer.gamma_offset, &bytes[2 * GLOBALS..]);
 }
 
-/// The transform table last written to the transform buffer.
+/// The transform table and colour filters last written to the transform buffer.
 #[derive(Default)]
-pub(crate) struct UploadedTransforms(Vec<u8>);
+pub(crate) struct UploadedTransforms {
+    transforms: Vec<u8>,
+    filters: Vec<u8>,
+}
 
-/// Writes the scene's transform table to `buffer` when it differs from the
-/// one there. Entries past the buffer's capacity are dropped, so the
-/// primitives that use them are drawn as if the table did not reach them.
+/// Writes the scene's transforms and colour filters to `buffer` when they
+/// differ from the ones there. Entries past the buffer's capacity are dropped,
+/// so the primitives that use them are drawn as if the table did not reach them.
 pub(crate) fn write_transforms(
     uploaded: &mut UploadedTransforms,
     queue: &wgpu::Queue,
     buffer: &wgpu::Buffer,
-    entries: &[gpui::TransformationMatrix],
+    table: &gpui::TransformTable,
 ) {
-    let count = entries
-        .len()
-        .min(crate::wgpu_renderer::TRANSFORM_CAPACITY as usize);
+    let capacity = crate::wgpu_renderer::TRANSFORM_CAPACITY as usize;
+    let entries = table.entries();
+    let count = entries.len().min(capacity);
     let mut bytes = Vec::with_capacity(count * crate::wgpu_renderer::TRANSFORM_SIZE as usize);
     for entry in &entries[..count] {
         for bits in entry.bits() {
             bytes.extend_from_slice(&bits.to_le_bytes());
         }
     }
-    if bytes.is_empty() || uploaded.0 == bytes {
-        return;
+    if !bytes.is_empty() && uploaded.transforms != bytes {
+        queue.write_buffer(buffer, 0, &bytes);
+        uploaded.transforms = bytes;
     }
-    queue.write_buffer(buffer, 0, &bytes);
-    uploaded.0 = bytes;
+    // A transformed primitive reads its filter even when none changes colour, so
+    // every entry has one.
+    let mut bytes = Vec::with_capacity(count * crate::wgpu_renderer::FILTER_SIZE as usize);
+    for filter in &table.filters()[..count] {
+        for value in filter.rows.iter().flatten() {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    if !bytes.is_empty() && uploaded.filters != bytes {
+        queue.write_buffer(buffer, crate::wgpu_renderer::FILTER_OFFSET, &bytes);
+        uploaded.filters = bytes;
+    }
 }

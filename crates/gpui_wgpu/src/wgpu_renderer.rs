@@ -69,11 +69,15 @@ pub(crate) struct GlobalParams {
 pub(crate) const TRANSFORM_CAPACITY: u64 = 16384;
 /// A `TransformationMatrix` in the shader: a 2x2 matrix then a translation.
 pub(crate) const TRANSFORM_SIZE: u64 = 24;
+/// A colour filter in the shader: twenty floats, four rows of five.
+pub(crate) const FILTER_SIZE: u64 = 80;
+/// Where the colour filters start in the transform buffer, after the matrices.
+pub(crate) const FILTER_OFFSET: u64 = TRANSFORM_CAPACITY * TRANSFORM_SIZE;
 
 pub(crate) fn create_transform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("transform_buffer"),
-        size: TRANSFORM_CAPACITY * TRANSFORM_SIZE,
+        size: TRANSFORM_CAPACITY * (TRANSFORM_SIZE + FILTER_SIZE),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -572,11 +576,13 @@ impl WgpuRendererCore {
         if !uses_webgl_instance_data {
             globals_entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(TRANSFORM_SIZE),
+                    min_binding_size: NonZeroU64::new(
+                        TRANSFORM_CAPACITY * (TRANSFORM_SIZE + FILTER_SIZE),
+                    ),
                 },
                 count: None,
             });
@@ -1625,7 +1631,7 @@ impl WgpuRendererCore {
                 &mut self.fast_frame.transforms,
                 &self.resources.queue,
                 buffer,
-                scene.transforms.entries(),
+                &scene.transforms,
             );
         }
 
