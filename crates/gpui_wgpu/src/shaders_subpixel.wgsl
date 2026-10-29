@@ -7,7 +7,6 @@ struct SubpixelSprite {
     content_mask: ContentMask,
     color: Hsla,
     tile: AtlasTile,
-    transformation: TransformationMatrix,
 }
 @group(1) @binding(0) var<storage, read> b_subpixel_sprites: array<SubpixelSprite>;
 
@@ -31,7 +30,7 @@ fn vs_subpixel_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_i
     let sprite = b_subpixel_sprites[instance_id];
 
     var out = SubpixelSpriteOutput();
-    let local_position = apply_transform(sprite.transformation, unit_vertex * sprite.bounds.size + sprite.bounds.origin);
+    let local_position = unit_vertex * sprite.bounds.size + sprite.bounds.origin;
     out.position = to_device_position_impl(apply_transform(transform_at(sprite.transform_index), local_position));
     out.local_position = local_position;
     out.tile_position = to_tile_position(unit_vertex, sprite.tile);

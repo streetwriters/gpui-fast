@@ -741,11 +741,10 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   MonochromeSprite sprite = sprites[sprite_id];
   TransformationMatrix table = transform_at(transforms, sprite.transform_index);
-  // The sprite's own matrix places it within its local space, where the
-  // content mask is; the table's matrix then places that space on screen.
-  float2 base = unit_vertex * float2(sprite.bounds.size.width, sprite.bounds.size.height) +
+  // The content mask is in the sprite's local space; the table's matrix
+  // places that space on screen.
+  float2 local_position = unit_vertex * float2(sprite.bounds.size.width, sprite.bounds.size.height) +
       float2(sprite.bounds.origin.x, sprite.bounds.origin.y);
-  float2 local_position = apply_transform(sprite.transformation, base);
   float2 screen = apply_transform(table, local_position);
   float2 viewport = float2((float)viewport_size->width, (float)viewport_size->height);
   float4 device_position =

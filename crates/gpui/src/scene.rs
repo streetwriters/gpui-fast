@@ -1154,7 +1154,6 @@ pub struct MonochromeSprite {
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
     pub tile: AtlasTile,
-    pub transformation: TransformationMatrix,
 }
 
 impl From<MonochromeSprite> for Primitive {
@@ -1173,7 +1172,6 @@ pub struct SubpixelSprite {
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
     pub tile: AtlasTile,
-    pub transformation: TransformationMatrix,
 }
 
 impl From<SubpixelSprite> for Primitive {

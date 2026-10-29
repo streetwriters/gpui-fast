@@ -15,7 +15,7 @@ use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use crate::{
     AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ContentMask, Corners, DevicePixels,
     DrawOrder, Hsla, MonochromeSprite, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene,
-    SubpixelSprite, TileId, TransformationMatrix, hsla, point, size,
+    SubpixelSprite, TileId, hsla, point, size,
 };
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -193,7 +193,6 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                             content_mask,
                             color,
                             tile: tile(id, AtlasTextureKind::Monochrome, texture),
-                            transformation: TransformationMatrix::unit(),
                         }),
                         Kind::Subpixel => scene.insert_primitive(SubpixelSprite {
                             order: 0,
@@ -202,7 +201,6 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                             content_mask,
                             color,
                             tile: tile(id, AtlasTextureKind::Subpixel, texture),
-                            transformation: TransformationMatrix::unit(),
                         }),
                         Kind::Polychrome => scene.insert_primitive(PolychromeSprite {
                             order: 0,

@@ -512,7 +512,6 @@ fn add_content(
         content_mask: mask(clip),
         color: Hsla::from(rgba(0xffffffff)),
         tile: mono,
-        transformation: TransformationMatrix::unit(),
     });
     if !harness.dual_source_blending {
         eprintln!("no dual-source blending: subpixel sprites left out");
@@ -525,7 +524,6 @@ fn add_content(
             content_mask: mask(clip),
             color: Hsla::from(rgba(0x000000ff)),
             tile: subpixel,
-            transformation: TransformationMatrix::unit(),
         });
     }
     scene.insert_primitive(PolychromeSprite {
@@ -594,7 +592,6 @@ fn add_covered_paths(
         content_mask: mask,
         color: Hsla::from(rgba(0xff8800ff)),
         tile: glyph_tile(harness, 1, false),
-        transformation: TransformationMatrix::unit(),
     });
     let mut path = Path::new(point(px(250. + ox), px(360. + oy)));
     path.line_to(point(px(290.5 + ox), px(372. + oy)));
@@ -1227,6 +1224,35 @@ mod transforms {
         assert!(is_painted(&pixels, 155, 100));
         assert!(!is_painted(&pixels, 54, 54));
         assert!(!is_painted(&pixels, 146, 146));
+    }
+
+    fn painted_near(pixels: &[u8], x: usize, y: usize) -> bool {
+        (y - 3..=y + 3).any(|y| (x - 3..=x + 3).any(|x| is_painted(pixels, x, y)))
+    }
+
+    #[test]
+    fn a_rotated_glyph_sprite_covers_the_rotated_rectangle() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let previous = scene.push_transform(rotation_about(45., 100., 100.));
+        scene.insert_primitive(MonochromeSprite {
+            order: 0,
+            transform_index: 0,
+            bounds: sp(50., 50., 100., 100.),
+            content_mask: no_mask(),
+            color: Hsla::from(rgba(0xff0000ff)),
+            tile: glyph_tile(&harness, 1, false),
+        });
+        scene.pop_transform(previous);
+        let pixels = render(&mut harness, scene);
+        assert!(painted_near(&pixels, 100, 100));
+        assert!(painted_near(&pixels, 100, 45));
+        assert!(painted_near(&pixels, 155, 100));
+        assert!(!painted_near(&pixels, 54, 54));
+        assert!(!painted_near(&pixels, 146, 146));
     }
 
     #[test]

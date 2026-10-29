@@ -3,8 +3,8 @@
 use crate::AppContext as _;
 use crate::{
     AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ContentMask, DevicePixels, Hsla,
-    LayerFrame, LayerKey, MonochromeSprite, Path, Pixels, Point, PolychromeSprite, Quad,
-    ScaledPixels, Scene, Shadow, SubpixelSprite, TileCoord, TileId, TransformationMatrix,
+    LayerFrame, LayerKey, MonochromeSprite, Path, PolychromeSprite, Quad,
+    ScaledPixels, Scene, Shadow, SubpixelSprite, TileCoord, TileId,
     Underline, decode_layer_tile, fast::layers::scene::translate_primitive, layer_tile_id,
     layer_tile_texture_id, point, px, scene::Primitive, size,
 };
@@ -369,17 +369,6 @@ fn translation_moves_every_position_a_primitive_carries() {
     assert_eq!(moved.bounds, sp(8., -1., 3., 4.));
     assert_eq!(moved.content_mask.bounds, moved_mask);
 
-    // A transformation applies to window positions, `R·p + t`, so moving the
-    // sprite by `delta` moves `t` to `t + (I − R)·delta`.
-    let rotation = TransformationMatrix {
-        rotation_scale: [[0., -1.], [1., 0.]],
-        translation: [5., 6.],
-    };
-    let expected = TransformationMatrix {
-        rotation_scale: [[0., -1.], [1., 0.]],
-        // (I − R)·(7, −3) = (7, −3) − (3, 7) = (4, −10)
-        translation: [5. + 4., 6. - 10.],
-    };
     let mono = MonochromeSprite {
         order: 0,
         transform_index: 0,
@@ -387,29 +376,13 @@ fn translation_moves_every_position_a_primitive_carries() {
         content_mask: mask,
         color: Hsla::red(),
         tile: atlas_tile(),
-        transformation: rotation,
     };
     let Primitive::MonochromeSprite(moved) = translate(mono.into()) else {
         unreachable!()
     };
     assert_eq!(moved.bounds, sp(8., -1., 3., 4.));
     assert_eq!(moved.content_mask.bounds, moved_mask);
-    assert_eq!(moved.transformation, expected);
     assert_eq!(moved.tile, atlas_tile());
-    let window_position = |m: &TransformationMatrix, p: Point<Pixels>| m.apply(p);
-    assert_eq!(
-        window_position(&moved.transformation, point(px(8.), px(-1.))),
-        window_position(&rotation, point(px(1.), px(2.))) + point(px(7.), px(-3.)),
-    );
-
-    let unit = MonochromeSprite {
-        transformation: TransformationMatrix::unit(),
-        ..mono
-    };
-    let Primitive::MonochromeSprite(moved) = translate(unit.into()) else {
-        unreachable!()
-    };
-    assert_eq!(moved.transformation, TransformationMatrix::unit());
 
     let subpixel = SubpixelSprite {
         order: 0,
@@ -418,14 +391,12 @@ fn translation_moves_every_position_a_primitive_carries() {
         content_mask: mask,
         color: Hsla::red(),
         tile: atlas_tile(),
-        transformation: rotation,
     };
     let Primitive::SubpixelSprite(moved) = translate(subpixel.into()) else {
         unreachable!()
     };
     assert_eq!(moved.bounds, sp(8., -1., 3., 4.));
     assert_eq!(moved.content_mask.bounds, moved_mask);
-    assert_eq!(moved.transformation, expected);
 
     let poly = PolychromeSprite {
         order: 0,
@@ -1730,10 +1701,10 @@ mod paint {
 /// transformed sprite reach the tiles they draw over, not just the tiles
 /// their bounds cover.
 mod footprints {
-    use super::{atlas_tile, layer, sp, wide_mask};
+    use super::{layer, sp, wide_mask};
     use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
     use crate::{
-        Hsla, MonochromeSprite, Radians, Scene, Shadow, TileCoord, TransformationMatrix, point,
+        Hsla, Scene, Shadow, TileCoord,
     };
 
     fn shadow(color: Hsla) -> Shadow {
@@ -1749,26 +1720,6 @@ mod footprints {
             element_corner_radii: Default::default(),
             inset: 0,
             transform_index: 0,
-        }
-    }
-
-    fn rotated_sprite(color: Hsla) -> MonochromeSprite {
-        // A 70 px square ending 2 px short of tile (1, 0), turned an eighth
-        // around its centre (475, 135): its corners reach x = 524.5.
-        MonochromeSprite {
-            order: 0,
-            transform_index: 0,
-            bounds: sp(440., 100., 70., 70.),
-            content_mask: wide_mask(),
-            color,
-            tile: atlas_tile(),
-            transformation: TransformationMatrix::unit()
-                .translate(point(crate::ScaledPixels(475.), crate::ScaledPixels(135.)))
-                .rotate(Radians(std::f32::consts::FRAC_PI_4))
-                .translate(point(
-                    crate::ScaledPixels(-475.),
-                    crate::ScaledPixels(-135.),
-                )),
         }
     }
 
@@ -1824,25 +1775,6 @@ mod footprints {
                 &scene_of(masked(Hsla::blue()))
             ),
             [TileCoord { x: 0, y: 0 }]
-        );
-    }
-
-    #[test]
-    fn a_rotated_sprite_change_dirties_every_tile_it_turns_into() {
-        assert_eq!(
-            dirty(
-                &scene_of(rotated_sprite(Hsla::red())),
-                &scene_of(rotated_sprite(Hsla::blue()))
-            ),
-            BOTH
-        );
-        let frame = layer(scene_of(rotated_sprite(Hsla::red())));
-        assert_eq!(
-            frame
-                .tile_scene(TileCoord { x: 1, y: 0 })
-                .monochrome_sprites
-                .len(),
-            1
         );
     }
 }

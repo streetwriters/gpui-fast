@@ -5,7 +5,7 @@
 use crate::{
     AtlasTextureId, AtlasTextureKind, Bounds, ContentMask, Point, Rgba, ScaledPixels, Scene,
     TileId, point,
-    scene::{PaintOperation, Primitive, TransformationMatrix},
+    scene::{PaintOperation, Primitive},
     size,
 };
 use std::rc::Rc;
@@ -257,47 +257,7 @@ pub(crate) fn drawn_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
                 ),
             }
         }
-        Primitive::MonochromeSprite(sprite) => {
-            transformed_bounds(sprite.bounds, &sprite.transformation)
-        }
-        Primitive::SubpixelSprite(sprite) => {
-            transformed_bounds(sprite.bounds, &sprite.transformation)
-        }
         primitive => *primitive.bounds(),
-    }
-}
-
-/// The smallest rectangle holding `bounds` transformed by `matrix`.
-fn transformed_bounds(
-    bounds: Bounds<ScaledPixels>,
-    matrix: &TransformationMatrix,
-) -> Bounds<ScaledPixels> {
-    if *matrix == TransformationMatrix::unit() {
-        return bounds;
-    }
-    let apply = |x: f32, y: f32| {
-        let m = &matrix.rotation_scale;
-        (
-            m[0][0] * x + m[0][1] * y + matrix.translation[0],
-            m[1][0] * x + m[1][1] * y + matrix.translation[1],
-        )
-    };
-    let (x0, y0) = (bounds.origin.x.0, bounds.origin.y.0);
-    let (x1, y1) = (x0 + bounds.size.width.0, y0 + bounds.size.height.0);
-    let corners = [apply(x0, y0), apply(x1, y0), apply(x0, y1), apply(x1, y1)];
-    let min_x = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
-    let max_x = corners
-        .iter()
-        .map(|c| c.0)
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
-    let max_y = corners
-        .iter()
-        .map(|c| c.1)
-        .fold(f32::NEG_INFINITY, f32::max);
-    Bounds {
-        origin: point(ScaledPixels(min_x), ScaledPixels(min_y)),
-        size: size(ScaledPixels(max_x - min_x), ScaledPixels(max_y - min_y)),
     }
 }
 
@@ -342,12 +302,10 @@ pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixel
         Primitive::MonochromeSprite(sprite) => {
             mv(&mut sprite.bounds);
             mv_mask(&mut sprite.content_mask);
-            translate_transformation(&mut sprite.transformation, delta);
         }
         Primitive::SubpixelSprite(sprite) => {
             mv(&mut sprite.bounds);
             mv_mask(&mut sprite.content_mask);
-            translate_transformation(&mut sprite.transformation, delta);
         }
         Primitive::PolychromeSprite(sprite) => {
             mv(&mut sprite.bounds);
@@ -362,15 +320,4 @@ pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixel
             mv_mask(&mut texture.content_mask);
         }
     }
-}
-
-/// A sprite's transformation applies to window positions (`R·p + t`, see
-/// `to_device_position_transformed` in the shaders), so for the sprite to
-/// move by `delta` with it, `t` becomes `t + (I − R)·delta`. The unit
-/// transformation stays the unit.
-fn translate_transformation(matrix: &mut TransformationMatrix, delta: Point<ScaledPixels>) {
-    let r = matrix.rotation_scale;
-    let (dx, dy) = (delta.x.0, delta.y.0);
-    matrix.translation[0] += dx - (r[0][0] * dx + r[0][1] * dy);
-    matrix.translation[1] += dy - (r[1][0] * dx + r[1][1] * dy);
 }

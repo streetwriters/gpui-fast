@@ -1342,7 +1342,6 @@ struct MonochromeSprite {
     content_mask: ContentMask,
     color: Hsla,
     tile: AtlasTile,
-    transformation: TransformationMatrix,
 }
 
 
@@ -1361,9 +1360,9 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     let sprite = load_mono_sprite(instance_id);
 
     var out = MonoSpriteVarying();
-    // The sprite's own matrix places it within its local space, where the
-    // content mask is; the table's matrix then places that space on screen.
-    let local_position = apply_transform(sprite.transformation, unit_vertex * sprite.bounds.size + sprite.bounds.origin);
+    // The content mask is in the sprite's local space; the table's matrix
+    // places that space on screen.
+    let local_position = unit_vertex * sprite.bounds.size + sprite.bounds.origin;
     out.position = to_device_position_impl(apply_transform(transform_at(sprite.transform_index), local_position));
     out.local_position = local_position;
 

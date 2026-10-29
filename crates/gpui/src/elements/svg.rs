@@ -141,49 +141,35 @@ impl Element for Svg {
                 let transformation = self
                     .transformation
                     .as_ref()
-                    .map(|transformation| {
-                        transformation.into_matrix(bounds.center(), window.scale_factor())
-                    })
+                    .map(|transformation| transformation.into_matrix(bounds.center()))
                     .unwrap_or_default();
 
-                if let Some((data, path)) = self.data.as_ref().zip(self.data_path.as_ref()) {
-                    if let Some(color) = style.text.color {
+                window.with_transformation(transformation, |window| {
+                    if let Some((data, path)) = self.data.as_ref().zip(self.data_path.as_ref()) {
+                        if let Some(color) = style.text.color {
+                            window
+                                .paint_svg(bounds, path.clone(), Some(&**data), color, cx)
+                                .log_err();
+                        }
+                    } else if let Some((path, color)) =
+                        self.external_path.as_ref().zip(style.text.color)
+                    {
+                        let Some(bytes) = window
+                            .use_asset::<SvgAsset>(path, cx)
+                            .and_then(|asset| asset.log_err())
+                        else {
+                            return;
+                        };
+
                         window
-                            .paint_svg(
-                                bounds,
-                                path.clone(),
-                                Some(&**data),
-                                transformation,
-                                color,
-                                cx,
-                            )
+                            .paint_svg(bounds, path.clone(), Some(&bytes), color, cx)
+                            .log_err();
+                    } else if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
+                        window
+                            .paint_svg(bounds, path.clone(), None, color, cx)
                             .log_err();
                     }
-                } else if let Some((path, color)) =
-                    self.external_path.as_ref().zip(style.text.color)
-                {
-                    let Some(bytes) = window
-                        .use_asset::<SvgAsset>(path, cx)
-                        .and_then(|asset| asset.log_err())
-                    else {
-                        return;
-                    };
-
-                    window
-                        .paint_svg(
-                            bounds,
-                            path.clone(),
-                            Some(&bytes),
-                            transformation,
-                            color,
-                            cx,
-                        )
-                        .log_err();
-                } else if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
-                    window
-                        .paint_svg(bounds, path.clone(), None, transformation, color, cx)
-                        .log_err();
-                }
+                });
             },
         )
     }
@@ -274,13 +260,14 @@ impl Transformation {
         self
     }
 
-    fn into_matrix(self, center: Point<Pixels>, scale_factor: f32) -> TransformationMatrix {
+    /// The matrix in logical pixels, for [`Window::with_transformation`].
+    fn into_matrix(self, center: Point<Pixels>) -> TransformationMatrix {
         //Note: if you read this as a sequence of matrix multiplications, start from the bottom
         TransformationMatrix::unit()
-            .translate(center.scale(scale_factor) + self.translate.scale(scale_factor))
+            .translate(center.scale(1.0) + self.translate.scale(1.0))
             .rotate(self.rotate)
             .scale(self.scale)
-            .translate(center.scale(-scale_factor))
+            .translate(center.scale(-1.0))
     }
 }
 

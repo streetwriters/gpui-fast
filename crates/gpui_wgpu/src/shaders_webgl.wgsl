@@ -125,16 +125,6 @@ fn read_atlas_tile(cursor: ptr<function, InstanceCursor>) -> AtlasTile {
     );
 }
 
-fn read_transformation(cursor: ptr<function, InstanceCursor>) -> TransformationMatrix {
-    return TransformationMatrix(
-        mat2x2<f32>(
-            read_vec2_f32(cursor),
-            read_vec2_f32(cursor),
-        ),
-        read_vec2_f32(cursor),
-    );
-}
-
 fn read_content_mask(cursor: ptr<function, InstanceCursor>) -> ContentMask {
     return ContentMask(read_bounds(cursor), read_bounds(cursor), read_corners(cursor));
 }
@@ -200,7 +190,7 @@ fn load_underline(instance_id: u32) -> Underline {
 }
 
 fn load_mono_sprite(instance_id: u32) -> MonochromeSprite {
-    var cursor = instance_cursor(instance_id * 36u);
+    var cursor = instance_cursor(instance_id * 30u);
     return MonochromeSprite(
         read_word(&cursor),
         read_word(&cursor),
@@ -208,7 +198,6 @@ fn load_mono_sprite(instance_id: u32) -> MonochromeSprite {
         read_content_mask(&cursor),
         read_hsla(&cursor),
         read_atlas_tile(&cursor),
-        read_transformation(&cursor),
     );
 }
 

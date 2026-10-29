@@ -13,7 +13,7 @@
 
 use crate::{
     AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Point, ScaledPixels, Scene,
-    TileCoord, TransformationMatrix,
+    TileCoord,
     fast::layers::scene::{drawn_bounds, translate_primitive, visible_bounds},
     point,
     scene::{PaintOperation, Primitive},
@@ -261,7 +261,6 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_mask(&sprite.content_mask, tile, hasher);
             hash_hsla(&sprite.color, hasher);
             hash_tile(&sprite.tile, hasher);
-            hash_transformation(&sprite.transformation, hasher);
         }
         Primitive::SubpixelSprite(sprite) => {
             hasher.write_u8(5);
@@ -269,7 +268,6 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_mask(&sprite.content_mask, tile, hasher);
             hash_hsla(&sprite.color, hasher);
             hash_tile(&sprite.tile, hasher);
-            hash_transformation(&sprite.transformation, hasher);
         }
         Primitive::PolychromeSprite(sprite) => {
             hasher.write_u8(6);
@@ -375,13 +373,4 @@ fn hash_tile(tile: &AtlasTile, hasher: &mut FxHasher) {
     hasher.write_i32(tile.bounds.origin.y.0);
     hasher.write_i32(tile.bounds.size.width.0);
     hasher.write_i32(tile.bounds.size.height.0);
-}
-
-fn hash_transformation(matrix: &TransformationMatrix, hasher: &mut FxHasher) {
-    for row in &matrix.rotation_scale {
-        hash_f32(row[0], hasher);
-        hash_f32(row[1], hasher);
-    }
-    hash_f32(matrix.translation[0], hasher);
-    hash_f32(matrix.translation[1], hasher);
 }

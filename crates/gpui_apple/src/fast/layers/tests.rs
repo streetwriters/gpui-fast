@@ -659,7 +659,6 @@ fn add_content(
         content_mask: mask(clip),
         color: Hsla::from(rgba(0xffffffff)),
         tile: mono,
-        transformation: TransformationMatrix::unit(),
     });
     scene.insert_primitive(PolychromeSprite {
         order: 0,
@@ -724,7 +723,6 @@ fn add_covered_paths(
         content_mask: mask,
         color: Hsla::from(rgba(0xff8800ff)),
         tile: glyph_tile(harness, 1),
-        transformation: TransformationMatrix::unit(),
     });
     let mut path = Path::new(point(px(250. + ox), px(360. + oy)));
     path.line_to(point(px(290.5 + ox), px(372. + oy)));

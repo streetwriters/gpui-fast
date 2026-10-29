@@ -1277,7 +1277,6 @@ struct MonochromeSprite {
     ContentMask content_mask;
     Hsla color;
     AtlasTile tile;
-    TransformationMatrix transformation;
 };
 
 struct MonochromeSpriteVertexOutput {
@@ -1304,9 +1303,9 @@ MonochromeSpriteVertexOutput monochrome_sprite_vertex(uint vertex_id: SV_VertexI
     float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
     uint sprite_id = batch_start_index + instance_id;
     MonochromeSprite sprite = mono_sprites[sprite_id];
-    // The sprite's own matrix places it within its local space, where the
-    // content mask is; the table's matrix then places that space on screen.
-    float2 local_position = apply_transform(sprite.transformation, unit_vertex * sprite.bounds.size + sprite.bounds.origin);
+    // The content mask is in the sprite's local space; the table's matrix
+    // places that space on screen.
+    float2 local_position = unit_vertex * sprite.bounds.size + sprite.bounds.origin;
     float4 device_position = to_device_position_impl(apply_transform(transform_at(sprite.transform_index), local_position));
     float4 clip_distance = distance_from_clip_rect_impl(local_position, sprite.content_mask.bounds);
     float2 tile_position = to_tile_position(unit_vertex, sprite.tile);
