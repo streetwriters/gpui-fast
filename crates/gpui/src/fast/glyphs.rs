@@ -3,8 +3,7 @@
 use crate::{
     App, AtlasTile, Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
     IsZero, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledPixels, Size, SubpixelSprite, Window,
-    util::round_half_toward_zero,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, Size, SubpixelSprite, Window, util::round_half_toward_zero,
 };
 use anyhow::Result;
 use std::borrow::Cow;

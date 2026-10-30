@@ -5,8 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, ExternalTexture,
-    Hsla, Pixels, Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    AtlasTextureId, AtlasTextureKind, AtlasTile, Background, Bounds, ContentMask, Corners, Edges,
+    ExternalTexture, Hsla, Pixels, Point, Radians, ScaledPixels, Size, TileId,
+    bounds_tree::BoundsTree, point,
 };
 use std::{
     fmt::Debug,
@@ -34,6 +35,13 @@ impl From<bool> for PaddedBool32 {
     fn from(value: bool) -> Self {
         PaddedBool32(value as u32)
     }
+}
+
+/// What [`Scene::begin_effect_group`] returns for [`Scene::end_effect_group`].
+#[derive(Clone, Copy, Debug)]
+pub struct EffectGroupScope {
+    previous: TransformIndex,
+    id: u32,
 }
 
 /// An index into a scene's transform table. Index 0 is the identity.
@@ -113,11 +121,15 @@ impl Default for ColorFilter {
 /// uploaded to the GPU once per frame. Entries are absolute: each is the
 /// composition of every transform (and filter) from the window down to the
 /// primitive, so a shader reads one.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TransformTable {
     entries: Vec<TransformationMatrix>,
     filters: Vec<ColorFilter>,
-    lookup: std::collections::HashMap<[u32; 26], u32>,
+    /// The effect group each entry's primitives belong to; 0 for none. Not
+    /// uploaded: the renderer draws a group's primitives into the group's own
+    /// texture.
+    groups: Vec<u32>,
+    lookup: std::collections::HashMap<[u32; 27], u32>,
     filtered: bool,
 }
 
@@ -126,6 +138,7 @@ impl Default for TransformTable {
         Self {
             entries: vec![TransformationMatrix::unit()],
             filters: vec![ColorFilter::IDENTITY],
+            groups: vec![0],
             lookup: std::collections::HashMap::new(),
             filtered: false,
         }
@@ -165,6 +178,11 @@ impl TransformTable {
             .unwrap_or(ColorFilter::IDENTITY)
     }
 
+    /// The effect group `index` belongs to; 0 for none.
+    pub fn group(&self, index: TransformIndex) -> u32 {
+        self.groups.get(index.0 as usize).copied().unwrap_or(0)
+    }
+
     /// The index of `matrix`, adding it if the table does not hold it yet.
     pub fn intern(&mut self, matrix: TransformationMatrix) -> TransformIndex {
         self.intern_with(matrix, ColorFilter::IDENTITY)
@@ -177,18 +195,30 @@ impl TransformTable {
         matrix: TransformationMatrix,
         filter: ColorFilter,
     ) -> TransformIndex {
-        if matrix == TransformationMatrix::unit() && filter.is_identity() {
+        self.intern_in_group(matrix, filter, 0)
+    }
+
+    /// Like [`Self::intern_with`], for primitives of effect group `group`.
+    pub fn intern_in_group(
+        &mut self,
+        matrix: TransformationMatrix,
+        filter: ColorFilter,
+        group: u32,
+    ) -> TransformIndex {
+        if matrix == TransformationMatrix::unit() && filter.is_identity() && group == 0 {
             return TransformIndex::IDENTITY;
         }
-        let mut key = [0u32; 26];
+        let mut key = [0u32; 27];
         key[..6].copy_from_slice(&matrix.bits());
-        key[6..].copy_from_slice(&filter.bits());
+        key[6..26].copy_from_slice(&filter.bits());
+        key[26] = group;
         if let Some(index) = self.lookup.get(&key) {
             return TransformIndex(*index);
         }
         let index = self.entries.len() as u32;
         self.entries.push(matrix);
         self.filters.push(filter);
+        self.groups.push(group);
         self.filtered |= !filter.is_identity();
         self.lookup.insert(key, index);
         TransformIndex(index)
@@ -197,6 +227,7 @@ impl TransformTable {
     fn clear(&mut self) {
         self.entries.truncate(1);
         self.filters.truncate(1);
+        self.groups.truncate(1);
         self.lookup.clear();
         self.filtered = false;
     }
@@ -221,7 +252,44 @@ pub struct Scene {
     pub layers: crate::fast::layers::scene::SceneLayers,
     pub transforms: TransformTable,
     current_transform: TransformIndex,
+    /// The effect groups of the frame, by id - 1. See [`Scene::begin_effect_group`].
+    pub groups: Vec<EffectGroup>,
+    /// What each group draws, split out of the scene by [`Scene::finish`]:
+    /// finished scenes that share this one's transform table.
+    pub group_scenes: Vec<Scene>,
 }
+
+/// A subtree painted into a texture of its own and composited with `opacity`.
+#[derive(Clone, Debug)]
+pub struct EffectGroup {
+    /// What the subtree painted, in device pixels.
+    pub bounds: Bounds<ScaledPixels>,
+    /// How opaque the composited group is.
+    pub opacity: f32,
+}
+
+/// The first texture index of effect groups; below the scroll layer tiles.
+pub const EFFECT_GROUP_TEXTURE_BASE: u32 = 0xE000_0000;
+
+/// The texture id the composited sprite of effect group `group` carries.
+pub fn effect_group_texture_id(group: u32) -> AtlasTextureId {
+    AtlasTextureId {
+        index: EFFECT_GROUP_TEXTURE_BASE + group,
+        kind: AtlasTextureKind::Polychrome,
+    }
+}
+
+/// The group a composited sprite stands for, if it is one.
+pub fn decode_effect_group(texture: AtlasTextureId) -> Option<u32> {
+    (texture.kind == AtlasTextureKind::Polychrome
+        && (EFFECT_GROUP_TEXTURE_BASE..crate::fast::layers::scene::LAYER_TILE_TEXTURE_BASE)
+            .contains(&texture.index))
+    .then(|| texture.index - EFFECT_GROUP_TEXTURE_BASE)
+}
+
+/// The `grayscale` value of a group's sprite: its texture holds premultiplied
+/// colour, which the shader divides by alpha before blending.
+pub const PREMULTIPLIED_SPRITE: u32 = 2;
 
 #[expect(missing_docs)]
 impl Scene {
@@ -240,6 +308,8 @@ impl Scene {
         self.external_textures.clear();
         self.transforms.clear();
         self.current_transform = TransformIndex::IDENTITY;
+        self.groups.clear();
+        self.group_scenes.clear();
         crate::fast::layers::scene::SceneLayers::clear(&mut self.layers);
     }
 
@@ -254,7 +324,8 @@ impl Scene {
         let previous = self.current_transform;
         let composed = self.transforms.get(previous).compose(matrix);
         let filter = self.transforms.filter(previous);
-        self.current_transform = self.transforms.intern_with(composed, filter);
+        let group = self.transforms.group(previous);
+        self.current_transform = self.transforms.intern_in_group(composed, filter, group);
         previous
     }
 
@@ -264,13 +335,69 @@ impl Scene {
         let previous = self.current_transform;
         let combined = self.transforms.filter(previous).after(&filter);
         let matrix = self.transforms.get(previous);
-        self.current_transform = self.transforms.intern_with(matrix, combined);
+        let group = self.transforms.group(previous);
+        self.current_transform = self.transforms.intern_in_group(matrix, combined, group);
         previous
     }
 
     /// Restores the transform [`Self::push_transform`] returned.
     pub fn pop_transform(&mut self, previous: TransformIndex) {
         self.current_transform = previous;
+    }
+
+    /// Starts an effect group: what is inserted until [`Self::end_effect_group`]
+    /// is painted into a texture of its own and composited with `opacity`, so
+    /// overlapping content inside it is blended as one image.
+    pub fn begin_effect_group(&mut self, opacity: f32) -> EffectGroupScope {
+        let previous = self.current_transform;
+        self.groups.push(EffectGroup {
+            bounds: Bounds::default(),
+            opacity,
+        });
+        let id = self.groups.len() as u32;
+        self.current_transform = self.transforms.intern_in_group(
+            self.transforms.get(previous),
+            self.transforms.filter(previous),
+            id,
+        );
+        EffectGroupScope { previous, id }
+    }
+
+    /// Ends the group `scope` started and inserts what composites it, above
+    /// everything the group painted and what overlaps its bounds.
+    pub fn end_effect_group(&mut self, scope: EffectGroupScope) {
+        self.current_transform = scope.previous;
+        let bounds = self.groups[scope.id as usize - 1].bounds;
+        if bounds.is_empty() {
+            return;
+        }
+        let transform = self.transforms.intern_in_group(
+            TransformationMatrix::unit(),
+            ColorFilter::IDENTITY,
+            self.transforms.group(scope.previous),
+        );
+        let sprite = PolychromeSprite {
+            order: 0,
+            transform_index: 0,
+            grayscale: PaddedBool32(PREMULTIPLIED_SPRITE),
+            opacity: self.groups[scope.id as usize - 1].opacity,
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            corner_radii: Corners::default(),
+            tile: AtlasTile {
+                texture_id: effect_group_texture_id(scope.id),
+                tile_id: TileId(scope.id),
+                padding: 0,
+                bounds: Bounds {
+                    origin: Point::default(),
+                    size: crate::size(
+                        crate::DevicePixels(bounds.size.width.0 as i32),
+                        crate::DevicePixels(bounds.size.height.0 as i32),
+                    ),
+                },
+            },
+        };
+        self.insert_under(sprite.into(), transform, false);
     }
 
     pub fn len(&self) -> usize {
@@ -318,6 +445,15 @@ impl Scene {
                 .transform_bounds(&local_bounds)
         };
         primitive.set_transform_index(transform);
+        let group = self.transforms.group(transform);
+        if group != 0 {
+            let record = &mut self.groups[group as usize - 1];
+            record.bounds = if record.bounds.is_empty() {
+                clipped_bounds
+            } else {
+                record.bounds.union(&clipped_bounds)
+            };
+        }
         if transform_paths && !transform.is_identity() {
             if let Primitive::Path(path) = &mut primitive {
                 path.apply_transform(&self.transforms.get(transform));
@@ -341,6 +477,7 @@ impl Scene {
             Primitive::Path(path) => {
                 path.order = order;
                 path.id = PathId(self.paths.len());
+                path.group = group;
                 self.paths.push(path.clone());
             }
             Primitive::Underline(underline) => {
@@ -375,23 +512,54 @@ impl Scene {
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
         crate::fast::layers::paint::replay_layers(self, range.clone(), prev_scene);
         let mut carried = (TransformIndex::IDENTITY, TransformIndex::IDENTITY);
+        // The previous frame's effect groups, by their id in this one.
+        let mut regrouped: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
                     // The previous scene's table holds absolute transforms and
                     // filters, so they are carried over, not composed with the
                     // current ones.
+                    let mut primitive = primitive.clone();
                     let index = primitive.transform_index();
-                    if index != carried.0 {
+                    let old_group = match &primitive {
+                        Primitive::Path(path) => path.group,
+                        _ => prev_scene.transforms.group(index),
+                    };
+                    let mut regroup = |scene: &mut Scene, old: u32| {
+                        *regrouped.entry(old).or_insert_with(|| {
+                            scene.groups.push(EffectGroup {
+                                bounds: Bounds::default(),
+                                opacity: prev_scene.groups[old as usize - 1].opacity,
+                            });
+                            scene.groups.len() as u32
+                        })
+                    };
+                    let group = if old_group == 0 {
+                        0
+                    } else {
+                        regroup(self, old_group)
+                    };
+                    // The sprite that composites a group points at the group's
+                    // texture, which is numbered anew.
+                    if let Primitive::PolychromeSprite(sprite) = &mut primitive {
+                        if let Some(own) = decode_effect_group(sprite.tile.texture_id) {
+                            let renumbered = regroup(self, own);
+                            sprite.tile.texture_id = effect_group_texture_id(renumbered);
+                            sprite.tile.tile_id = TileId(renumbered);
+                        }
+                    }
+                    if group == 0 && index != carried.0 || group != 0 {
                         carried = (
                             index,
-                            self.transforms.intern_with(
+                            self.transforms.intern_in_group(
                                 prev_scene.transforms.get(index),
                                 prev_scene.transforms.filter(index),
+                                group,
                             ),
                         );
                     }
-                    self.insert_under(primitive.clone(), carried.1, false);
+                    self.insert_under(primitive, carried.1, false);
                 }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
@@ -400,7 +568,11 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        crate::fast::effects::split_groups(self);
         crate::fast::scene::sort_in_drawing_order(self);
+        for sub in &mut self.group_scenes {
+            crate::fast::scene::sort_in_drawing_order(sub);
+        }
     }
 
     #[cfg_attr(
@@ -1247,6 +1419,8 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub content_mask: ContentMask<P>,
     pub vertices: Vec<PathVertex<P>>,
     pub color: Background,
+    /// The effect group the path is drawn in; 0 for none.
+    pub group: u32,
     start: Point<P>,
     current: Point<P>,
     contour_count: usize,
@@ -1269,6 +1443,7 @@ impl Path<Pixels> {
     /// Create a new path with the given starting point.
     pub fn new(start: Point<Pixels>) -> Self {
         Self {
+            group: 0,
             id: PathId(0),
             order: DrawOrder::default(),
             vertices: Vec::new(),
@@ -1287,6 +1462,7 @@ impl Path<Pixels> {
     /// Scale this path by the given factor.
     pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
         Path {
+            group: 0,
             id: self.id,
             order: self.order,
             bounds: self.bounds.scale(factor),
@@ -1622,6 +1798,7 @@ mod transform_tests {
         path.line_to(point(crate::px(10.), crate::px(0.)));
         path.line_to(point(crate::px(10.), crate::px(10.)));
         let scaled = Path {
+            group: self.group,
             id: path.id,
             order: path.order,
             bounds: path.bounds.scale(1.0),

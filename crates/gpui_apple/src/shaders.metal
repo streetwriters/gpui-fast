@@ -858,7 +858,11 @@ float4 polychrome_sprite_fragment_body(
       quad_sdf(frag_pos, sprite.bounds, sprite.corner_radii);
 
   float4 color = sample;
-  if (sprite.grayscale) {
+  if (sprite.grayscale == 2u) {
+    // An effect group's texture holds premultiplied colour; the blend
+    // multiplies by alpha again.
+    color.rgb /= max(color.a, 1e-5);
+  } else if (sprite.grayscale) {
     float grayscale = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
     color.r = grayscale;
     color.g = grayscale;

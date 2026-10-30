@@ -140,6 +140,11 @@ pub struct MetalRenderer {
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     headless_render_target: Option<metal::Texture>,
+    /// The textures of this frame's effect groups, by group id, with the
+    /// window position of their top-left corner.
+    pub(crate) effect_group_textures: std::collections::HashMap<u32, (metal::Texture, (i32, i32))>,
+    /// Group textures of earlier frames, kept to be drawn into again.
+    effect_texture_pool: Vec<metal::Texture>,
     pub(crate) fast_layers: crate::fast::layers::TileCache,
 }
 
@@ -424,6 +429,8 @@ impl MetalRenderer {
             path_sample_count: PATH_SAMPLE_COUNT,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
+            effect_group_textures: Default::default(),
+            effect_texture_pool: Vec::new(),
             fast_layers: crate::fast::layers::TileCache::default(),
         }
     }
@@ -550,12 +557,42 @@ impl MetalRenderer {
         }
     }
 
-    fn render_frame(
+    /// Moves last frame's group textures back to the pool.
+    pub(crate) fn recycle_group_textures(&mut self) {
+        for (_, (texture, _)) in self.effect_group_textures.drain() {
+            self.effect_texture_pool.push(texture);
+        }
+        // Keep the pool from growing without bound.
+        self.effect_texture_pool.truncate(256);
+    }
+
+    /// A transparent-clearable texture of `width` by `height`, from the pool
+    /// when one of that size is free.
+    pub(crate) fn group_texture(&mut self, width: u64, height: u64) -> metal::Texture {
+        if let Some(position) = self
+            .effect_texture_pool
+            .iter()
+            .position(|texture| texture.width() == width && texture.height() == height)
+        {
+            return self.effect_texture_pool.swap_remove(position);
+        }
+        let descriptor = metal::TextureDescriptor::new();
+        descriptor.set_width(width);
+        descriptor.set_height(height);
+        descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        descriptor
+            .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
+        descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+        self.device.new_texture(&descriptor)
+    }
+
+    pub(crate) fn render_frame(
         &mut self,
         scene: &Scene,
         texture: &metal::TextureRef,
         viewport_size: Size<DevicePixels>,
     ) -> Result<metal::CommandBuffer> {
+        crate::fast::effects::render_groups(self, scene, viewport_size)?;
         crate::fast::layers::raster::rasterize_tiles(self, scene);
         let mut writer = InstanceBufferWriter::new(
             &self.device,
@@ -748,7 +785,11 @@ impl MetalRenderer {
         }
         let command_queue = self.command_queue.clone();
         let command_buffer = command_queue.new_command_buffer();
-        let alpha = if self.opaque { 1. } else { 0. };
+        let alpha = if self.opaque && !crate::fast::effects::in_group_pass() {
+            1.
+        } else {
+            0.
+        };
 
         let mut command_encoder = new_command_encoder_for_texture(
             command_buffer,
@@ -1220,7 +1261,14 @@ impl MetalRenderer {
             return;
         }
 
-        let Some(texture) = self.sprite_atlas.metal_texture(texture_id) else {
+        let texture = match gpui::decode_effect_group(texture_id) {
+            Some(group) => self
+                .effect_group_textures
+                .get(&group)
+                .map(|(texture, _)| texture.clone()),
+            None => self.sprite_atlas.metal_texture(texture_id),
+        };
+        let Some(texture) = texture else {
             return;
         };
         let texture_size = size(
@@ -1391,9 +1439,10 @@ pub(crate) fn new_command_encoder_for_texture<'a>(
     }
 
     let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
+    let origin = crate::fast::effects::group_origin();
     command_encoder.set_viewport(metal::MTLViewport {
-        originX: 0.0,
-        originY: 0.0,
+        originX: -origin.0,
+        originY: -origin.1,
         width: i32::from(viewport_size.width) as f64,
         height: i32::from(viewport_size.height) as f64,
         znear: 0.0,
@@ -1459,7 +1508,7 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1878,7 +1927,11 @@ mod tests {
     fn interleaved_paths(count: usize, overlap: bool) -> Scene {
         let mut scene = Scene::default();
         for index in 0..count {
-            let (column, row) = if overlap { (0, 0) } else { (index % 40, index / 40) };
+            let (column, row) = if overlap {
+                (0, 0)
+            } else {
+                (index % 40, index / 40)
+            };
             let x = 20.0 + column as f32 * 56.0;
             let y = 20.0 + row as f32 * 56.0;
             scene.insert_primitive(gpui::Quad {
@@ -1916,6 +1969,75 @@ mod tests {
         let size = gpui::size(DevicePixels(2400), DevicePixels(1600));
         for (name, overlap) in [("disjoint", false), ("stacked", true)] {
             let scene = interleaved_paths(200, overlap);
+            let mut renderer = MetalHeadlessRenderer::new();
+            for _ in 0..3 {
+                gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)
+                    .unwrap();
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)
+                    .unwrap();
+            }
+            println!("{name}: {:?} per frame", start.elapsed() / 20);
+        }
+    }
+
+    fn colored_quad(scene: &mut Scene, bounds: Bounds<ScaledPixels>, color: u32) {
+        scene.insert_primitive(gpui::Quad {
+            order: 0,
+            border_style_and_transform: 0,
+            bounds,
+            content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 200., 200.)),
+            background: gpui::rgb(color).into(),
+            border_color: gpui::Hsla::default(),
+            corner_radii: gpui::Corners::default(),
+            border_widths: gpui::Edges::default(),
+        });
+    }
+
+    #[test]
+    fn a_group_fades_its_children_as_one_picture() {
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group(0.5);
+        colored_quad(&mut scene, scaled_bounds(20., 20., 100., 100.), 0xff0000);
+        colored_quad(&mut scene, scaled_bounds(60., 60., 100., 100.), 0x0000ff);
+        scene.end_effect_group(scope);
+        let image = render(&mut scene);
+        // Where the children overlap only the top one shows, at half strength
+        // over the black window: a per-child opacity would leave red in it.
+        let [r, g, b, a] = image.get_pixel(90, 90).0;
+        assert!(
+            r < 12 && g < 12 && b.abs_diff(128) < 6 && a == 255,
+            "{r} {g} {b} {a}"
+        );
+        let [r, g, b, _] = image.get_pixel(30, 30).0;
+        assert!(r.abs_diff(128) < 6 && g < 12 && b < 12, "{r} {g} {b}");
+        let [r, g, b, _] = image.get_pixel(150, 150).0;
+        assert!(r < 12 && g < 12 && b.abs_diff(128) < 6, "{r} {g} {b}");
+        assert_eq!(image.get_pixel(10, 10).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn group_pass_cost() {
+        let size = gpui::size(DevicePixels(2400), DevicePixels(1600));
+        for (name, grouped) in [("ungrouped", false), ("200 groups", true)] {
+            let mut scene = Scene::default();
+            for i in 0..200 {
+                let (x, y) = ((i % 20) as f32 * 110., (i / 20) as f32 * 150.);
+                let scope = grouped.then(|| scene.begin_effect_group(0.5));
+                colored_quad(&mut scene, scaled_bounds(x, y, 100., 100.), 0xff0000);
+                colored_quad(
+                    &mut scene,
+                    scaled_bounds(x + 30., y + 30., 100., 100.),
+                    0x0000ff,
+                );
+                if let Some(scope) = scope {
+                    scene.end_effect_group(scope);
+                }
+            }
+            scene.finish();
             let mut renderer = MetalHeadlessRenderer::new();
             for _ in 0..3 {
                 gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)

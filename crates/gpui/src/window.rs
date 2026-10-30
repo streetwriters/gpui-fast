@@ -4428,6 +4428,20 @@ impl Window {
         result
     }
 
+    /// Paints what `f` does into a texture of its own and composites it with
+    /// `opacity`, so overlapping content inside is blended as one image rather
+    /// than each shape on its own. Scroll layers do not engage inside a group,
+    /// and a group inside a scroll layer's content is painted without one.
+    pub fn with_effect_group<R>(&mut self, opacity: f32, f: impl FnOnce(&mut Self) -> R) -> R {
+        if opacity >= 1.0 || self.fast_layers.painting.is_some() {
+            return f(self);
+        }
+        let scope = self.next_frame.scene.begin_effect_group(opacity.max(0.0));
+        let result = f(self);
+        self.next_frame.scene.end_effect_group(scope);
+        result
+    }
+
     /// Like [`Window::with_transformation`], with `matrix` applied about
     /// `origin`, a point of the current space.
     pub fn with_transformation_about<R>(

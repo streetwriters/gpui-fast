@@ -3,10 +3,10 @@
 use crate::AppContext as _;
 use crate::{
     AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ContentMask, DevicePixels, Hsla,
-    LayerFrame, LayerKey, MonochromeSprite, Path, PolychromeSprite, Quad,
-    ScaledPixels, Scene, Shadow, SubpixelSprite, TileCoord, TileId,
-    Underline, decode_layer_tile, fast::layers::scene::translate_primitive, layer_tile_id,
-    layer_tile_texture_id, point, px, scene::Primitive, size,
+    LayerFrame, LayerKey, MonochromeSprite, Path, PolychromeSprite, Quad, ScaledPixels, Scene,
+    Shadow, SubpixelSprite, TileCoord, TileId, Underline, decode_layer_tile,
+    fast::layers::scene::translate_primitive, layer_tile_id, layer_tile_texture_id, point, px,
+    scene::Primitive, size,
 };
 
 #[test]
@@ -1703,9 +1703,7 @@ mod paint {
 mod footprints {
     use super::{layer, sp, wide_mask};
     use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
-    use crate::{
-        Hsla, Scene, Shadow, TileCoord,
-    };
+    use crate::{Hsla, Scene, Shadow, TileCoord};
 
     fn shadow(color: Hsla) -> Shadow {
         // Its blur reaches x = 500 + 3 * 10 = 530, inside tile (1, 0).

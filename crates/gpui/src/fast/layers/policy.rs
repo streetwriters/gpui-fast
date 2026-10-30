@@ -165,6 +165,12 @@ pub(crate) fn decide(
     if !super::active(window, cx)
         || window.fast_layers.painting.is_some()
         || window.transformation != crate::TransformationMatrix::unit()
+        || window
+            .next_frame
+            .scene
+            .transforms
+            .group(window.next_frame.scene.current_transform())
+            != 0
     {
         return Decision::Bypass;
     }
