@@ -364,10 +364,24 @@ impl Scene {
     }
 
     /// Ends the group `scope` started and inserts what composites it, above
-    /// everything the group painted and what overlaps its bounds.
-    pub fn end_effect_group(&mut self, scope: EffectGroupScope) {
+    /// everything the group painted and what overlaps its bounds. The group's
+    /// texture covers its bounds rounded out to whole device pixels and
+    /// clipped to `window`, so it is never larger than the window nor sampled
+    /// at another scale than the device's.
+    pub fn end_effect_group(&mut self, scope: EffectGroupScope, window: Bounds<ScaledPixels>) {
         self.current_transform = scope.previous;
-        let bounds = self.groups[scope.id as usize - 1].bounds;
+        let drawn = self.groups[scope.id as usize - 1].bounds.intersect(&window);
+        let bounds = Bounds::from_corners(
+            point(
+                ScaledPixels(drawn.origin.x.0.floor()),
+                ScaledPixels(drawn.origin.y.0.floor()),
+            ),
+            point(
+                ScaledPixels((drawn.origin.x.0 + drawn.size.width.0).ceil()),
+                ScaledPixels((drawn.origin.y.0 + drawn.size.height.0).ceil()),
+            ),
+        );
+        self.groups[scope.id as usize - 1].bounds = bounds;
         if bounds.is_empty() {
             return;
         }

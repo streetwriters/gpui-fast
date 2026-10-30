@@ -35,6 +35,10 @@ pub(crate) fn render_groups(
     scene: &Scene,
     viewport_size: Size<DevicePixels>,
 ) -> Result<()> {
+    // A group's own pass has no groups, and must not recycle its siblings'.
+    if in_group_pass() {
+        return Ok(());
+    }
     renderer.recycle_group_textures();
     if scene.group_scenes.is_empty() {
         return Ok(());

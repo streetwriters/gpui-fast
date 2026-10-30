@@ -4438,7 +4438,15 @@ impl Window {
         }
         let scope = self.next_frame.scene.begin_effect_group(opacity.max(0.0));
         let result = f(self);
-        self.next_frame.scene.end_effect_group(scope);
+        let scale = self.scale_factor;
+        let window = Bounds::from_corners(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            point(
+                ScaledPixels(self.viewport_size.width.0 * scale),
+                ScaledPixels(self.viewport_size.height.0 * scale),
+            ),
+        );
+        self.next_frame.scene.end_effect_group(scope, window);
         result
     }
 

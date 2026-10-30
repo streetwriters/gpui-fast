@@ -2002,7 +2002,7 @@ mod tests {
         let scope = scene.begin_effect_group(0.5);
         colored_quad(&mut scene, scaled_bounds(20., 20., 100., 100.), 0xff0000);
         colored_quad(&mut scene, scaled_bounds(60., 60., 100., 100.), 0x0000ff);
-        scene.end_effect_group(scope);
+        scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
         let image = render(&mut scene);
         // Where the children overlap only the top one shows, at half strength
         // over the black window: a per-child opacity would leave red in it.
@@ -2034,7 +2034,7 @@ mod tests {
                     0x0000ff,
                 );
                 if let Some(scope) = scope {
-                    scene.end_effect_group(scope);
+                    scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
                 }
             }
             scene.finish();
@@ -2050,6 +2050,35 @@ mod tests {
             }
             println!("{name}: {:?} per frame", start.elapsed() / 20);
         }
+    }
+
+    #[test]
+    fn a_replayed_group_renders_like_the_original() {
+        let mut first = Scene::default();
+        colored_quad(&mut first, scaled_bounds(0., 0., 30., 30.), 0x00ff00);
+        let scope = first.begin_effect_group(0.5);
+        colored_quad(&mut first, scaled_bounds(20., 20., 100., 100.), 0xff0000);
+        colored_quad(&mut first, scaled_bounds(60., 60., 100., 100.), 0x0000ff);
+        first.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        let length = first.len();
+        let direct = render(&mut first);
+
+        let mut second = Scene::default();
+        // A group of its own first, so the replayed one is numbered anew.
+        let scope = second.begin_effect_group(1.0);
+        colored_quad(&mut second, scaled_bounds(170., 170., 20., 20.), 0xffffff);
+        second.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        second.replay(0..length, &first);
+        second.finish();
+        let replayed = render(&mut second);
+        for (x, y) in [(10, 10), (30, 30), (90, 90), (150, 150), (5, 150)] {
+            assert_eq!(
+                direct.get_pixel(x, y).0,
+                replayed.get_pixel(x, y).0,
+                "{x},{y}"
+            );
+        }
+        assert_eq!(replayed.get_pixel(180, 180).0, [255, 255, 255, 255]);
     }
 
     #[test]
