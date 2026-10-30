@@ -10,8 +10,10 @@
 //! first, and the sprite [`Scene::end_effect_group`] inserted composites each.
 
 use crate::{
-    Path, PathId, PolychromeSprite, ScaledPixels, Scene, Shadow, TransformIndex, TransformTable,
-    Underline, scene::MonochromeSprite, scene::Quad, scene::SubpixelSprite,
+    BLUR_HORIZONTAL_SPRITE, BLUR_VERTICAL_SPRITE, BlurPass, GROUP_BLURRED, GROUP_CONTENT,
+    GROUP_SCRATCH, GroupEffect, Path, PathId, PolychromeSprite, ScaledPixels, Scene, Shadow,
+    TransformIndex, TransformTable, Underline, scene::MonochromeSprite, scene::Quad,
+    scene::SubpixelSprite,
 };
 
 /// Moves the primitives of every effect group out of `scene` into
@@ -85,7 +87,69 @@ pub(crate) fn split_groups(scene: &mut Scene) {
         sub.transforms = table.clone();
     }
     scene.transforms = table;
+    scene.group_blurs = scene
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| match group.effect.sigma() {
+            Some(sigma) if !group.bounds.is_empty() => {
+                let id = index as u32 + 1;
+                let size = (
+                    group.bounds.size.width.0 as i32,
+                    group.bounds.size.height.0 as i32,
+                );
+                let to = if matches!(group.effect, GroupEffect::DropShadow { .. }) {
+                    GROUP_BLURRED
+                } else {
+                    GROUP_CONTENT
+                };
+                vec![
+                    BlurPass {
+                        from: GROUP_CONTENT,
+                        to: GROUP_SCRATCH,
+                        scene: blur_scene(id, GROUP_CONTENT, BLUR_HORIZONTAL_SPRITE, sigma, size),
+                    },
+                    BlurPass {
+                        from: GROUP_SCRATCH,
+                        to,
+                        scene: blur_scene(id, GROUP_SCRATCH, BLUR_VERTICAL_SPRITE, sigma, size),
+                    },
+                ]
+            }
+            _ => Vec::new(),
+        })
+        .collect();
     scene.group_scenes = subs;
+}
+
+/// A scene of the one sprite that blurs texture `from` of group `group` along
+/// one axis into a texture `size` large.
+fn blur_scene(group: u32, from: u8, mode: u32, sigma: f32, size: (i32, i32)) -> Scene {
+    let bounds = crate::Bounds {
+        origin: crate::Point::default(),
+        size: crate::size(ScaledPixels(size.0 as f32), ScaledPixels(size.1 as f32)),
+    };
+    let mut scene = Scene::default();
+    scene.insert_primitive(PolychromeSprite {
+        order: 0,
+        transform_index: 0,
+        grayscale: crate::scene::PaddedBool32(mode | ((sigma * 16.0).round() as u32) << 8),
+        opacity: 1.0,
+        bounds,
+        content_mask: crate::ContentMask::new(bounds),
+        corner_radii: crate::Corners::default(),
+        tile: crate::AtlasTile {
+            texture_id: crate::effect_group_texture_id(group, from),
+            tile_id: crate::TileId(group),
+            padding: 0,
+            bounds: crate::Bounds {
+                origin: crate::Point::default(),
+                size: crate::size(crate::DevicePixels(size.0), crate::DevicePixels(size.1)),
+            },
+        },
+    });
+    crate::fast::scene::sort_in_drawing_order(&mut scene);
+    scene
 }
 
 /// Moves what `scene` draws by `(dx, dy)`, so that it can be drawn into a

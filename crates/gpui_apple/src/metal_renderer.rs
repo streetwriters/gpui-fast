@@ -152,7 +152,7 @@ pub struct MetalRenderer {
     headless_render_target: Option<metal::Texture>,
     /// The textures of this frame's effect groups, by group id, with the
     /// window position of their top-left corner.
-    pub(crate) effect_group_textures: std::collections::HashMap<u32, (metal::Texture, (i32, i32))>,
+    pub(crate) effect_group_textures: std::collections::HashMap<(u32, u8), metal::Texture>,
     /// Group textures of earlier frames, kept to be drawn into again.
     effect_texture_pool: Vec<metal::Texture>,
     /// Counts of the effect-group work done since the renderer was made.
@@ -572,7 +572,7 @@ impl MetalRenderer {
 
     /// Moves last frame's group textures back to the pool.
     pub(crate) fn recycle_group_textures(&mut self) {
-        for (_, (texture, _)) in self.effect_group_textures.drain() {
+        for (_, texture) in self.effect_group_textures.drain() {
             self.effect_texture_pool.push(texture);
         }
         // Keep the pool from growing without bound.
@@ -1290,10 +1290,7 @@ impl MetalRenderer {
         }
 
         let texture = match gpui::decode_effect_group(texture_id) {
-            Some(group) => self
-                .effect_group_textures
-                .get(&group)
-                .map(|(texture, _)| texture.clone()),
+            Some(group) => self.effect_group_textures.get(&group).cloned(),
             None => self.sprite_atlas.metal_texture(texture_id),
         };
         let Some(texture) = texture else {
@@ -2197,6 +2194,52 @@ mod tests {
             r.abs_diff(64) < 6 && g.abs_diff(64) < 6 && b.abs_diff(64) < 6,
             "{r} {g} {b}"
         );
+    }
+
+    #[test]
+    fn a_blurred_group_spreads_its_edges() {
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group_with(1.0, gpui::GroupEffect::Blur { sigma: 4.0 });
+        colored_quad(&mut scene, scaled_bounds(80., 80., 40., 40.), 0xffffff);
+        scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        // The black window shows white at the middle and nothing far away; on
+        // the edge the blur is half way, and a few pixels out it has begun.
+        let [r, ..] = image.get_pixel(100, 100).0;
+        assert!(r > 250, "{r}");
+        let [r, ..] = image.get_pixel(80, 100).0;
+        assert!(r.abs_diff(128) < 24, "edge {r}");
+        let [r, ..] = image.get_pixel(76, 100).0;
+        assert!(r > 10 && r < 90, "outside {r}");
+        let [r, ..] = image.get_pixel(60, 100).0;
+        assert!(r < 4, "far {r}");
+        // Symmetric: the same distance beyond the other side.
+        let [left, ..] = image.get_pixel(76, 100).0;
+        let [right, ..] = image.get_pixel(123, 100).0;
+        assert!(left.abs_diff(right) < 12, "{left} {right}");
+    }
+
+    #[test]
+    fn a_drop_shadow_is_drawn_beneath_the_group_offset() {
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group_with(
+            1.0,
+            gpui::GroupEffect::DropShadow {
+                dx: 12.0,
+                dy: 12.0,
+                sigma: 2.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        );
+        colored_quad(&mut scene, scaled_bounds(40., 40., 60., 60.), 0xff0000);
+        scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        // The picture itself is untouched; the shadow shows past its corner.
+        assert!(is_red(&image, 70, 70));
+        let [r, g, b, _] = image.get_pixel(105, 105).0;
+        assert!(r < 30 && g < 30 && b > 200, "shadow {r} {g} {b}");
+        let [r, g, b, _] = image.get_pixel(30, 30).0;
+        assert!(r == 0 && g == 0 && b == 0, "outside {r} {g} {b}");
     }
 
     #[test]

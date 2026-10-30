@@ -251,8 +251,8 @@ pub(crate) fn draw_scene(
             PrimitiveBatch::PolychromeSprites { texture_id, range }
                 if gpui::decode_effect_group(texture_id).is_some() =>
             {
-                let Some(group) =
-                    gpui::decode_effect_group(texture_id).and_then(|id| layers.group(id))
+                let Some(group) = gpui::decode_effect_group(texture_id)
+                    .and_then(|(id, slot)| layers.group(id, slot))
                 else {
                     continue;
                 };

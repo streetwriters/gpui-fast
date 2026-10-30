@@ -29,7 +29,7 @@ pub type DrawOrder = u32;
 /// `0` or `1` by construction; shaders read it as a `u32`/`uint`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct PaddedBool32(u32);
+pub struct PaddedBool32(pub(crate) u32);
 
 impl From<bool> for PaddedBool32 {
     fn from(value: bool) -> Self {
@@ -262,6 +262,8 @@ pub struct Scene {
     /// What each group draws, split out of the scene by [`Scene::finish`]:
     /// finished scenes that share this one's transform table.
     pub group_scenes: Vec<Scene>,
+    /// The blur passes of each group in `group_scenes`, in order.
+    pub group_blurs: Vec<Vec<BlurPass>>,
 }
 
 /// A subtree painted into a texture of its own and composited with `opacity`.
@@ -271,30 +273,106 @@ pub struct EffectGroup {
     pub bounds: Bounds<ScaledPixels>,
     /// How opaque the composited group is.
     pub opacity: f32,
+    /// What is done to the texture before it is composited.
+    pub effect: GroupEffect,
 }
+
+/// What an effect group does to its picture.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GroupEffect {
+    /// Nothing: the picture is composited as it is.
+    #[default]
+    None,
+    /// A gaussian blur of standard deviation `sigma`, in device pixels.
+    Blur {
+        /// The standard deviation.
+        sigma: f32,
+    },
+    /// A blurred silhouette of the picture, in `color`, drawn `(dx, dy)` away
+    /// beneath it.
+    DropShadow {
+        /// Device pixels to the right.
+        dx: f32,
+        /// Device pixels down.
+        dy: f32,
+        /// The standard deviation of the blur.
+        sigma: f32,
+        /// The shadow's straight RGBA colour.
+        color: [f32; 4],
+    },
+}
+
+impl GroupEffect {
+    /// How far past the picture's bounds the effect reaches, in device pixels.
+    fn margin(&self) -> f32 {
+        match self {
+            GroupEffect::None => 0.0,
+            GroupEffect::Blur { sigma } | GroupEffect::DropShadow { sigma, .. } => {
+                (sigma * 3.0).ceil()
+            }
+        }
+    }
+
+    /// The blur's standard deviation, if the picture is blurred.
+    pub fn sigma(&self) -> Option<f32> {
+        match self {
+            GroupEffect::None => None,
+            GroupEffect::Blur { sigma } | GroupEffect::DropShadow { sigma, .. } => {
+                (*sigma > 0.0).then_some(*sigma)
+            }
+        }
+    }
+}
+
+/// A pass over an effect group's texture that blurs it along one axis: a
+/// scene of one sprite that reads texture `from` of the group and is drawn
+/// into texture `to`.
+pub struct BlurPass {
+    /// The slot of the group texture read.
+    pub from: u8,
+    /// The slot drawn into.
+    pub to: u8,
+    /// A finished scene of the one sprite.
+    pub scene: Scene,
+}
+
+/// The slot of a group's texture holding what the group painted.
+pub const GROUP_CONTENT: u8 = 0;
+/// The slot holding the blurred picture of a group with a drop shadow.
+pub const GROUP_BLURRED: u8 = 1;
+/// The slot a blur's first pass draws into.
+pub const GROUP_SCRATCH: u8 = 2;
 
 /// The first texture index of effect groups; below the scroll layer tiles.
 pub const EFFECT_GROUP_TEXTURE_BASE: u32 = 0xE000_0000;
 
-/// The texture id the composited sprite of effect group `group` carries.
-pub fn effect_group_texture_id(group: u32) -> AtlasTextureId {
+/// The texture id of `slot` of effect group `group`'s textures.
+pub fn effect_group_texture_id(group: u32, slot: u8) -> AtlasTextureId {
     AtlasTextureId {
-        index: EFFECT_GROUP_TEXTURE_BASE + group,
+        index: EFFECT_GROUP_TEXTURE_BASE + group * 4 + slot as u32,
         kind: AtlasTextureKind::Polychrome,
     }
 }
 
-/// The group a composited sprite stands for, if it is one.
-pub fn decode_effect_group(texture: AtlasTextureId) -> Option<u32> {
+/// The group and slot a sprite's texture stands for, if it is one.
+pub fn decode_effect_group(texture: AtlasTextureId) -> Option<(u32, u8)> {
     (texture.kind == AtlasTextureKind::Polychrome
         && (EFFECT_GROUP_TEXTURE_BASE..crate::fast::layers::scene::LAYER_TILE_TEXTURE_BASE)
             .contains(&texture.index))
-    .then(|| texture.index - EFFECT_GROUP_TEXTURE_BASE)
+    .then(|| {
+        let offset = texture.index - EFFECT_GROUP_TEXTURE_BASE;
+        (offset / 4, (offset % 4) as u8)
+    })
 }
 
-/// The `grayscale` value of a group's sprite: its texture holds premultiplied
-/// colour, which the shader divides by alpha before blending.
+/// The low byte of a sprite's `grayscale` word when its texture holds
+/// premultiplied colour, which the shader divides by alpha before blending.
 pub const PREMULTIPLIED_SPRITE: u32 = 2;
+/// The low byte of a sprite that blurs its texture horizontally; the rest of
+/// the word is the standard deviation in sixteenths of a pixel.
+pub const BLUR_HORIZONTAL_SPRITE: u32 = 4;
+/// Like [`BLUR_HORIZONTAL_SPRITE`], vertically.
+pub const BLUR_VERTICAL_SPRITE: u32 = 5;
 
 #[expect(missing_docs)]
 impl Scene {
@@ -315,6 +393,7 @@ impl Scene {
         self.current_transform = TransformIndex::IDENTITY;
         self.groups.clear();
         self.group_scenes.clear();
+        self.group_blurs.clear();
         crate::fast::layers::scene::SceneLayers::clear(&mut self.layers);
     }
 
@@ -354,10 +433,21 @@ impl Scene {
     /// is painted into a texture of its own and composited with `opacity`, so
     /// overlapping content inside it is blended as one image.
     pub fn begin_effect_group(&mut self, opacity: f32) -> EffectGroupScope {
+        self.begin_effect_group_with(opacity, GroupEffect::None)
+    }
+
+    /// Like [`Self::begin_effect_group`], doing `effect` to the picture before
+    /// it is composited.
+    pub fn begin_effect_group_with(
+        &mut self,
+        opacity: f32,
+        effect: GroupEffect,
+    ) -> EffectGroupScope {
         let previous = self.current_transform;
         self.groups.push(EffectGroup {
             bounds: Bounds::default(),
             opacity,
+            effect,
         });
         let id = self.groups.len() as u32;
         self.current_transform = self.transforms.intern_in_group(
@@ -370,12 +460,21 @@ impl Scene {
 
     /// Ends the group `scope` started and inserts what composites it, above
     /// everything the group painted and what overlaps its bounds. The group's
-    /// texture covers its bounds rounded out to whole device pixels and
-    /// clipped to `window`, so it is never larger than the window nor sampled
-    /// at another scale than the device's.
+    /// texture covers its bounds, grown by what the effect reaches, rounded
+    /// out to whole device pixels and clipped to `window`, so it is never
+    /// larger than the window nor sampled at another scale than the device's.
     pub fn end_effect_group(&mut self, scope: EffectGroupScope, window: Bounds<ScaledPixels>) {
         self.current_transform = scope.previous;
-        let drawn = self.groups[scope.id as usize - 1].bounds.intersect(&window);
+        let record = &self.groups[scope.id as usize - 1];
+        let (opacity, effect) = (record.opacity, record.effect);
+        if record.bounds.is_empty() {
+            return;
+        }
+        let margin = effect.margin();
+        let drawn = record
+            .bounds
+            .dilate(ScaledPixels(margin))
+            .intersect(&window);
         let bounds = Bounds::from_corners(
             point(
                 ScaledPixels(drawn.origin.x.0.floor()),
@@ -390,21 +489,17 @@ impl Scene {
         if bounds.is_empty() {
             return;
         }
-        let transform = self.transforms.intern_in_group(
-            TransformationMatrix::unit(),
-            ColorFilter::IDENTITY,
-            self.transforms.group(scope.previous),
-        );
-        let sprite = PolychromeSprite {
+        let group = self.transforms.group(scope.previous);
+        let sprite = |slot: u8, bounds: Bounds<ScaledPixels>, opacity: f32| PolychromeSprite {
             order: 0,
             transform_index: 0,
             grayscale: PaddedBool32(PREMULTIPLIED_SPRITE),
-            opacity: self.groups[scope.id as usize - 1].opacity,
+            opacity,
             bounds,
             content_mask: ContentMask::new(bounds),
             corner_radii: Corners::default(),
             tile: AtlasTile {
-                texture_id: effect_group_texture_id(scope.id),
+                texture_id: effect_group_texture_id(scope.id, slot),
                 tile_id: TileId(scope.id),
                 padding: 0,
                 bounds: Bounds {
@@ -416,7 +511,62 @@ impl Scene {
                 },
             },
         };
-        self.insert_under(sprite.into(), transform, false);
+        if let GroupEffect::DropShadow { dx, dy, color, .. } = effect {
+            // The shadow is the blurred picture, in one colour: a matrix that
+            // sends every colour to `color` and keeps the alpha.
+            let tint = ColorFilter {
+                rows: [
+                    [0., 0., 0., 0., color[0]],
+                    [0., 0., 0., 0., color[1]],
+                    [0., 0., 0., 0., color[2]],
+                    [0., 0., 0., color[3], 0.],
+                ],
+            };
+            let transform =
+                self.transforms
+                    .intern_in_group(TransformationMatrix::unit(), tint, group);
+            let moved = Bounds {
+                origin: point(
+                    ScaledPixels(bounds.origin.x.0 + dx),
+                    ScaledPixels(bounds.origin.y.0 + dy),
+                ),
+                size: bounds.size,
+            };
+            let mut shadow = sprite(GROUP_BLURRED, moved, opacity);
+            shadow.tile.bounds.origin = Point::default();
+            self.insert_under(shadow.into(), transform, false);
+        }
+        let transform = self.transforms.intern_in_group(
+            TransformationMatrix::unit(),
+            ColorFilter::IDENTITY,
+            group,
+        );
+        self.insert_under(
+            sprite(GROUP_CONTENT, bounds, opacity).into(),
+            transform,
+            false,
+        );
+    }
+
+    /// The passes that draw the frame's effect groups, in the order they
+    /// must run: innermost group first, and for each group the pass that
+    /// paints it and then the passes that blur it. Each is the group, the slot
+    /// of its texture the pass draws into, and the scene it draws.
+    pub fn effect_passes(&self) -> impl Iterator<Item = (u32, u8, &Scene)> + '_ {
+        self.group_scenes
+            .iter()
+            .enumerate()
+            .rev()
+            .flat_map(|(index, painted)| {
+                let id = index as u32 + 1;
+                std::iter::once((id, GROUP_CONTENT, painted)).chain(
+                    self.group_blurs
+                        .get(index)
+                        .into_iter()
+                        .flatten()
+                        .map(move |pass| (id, pass.to, &pass.scene)),
+                )
+            })
     }
 
     pub fn len(&self) -> usize {
@@ -547,9 +697,11 @@ impl Scene {
                     };
                     let mut regroup = |scene: &mut Scene, old: u32| {
                         *regrouped.entry(old).or_insert_with(|| {
+                            let old = &prev_scene.groups[old as usize - 1];
                             scene.groups.push(EffectGroup {
                                 bounds: Bounds::default(),
-                                opacity: prev_scene.groups[old as usize - 1].opacity,
+                                opacity: old.opacity,
+                                effect: old.effect,
                             });
                             scene.groups.len() as u32
                         })
@@ -562,9 +714,9 @@ impl Scene {
                     // The sprite that composites a group points at the group's
                     // texture, which is numbered anew.
                     if let Primitive::PolychromeSprite(sprite) = &mut primitive {
-                        if let Some(own) = decode_effect_group(sprite.tile.texture_id) {
+                        if let Some((own, slot)) = decode_effect_group(sprite.tile.texture_id) {
                             let renumbered = regroup(self, own);
-                            sprite.tile.texture_id = effect_group_texture_id(renumbered);
+                            sprite.tile.texture_id = effect_group_texture_id(renumbered, slot);
                             sprite.tile.tile_id = TileId(renumbered);
                         }
                     }

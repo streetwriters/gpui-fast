@@ -1418,14 +1418,45 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
     return output;
 }
 
+// One axis of a gaussian blur of an effect group's texture, within the
+// sprite's tile. The standard deviation is the flag word shifted down eight
+// bits, in sixteenths of a pixel; past 24 taps a side the taps are spread out
+// and the linear filter fills in between.
+float4 blur_taps(float2 uv, PolychromeSprite sprite, bool horizontal) {
+    float2 size;
+    t_sprite.GetDimensions(size.x, size.y);
+    float sigma = max(float(sprite.grayscale >> 8u) / 16.0, 0.001);
+    float step = max(1.0, ceil(sigma * 3.0 / 24.0));
+    int taps = int(ceil(sigma * 3.0 / step));
+    float2 direction = horizontal ? float2(1.0, 0.0) : float2(0.0, 1.0);
+    float2 low = float2(sprite.tile.bounds.origin);
+    float2 high = low + float2(sprite.tile.bounds.size);
+    float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+    float total = 0.0;
+    for (int i = -taps; i <= taps; i++) {
+        float offset = float(i) * step;
+        float weight = exp(-0.5 * offset * offset / (sigma * sigma));
+        float2 p = uv * size + direction * offset;
+        total += weight;
+        if (all(p >= low) && all(p < high)) {
+            sum += weight * t_sprite.SampleLevel(s_sprite, p / size, 0.0);
+        }
+    }
+    return sum / total;
+}
+
 float4 polychrome_sprite_fragment_body(PolychromeSpriteFragmentInput input) {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
+    uint mode = sprite.grayscale & 0xffu;
     float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
+    if (mode == 4u || mode == 5u) {
+        sample = blur_taps(input.tile_position, sprite, mode == 4u);
+    }
     float2 frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
     float distance = quad_sdf(frag_pos, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;
-    if (sprite.grayscale == 2u) {
+    if (mode >= 2u) {
         // An effect group's texture holds premultiplied colour.
         color = float4(color.rgb / max(color.a, 0.00001), color.a);
     } else if (sprite.grayscale != 0u) {

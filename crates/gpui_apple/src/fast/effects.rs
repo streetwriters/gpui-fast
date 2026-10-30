@@ -6,7 +6,7 @@
 use std::cell::Cell;
 
 use anyhow::Result;
-use gpui::{DevicePixels, Scene, Size};
+use gpui::{DevicePixels, GROUP_CONTENT, Scene, Size};
 
 use crate::metal_renderer::MetalRenderer;
 
@@ -39,24 +39,36 @@ pub(crate) fn render_groups(
     for (index, sub) in scene.group_scenes.iter().enumerate().rev() {
         let group = index as u32 + 1;
         let bounds = scene.groups[index].bounds;
-        let (x, y) = (bounds.origin.x.0 as i32, bounds.origin.y.0 as i32);
         let (width, height) = (bounds.size.width.0 as i32, bounds.size.height.0 as i32);
         if width <= 0 || height <= 0 {
             continue;
         }
-        let texture = renderer.group_texture(width as u64, height as u64);
+        let size = gpui::size(DevicePixels(width), DevicePixels(height));
+        let content = renderer.group_texture(width as u64, height as u64);
         renderer.effect_stats.groups_rasterized += 1;
         GROUP_PASS.with(|pass| pass.set(true));
-        let drawn = renderer.render_frame(
-            sub,
-            &texture,
-            gpui::size(DevicePixels(width), DevicePixels(height)),
-        );
+        let drawn = renderer.render_frame(sub, &content, size);
         GROUP_PASS.with(|pass| pass.set(false));
         drawn?.commit();
         renderer
             .effect_group_textures
-            .insert(group, (texture, (x, y)));
+            .insert((group, GROUP_CONTENT), content);
+        for pass in &scene.group_blurs[index] {
+            let target = match renderer.effect_group_textures.get(&(group, pass.to)) {
+                Some(texture) => texture.clone(),
+                None => {
+                    let texture = renderer.group_texture(width as u64, height as u64);
+                    renderer
+                        .effect_group_textures
+                        .insert((group, pass.to), texture.clone());
+                    texture
+                }
+            };
+            GROUP_PASS.with(|flag| flag.set(true));
+            let drawn = renderer.render_frame(&pass.scene, &target, size);
+            GROUP_PASS.with(|flag| flag.set(false));
+            drawn?.commit();
+        }
     }
     Ok(())
 }

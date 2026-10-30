@@ -54,7 +54,7 @@ pub(crate) struct TileCache {
     /// filter would blend in a neighbour.
     sampler: Option<ID3D11SamplerState>,
     /// The textures this frame's effect groups are drawn into, by group id.
-    groups: FxHashMap<u32, GroupTexture>,
+    groups: FxHashMap<(u32, u8), GroupTexture>,
     /// Textures of earlier frames' groups, free to be drawn into.
     group_pool: Vec<GroupTexture>,
     /// Per group texture size: the global parameters groups are drawn with.
@@ -410,11 +410,18 @@ impl TileCache {
                 round(group.bounds.size.width.0),
                 round(group.bounds.size.height.0),
             );
-            let texture = match self.group_pool.iter().position(|t| t.size == size) {
-                Some(position) => self.group_pool.swap_remove(position),
-                None => create_group_texture(device, size)?,
-            };
-            self.groups.insert(index as u32 + 1, texture);
+            let blurs = scene.group_blurs.get(index).into_iter().flatten();
+            let slots = std::iter::once(gpui::GROUP_CONTENT).chain(blurs.map(|pass| pass.to));
+            for slot in slots {
+                if self.groups.contains_key(&(index as u32 + 1, slot)) {
+                    continue;
+                }
+                let texture = match self.group_pool.iter().position(|t| t.size == size) {
+                    Some(position) => self.group_pool.swap_remove(position),
+                    None => create_group_texture(device, size)?,
+                };
+                self.groups.insert((index as u32 + 1, slot), texture);
+            }
             if let Entry::Vacant(entry) = self.group_globals.entry(size) {
                 entry.insert(create_globals(device, size.0, size.1)?);
             }
@@ -442,8 +449,8 @@ impl TileCache {
     }
 
     /// The texture the effect group `id` is drawn into this frame.
-    pub(crate) fn group(&self, id: u32) -> Option<&GroupTexture> {
-        self.groups.get(&id)
+    pub(crate) fn group(&self, id: u32, slot: u8) -> Option<&GroupTexture> {
+        self.groups.get(&(id, slot))
     }
 
     pub(crate) fn group_globals(&self, size: (u32, u32)) -> Option<&Option<ID3D11Buffer>> {

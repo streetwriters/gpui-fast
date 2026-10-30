@@ -844,6 +844,33 @@ vertex PolychromeSpriteVertexOutput polychrome_sprite_vertex(
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
+// One axis of a gaussian blur of an effect group's texture, within the
+// sprite's tile. The standard deviation is the sprite's flag word shifted
+// down eight bits, in sixteenths of a pixel; past 24 taps a side the taps are
+// spread out and the linear filter fills in between.
+float4 blur_taps(texture2d<float> atlas_texture, float2 uv, PolychromeSprite sprite, bool horizontal) {
+  constexpr sampler tap_sampler(mag_filter::linear, min_filter::linear);
+  float2 size = float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float sigma = max(float(sprite.grayscale >> 8) / 16.0, 0.001);
+  float step = max(1.0, ceil(sigma * 3.0 / 24.0));
+  int taps = int(ceil(sigma * 3.0 / step));
+  float2 direction = horizontal ? float2(1.0, 0.0) : float2(0.0, 1.0);
+  float2 low = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 high = low + float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float4 sum = float4(0.0);
+  float total = 0.0;
+  for (int i = -taps; i <= taps; i++) {
+    float offset = float(i) * step;
+    float weight = exp(-0.5 * offset * offset / (sigma * sigma));
+    float2 p = uv * size + direction * offset;
+    total += weight;
+    if (all(p >= low) && all(p < high)) {
+      sum += weight * atlas_texture.sample(tap_sampler, p / size, level(0));
+    }
+  }
+  return sum / total;
+}
+
 float4 polychrome_sprite_fragment_body(
     PolychromeSpriteFragmentInput input,
     constant PolychromeSprite *sprites,
@@ -852,13 +879,16 @@ float4 polychrome_sprite_fragment_body(
   float2 frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
   constexpr sampler atlas_texture_sampler(mag_filter::linear,
                                           min_filter::linear);
+  uint mode = sprite.grayscale & 0xffu;
   float4 sample =
-      atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+      (mode == 4u || mode == 5u)
+          ? blur_taps(atlas_texture, input.tile_position, sprite, mode == 4u)
+          : atlas_texture.sample(atlas_texture_sampler, input.tile_position);
   float distance =
       quad_sdf(frag_pos, sprite.bounds, sprite.corner_radii);
 
   float4 color = sample;
-  if (sprite.grayscale == 2u) {
+  if (mode >= 2u) {
     // An effect group's texture holds premultiplied colour; the blend
     // multiplies by alpha again.
     color.rgb /= max(color.a, 1e-5);

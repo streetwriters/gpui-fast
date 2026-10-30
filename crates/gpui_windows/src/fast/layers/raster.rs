@@ -71,71 +71,66 @@ pub(crate) fn rasterize_groups(
     frame.layers.prepare_groups(target.device, scene)?;
     unbind_textures(target, frame);
     let context = target.device_context;
-    let result = scene
-        .group_scenes
-        .iter()
-        .enumerate()
-        .rev()
-        .try_for_each(|(index, sub)| {
-            let Some(texture) = frame.layers.group(index as u32 + 1) else {
-                return Ok(());
-            };
-            let size = texture.size;
-            let render_target = texture.render_target.clone();
-            let globals = frame
-                .layers
-                .group_globals(size)
-                .context("an effect group has no globals")?
-                .clone();
-            let paths = frame
-                .layers
-                .group_paths(size)
-                .context("an effect group has no path textures")?;
-            let (intermediate_texture, intermediate_srv) = (
-                paths.intermediate_texture.clone(),
-                paths.intermediate_srv.clone(),
+    let result = scene.effect_passes().try_for_each(|(id, slot, sub)| {
+        let Some(texture) = frame.layers.group(id, slot) else {
+            return Ok(());
+        };
+        let size = texture.size;
+        let render_target = texture.render_target.clone();
+        let globals = frame
+            .layers
+            .group_globals(size)
+            .context("an effect group has no globals")?
+            .clone();
+        let paths = frame
+            .layers
+            .group_paths(size)
+            .context("an effect group has no path textures")?;
+        let (intermediate_texture, intermediate_srv) = (
+            paths.intermediate_texture.clone(),
+            paths.intermediate_srv.clone(),
+        );
+        let (msaa_texture, msaa_view) = (paths.msaa_texture.clone(), paths.msaa_view.clone());
+        unsafe {
+            context.OMSetRenderTargets(Some(slice::from_ref(&render_target)), None);
+            context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                TopLeftX: 0.,
+                TopLeftY: 0.,
+                Width: size.0 as f32,
+                Height: size.1 as f32,
+                MinDepth: 0.,
+                MaxDepth: 1.,
+            }]));
+            context.ClearRenderTargetView(
+                render_target
+                    .as_ref()
+                    .context("group render target missing")?,
+                &[0.; 4],
             );
-            let (msaa_texture, msaa_view) = (paths.msaa_texture.clone(), paths.msaa_view.clone());
-            unsafe {
-                context.OMSetRenderTargets(Some(slice::from_ref(&render_target)), None);
-                context.RSSetViewports(Some(&[D3D11_VIEWPORT {
-                    TopLeftX: 0.,
-                    TopLeftY: 0.,
-                    Width: size.0 as f32,
-                    Height: size.1 as f32,
-                    MinDepth: 0.,
-                    MaxDepth: 1.,
-                }]));
-                context.ClearRenderTargetView(
-                    render_target
-                        .as_ref()
-                        .context("group render target missing")?,
-                    &[0.; 4],
-                );
-                context.VSSetConstantBuffers(0, Some(slice::from_ref(&globals)));
-                context.PSSetConstantBuffers(0, Some(slice::from_ref(&globals)));
-                context.VSSetConstantBuffers(
-                    1,
-                    Some(slice::from_ref(&target.globals.batch_params_buffer)),
-                );
-            }
-            target.globals.bind_transforms(context, &sub.transforms)?;
-            upload(target, pipelines, sub)?;
-            let group_target = Target {
-                device: target.device,
-                device_context: target.device_context,
-                atlas: target.atlas,
-                globals: target.globals,
-                paths: Some(PathTargets {
-                    render_target_view: &render_target,
-                    intermediate_texture: &intermediate_texture,
-                    intermediate_srv: &intermediate_srv,
-                    msaa_texture: &msaa_texture,
-                    msaa_view: &msaa_view,
-                }),
-            };
-            draw_scene(&group_target, pipelines, frame, sub)
-        });
+            context.VSSetConstantBuffers(0, Some(slice::from_ref(&globals)));
+            context.PSSetConstantBuffers(0, Some(slice::from_ref(&globals)));
+            context.VSSetConstantBuffers(
+                1,
+                Some(slice::from_ref(&target.globals.batch_params_buffer)),
+            );
+        }
+        target.globals.bind_transforms(context, &sub.transforms)?;
+        upload(target, pipelines, sub)?;
+        let group_target = Target {
+            device: target.device,
+            device_context: target.device_context,
+            atlas: target.atlas,
+            globals: target.globals,
+            paths: Some(PathTargets {
+                render_target_view: &render_target,
+                intermediate_texture: &intermediate_texture,
+                intermediate_srv: &intermediate_srv,
+                msaa_texture: &msaa_texture,
+                msaa_view: &msaa_view,
+            }),
+        };
+        draw_scene(&group_target, pipelines, frame, sub)
+    });
     unsafe { context.OMSetRenderTargets(None, None) };
     if result.is_err() {
         frame.layers.clear();

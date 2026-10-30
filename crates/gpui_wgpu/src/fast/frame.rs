@@ -255,7 +255,7 @@ fn record_with(
     }
     // Effect groups follow the tiles, innermost first: a group's sprite in
     // an outer group needs the inner one drawn.
-    for sub in scene.group_scenes.iter().rev() {
+    for (_, _, sub) in scene.effect_passes() {
         let mut path_batches = Vec::new();
         plan_paths(sub, &mut vertices, &mut sprites, &mut path_batches);
         scenes.push(PlannedScene {
@@ -526,12 +526,11 @@ fn record(
             &scenes[index].path_batches,
         );
     }
-    for (position, sub) in scene.group_scenes.iter().rev().enumerate() {
-        let id = (scene.group_scenes.len() - position) as u32;
+    for (position, (id, slot, sub)) in scene.effect_passes().enumerate() {
         let index = rasters.len() + position;
         let (Some(texture), Some(size)) = (
-            state.layers.group(id),
-            state.layers.group(id).map(|texture| texture.size),
+            state.layers.group(id, slot),
+            state.layers.group(id, slot).map(|texture| texture.size),
         ) else {
             continue;
         };
@@ -767,8 +766,8 @@ pub(crate) fn draw_scene(
             PrimitiveBatch::PolychromeSprites { texture_id, range }
                 if gpui::decode_effect_group(texture_id).is_some() =>
             {
-                let Some(group) =
-                    gpui::decode_effect_group(texture_id).and_then(|id| state.layers.group(id))
+                let Some(group) = gpui::decode_effect_group(texture_id)
+                    .and_then(|(id, slot)| state.layers.group(id, slot))
                 else {
                     continue;
                 };

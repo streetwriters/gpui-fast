@@ -1442,19 +1442,49 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     return out;
 }
 
+// One axis of a gaussian blur of an effect group's texture, within the
+// sprite's tile. The standard deviation is the flag word shifted down eight
+// bits, in sixteenths of a pixel; past 24 taps a side the taps are spread out
+// and the linear filter fills in between.
+fn blur_taps(uv: vec2<f32>, sprite: PolychromeSprite, horizontal: bool) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(t_sprite, 0));
+    let sigma = max(f32(sprite.grayscale >> 8u) / 16.0, 0.001);
+    let step = max(1.0, ceil(sigma * 3.0 / 24.0));
+    let taps = i32(ceil(sigma * 3.0 / step));
+    let direction = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), horizontal);
+    let low = vec2<f32>(sprite.tile.bounds.origin);
+    let high = low + vec2<f32>(sprite.tile.bounds.size);
+    var sum = vec4<f32>(0.0);
+    var total = 0.0;
+    for (var i = -taps; i <= taps; i++) {
+        let offset = f32(i) * step;
+        let weight = exp(-0.5 * offset * offset / (sigma * sigma));
+        let p = uv * size + direction * offset;
+        total += weight;
+        if (all(p >= low) && all(p < high)) {
+            sum += weight * textureSampleLevel(t_sprite, s_sprite, p / size, 0.0);
+        }
+    }
+    return sum / total;
+}
+
 fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
-    let sample = textureSample(t_sprite, s_sprite, input.tile_position);
+    let sprite = load_poly_sprite(input.sprite_id);
+    let mode = sprite.grayscale & 0xffu;
+    var sample = textureSample(t_sprite, s_sprite, input.tile_position);
+    if (mode == 4u || mode == 5u) {
+        sample = blur_taps(input.tile_position, sprite, mode == 4u);
+    }
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
     }
 
-    let sprite = load_poly_sprite(input.sprite_id);
     let frag_pos = fragment_position(input.position, input.local_position, sprite.transform_index);
     let distance = quad_sdf(frag_pos, sprite.bounds, sprite.corner_radii);
 
     var color = sample;
-    if (sprite.grayscale == 2u) {
+    if (mode >= 2u) {
         // An effect group's texture holds premultiplied colour.
         color = vec4<f32>(color.rgb / max(color.a, 0.00001), color.a);
     } else if (sprite.grayscale != 0u) {

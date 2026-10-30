@@ -36,7 +36,7 @@ pub(crate) struct TileCache {
     /// Per tile size: the path intermediate textures of tiles.
     paths: FxHashMap<(u32, u32), TilePaths>,
     /// The textures this frame's effect groups are drawn into, by group id.
-    groups: FxHashMap<u32, GroupTexture>,
+    groups: FxHashMap<(u32, u8), GroupTexture>,
     /// Textures of earlier frames' groups, by size, free to be drawn into.
     group_pool: Vec<GroupTexture>,
 }
@@ -375,8 +375,8 @@ impl TileCache {
     }
 
     /// The texture the effect group `id` is drawn into this frame.
-    pub(crate) fn group(&self, id: u32) -> Option<&GroupTexture> {
-        self.groups.get(&id)
+    pub(crate) fn group(&self, id: u32, slot: u8) -> Option<&GroupTexture> {
+        self.groups.get(&(id, slot))
     }
 
     /// Gives every effect group of the frame a transparent-clearable texture
@@ -397,11 +397,18 @@ impl TileCache {
                 round(group.bounds.size.width.0),
                 round(group.bounds.size.height.0),
             );
-            let texture = match self.group_pool.iter().position(|t| t.size == size) {
-                Some(position) => self.group_pool.swap_remove(position),
-                None => create_group_texture(target.device, target.format, size),
-            };
-            self.groups.insert(index as u32 + 1, texture);
+            let blurs = scene.group_blurs.get(index).into_iter().flatten();
+            let slots = std::iter::once(gpui::GROUP_CONTENT).chain(blurs.map(|pass| pass.to));
+            for slot in slots {
+                if self.groups.contains_key(&(index as u32 + 1, slot)) {
+                    continue;
+                }
+                let texture = match self.group_pool.iter().position(|t| t.size == size) {
+                    Some(position) => self.group_pool.swap_remove(position),
+                    None => create_group_texture(target.device, target.format, size),
+                };
+                self.groups.insert((index as u32 + 1, slot), texture);
+            }
             self.ensure_globals(target, size);
             self.ensure_paths(target, size);
         }

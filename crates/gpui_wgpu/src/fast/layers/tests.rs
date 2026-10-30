@@ -1537,4 +1537,51 @@ mod groups {
             );
         }
     }
+
+    #[test]
+    fn a_blurred_group_spreads_its_edges() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group_with(1.0, gpui::GroupEffect::Blur { sigma: 4.0 });
+        scene.insert_primitive(quad(sp(80., 80., 40., 40.), Hsla::from(rgba(0x000000ff))));
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        let at = |x, y| pixel(&pixels, SIZE, x, y)[0];
+        assert!(at(100, 100) < 5, "{}", at(100, 100));
+        assert!(at(80, 100).abs_diff(128) < 24, "edge {}", at(80, 100));
+        assert!(
+            at(76, 100) > 165 && at(76, 100) < 245,
+            "outside {}",
+            at(76, 100)
+        );
+        assert!(at(60, 100) > 251, "far {}", at(60, 100));
+        assert!(at(76, 100).abs_diff(at(123, 100)) < 12);
+    }
+
+    #[test]
+    fn a_drop_shadow_is_drawn_beneath_the_group_offset() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group_with(
+            1.0,
+            gpui::GroupEffect::DropShadow {
+                dx: 12.0,
+                dy: 12.0,
+                sigma: 2.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        );
+        scene.insert_primitive(quad(sp(40., 40., 60., 60.), Hsla::from(rgba(0xff0000ff))));
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        assert!(near(pixel(&pixels, SIZE, 70, 70), [255, 0, 0]));
+        assert!(near(pixel(&pixels, SIZE, 105, 105), [0, 0, 255]));
+        assert!(near(pixel(&pixels, SIZE, 30, 30), [255, 255, 255]));
+    }
 }
