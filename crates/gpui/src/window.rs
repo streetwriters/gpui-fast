@@ -4457,10 +4457,13 @@ impl Window {
         blend: BlendMode,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        if (opacity >= 1.0 && effect == GroupEffect::None && blend == BlendMode::Normal)
-            || self.fast_layers.painting.is_some()
-        {
+        if opacity >= 1.0 && effect == GroupEffect::None && blend == BlendMode::Normal {
             return f(self);
+        }
+        if self.fast_layers.painting.is_some() {
+            // Inside a scroll layer's content there are no groups: a shape
+            // is faded on its own.
+            return self.with_element_opacity((opacity < 1.0).then_some(opacity.max(0.0)), f);
         }
         let scope =
             self.next_frame
