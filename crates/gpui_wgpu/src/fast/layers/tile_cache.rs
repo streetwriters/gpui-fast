@@ -39,6 +39,14 @@ pub(crate) struct TileCache {
     groups: FxHashMap<(u32, u8), GroupTexture>,
     /// Textures of earlier frames' groups, by size, free to be drawn into.
     group_pool: Vec<GroupTexture>,
+    /// Copies of targets that blended sprites read, by target size.
+    backdrops: FxHashMap<(u32, u32), Backdrop>,
+}
+
+/// A copy of a target, which a blended sprite is combined with.
+pub(crate) struct Backdrop {
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
 }
 
 /// A texture an effect group is drawn into: its size is the group's rounded
@@ -69,6 +77,7 @@ impl Default for TileCache {
             paths: FxHashMap::default(),
             groups: FxHashMap::default(),
             group_pool: Vec::new(),
+            backdrops: FxHashMap::default(),
         }
     }
 }
@@ -328,6 +337,7 @@ impl TileCache {
         self.paths.clear();
         self.groups.clear();
         self.group_pool.clear();
+        self.backdrops.clear();
     }
 
     /// Gives every tile in `planned` a texture, fits the cache in its
@@ -372,6 +382,38 @@ impl TileCache {
 
     pub(crate) fn paths(&self, tile_size: u32) -> Option<&TilePaths> {
         self.paths.get(&(tile_size, tile_size))
+    }
+
+    /// Makes a backdrop for every size in `sizes`, and drops the ones of
+    /// sizes no longer drawn into once there are more than a few.
+    pub(crate) fn prepare_backdrops(&mut self, target: &FrameTarget, sizes: &[(u32, u32)]) {
+        if self.backdrops.len() > 8 {
+            self.backdrops.retain(|size, _| sizes.contains(size));
+        }
+        for &size in sizes {
+            self.backdrops.entry(size).or_insert_with(|| {
+                let texture = target.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("backdrop"),
+                    size: wgpu::Extent3d {
+                        width: size.0,
+                        height: size.1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: target.format,
+                    usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                Backdrop { texture, view }
+            });
+        }
+    }
+
+    pub(crate) fn backdrop(&self, size: (u32, u32)) -> Option<&Backdrop> {
+        self.backdrops.get(&size)
     }
 
     /// The texture the effect group `id` is drawn into this frame.

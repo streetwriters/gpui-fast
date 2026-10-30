@@ -153,14 +153,29 @@ pub(crate) fn draw_primitives_to_texture(
                     viewport_size,
                     command_encoder,
                 ),
-            PrimitiveBatch::PolychromeSprites { texture_id, range } => renderer
-                .draw_polychrome_sprites(
+            PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                let blended = crate::metal_renderer::is_blend_batch(scene, &range);
+                if blended {
+                    command_encoder.end_encoding();
+                    renderer.copy_backdrop(command_buffer, texture);
+                    command_encoder = new_command_encoder_for_texture(
+                        command_buffer,
+                        texture,
+                        viewport_size,
+                        None,
+                    );
+                }
+                renderer.draw_polychrome_sprites(
                     texture_id,
                     range,
                     instance_bindings,
                     viewport_size,
                     command_encoder,
-                ),
+                );
+                if blended {
+                    renderer.backdrop = None;
+                }
+            }
             PrimitiveBatch::Surfaces(range) => renderer.draw_surfaces(
                 &scene.surfaces[range.clone()],
                 range.start,

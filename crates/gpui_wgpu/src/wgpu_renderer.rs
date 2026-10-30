@@ -218,6 +218,9 @@ pub(crate) struct WgpuBindGroupLayouts {
     pub(crate) globals: wgpu::BindGroupLayout,
     pub(crate) instances: wgpu::BindGroupLayout,
     pub(crate) texture: wgpu::BindGroupLayout,
+    /// Bound as every texture bind group's backdrop when no blended sprite
+    /// reads one.
+    pub(crate) dummy_backdrop: wgpu::TextureView,
     surfaces: wgpu::BindGroupLayout,
     /// Params-only layout for the RGBA surface pipeline (the texture binds
     /// through the shared `texture` layout at group 2).
@@ -509,7 +512,9 @@ impl WgpuRenderer {
         }
 
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Copied from when a blended sprite needs a backdrop.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | (surface_caps.usages & wgpu::TextureUsages::COPY_SRC),
             format: surface_format,
             width: clamped_width.max(1),
             height: clamped_height.max(1),
@@ -635,8 +640,35 @@ impl WgpuRendererCore {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // What a blended sprite is combined with: a copy of the target.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
+        let dummy_backdrop = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("dummy_backdrop"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let surfaces = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("surfaces_layout"),
@@ -697,6 +729,7 @@ impl WgpuRendererCore {
         });
 
         WgpuBindGroupLayouts {
+            dummy_backdrop,
             globals,
             instances,
             texture,
@@ -1871,6 +1904,12 @@ impl WgpuRendererCore {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(
+                            &resources.bind_group_layouts.dummy_backdrop,
+                        ),
                     },
                 ],
             })

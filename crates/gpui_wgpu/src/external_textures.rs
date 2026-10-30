@@ -178,6 +178,10 @@ impl ExternalTextures {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&layouts.dummy_backdrop),
+                },
             ],
         });
         self.entries.insert(

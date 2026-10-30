@@ -288,6 +288,23 @@ fn record_with(
             let target = host.target()?;
             state.layers.prepare(&target, &scene.layers, &planned);
             state.layers.prepare_groups(&target, scene);
+            let blended = |scene: &Scene| {
+                scene
+                    .polychrome_sprites
+                    .iter()
+                    .any(|sprite| sprite.mode() == gpui::BLEND_SPRITE)
+            };
+            let mut sizes = Vec::new();
+            if blended(scene) {
+                let texture = frame_view.texture();
+                sizes.push((texture.width(), texture.height()));
+            }
+            for (id, slot, sub) in scene.effect_passes() {
+                if let (true, Some(group)) = (blended(sub), state.layers.group(id, slot)) {
+                    sizes.push(group.size);
+                }
+            }
+            state.layers.prepare_backdrops(&target, &sizes);
             // Only the frame's own scene paints external textures: layer
             // tiles never hold one (`gpui::fast::layers::overlay`).
             state.external_textures.prepare(
@@ -624,6 +641,7 @@ pub(crate) fn draw_scene(
             target.atlas_sampler,
             label,
             view,
+            &target.bind_group_layouts.dummy_backdrop,
         )
     };
     let intermediate = draw
@@ -771,13 +789,50 @@ pub(crate) fn draw_scene(
                 else {
                     continue;
                 };
+                // A blended sprite reads a copy of what the pass has drawn so
+                // far, which takes ending the pass.
+                let target_texture = draw.view.texture();
+                let backdrop = (draw
+                    .scene
+                    .polychrome_sprites
+                    .get(range.start)
+                    .is_some_and(|sprite| sprite.mode() == gpui::BLEND_SPRITE)
+                    && target_texture
+                        .usage()
+                        .contains(wgpu::TextureUsages::COPY_SRC))
+                .then(|| {
+                    state
+                        .layers
+                        .backdrop((target_texture.width(), target_texture.height()))
+                })
+                .flatten();
+                if let Some(backdrop) = backdrop {
+                    drop(pass);
+                    encoder.copy_texture_to_texture(
+                        target_texture.as_image_copy(),
+                        backdrop.texture.as_image_copy(),
+                        target_texture.size(),
+                    );
+                    pass = begin_main_pass(encoder, draw.view, "main_pass_continued", None);
+                    bound.forget();
+                }
+                let bind_group = state.bind_groups.texture(
+                    target.device,
+                    &target.bind_group_layouts.texture,
+                    target.atlas_sampler,
+                    "effect_group_bind_group",
+                    &group.view,
+                    backdrop
+                        .map(|backdrop| &backdrop.view)
+                        .unwrap_or(&target.bind_group_layouts.dummy_backdrop),
+                );
                 draw_batch(
                     &mut pass,
                     &mut bound,
                     draw.globals,
                     &pipelines.poly_sprites,
                     &upload.polychrome_sprites,
-                    Some(&texture_bind_group("effect_group_bind_group", &group.view)),
+                    Some(&bind_group),
                     range,
                 );
             }

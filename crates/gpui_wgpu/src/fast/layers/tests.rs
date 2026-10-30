@@ -1584,4 +1584,44 @@ mod groups {
         assert!(near(pixel(&pixels, SIZE, 105, 105), [0, 0, 255]));
         assert!(near(pixel(&pixels, SIZE, 30, 30), [255, 255, 255]));
     }
+
+    /// Draws an orange group blended by `mode` over a grey window.
+    fn blended_over_grey(harness: &mut Harness, mode: gpui::BlendMode) -> [u8; 4] {
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad(sp(0., 0., 200., 200.), Hsla::from(rgba(0x808080ff))));
+        let scope = scene.begin_effect_group_blended(1.0, gpui::GroupEffect::None, mode);
+        scene.insert_primitive(quad(sp(50., 50., 100., 100.), Hsla::from(rgba(0xff8000ff))));
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        let pixels = render(harness, scene);
+        assert_eq!(pixel(&pixels, SIZE, 10, 10), [128, 128, 128, 255]);
+        pixel(&pixels, SIZE, 100, 100)
+    }
+
+    #[test]
+    fn blend_modes_combine_a_group_with_the_backdrop() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        use gpui::BlendMode::*;
+        let mut check = |mode, expected: [u8; 3]| {
+            let actual = blended_over_grey(&mut harness, mode);
+            assert!(
+                actual[..3]
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, e)| a.abs_diff(e) <= 3),
+                "{mode:?}: {actual:?} vs {expected:?}"
+            );
+        };
+        check(Normal, [255, 128, 0]);
+        check(Multiply, [128, 64, 0]);
+        check(Screen, [255, 191, 128]);
+        check(Difference, [127, 0, 128]);
+        check(Exclusion, [127, 128, 128]);
+        check(Darken, [128, 128, 0]);
+        check(Lighten, [255, 128, 128]);
+        check(HardLight, [255, 128, 0]);
+        check(Luminosity, [152, 152, 152]);
+    }
 }

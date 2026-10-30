@@ -19,7 +19,7 @@ const KEEP_FRAMES: u64 = 2;
 #[derive(Default)]
 pub(crate) struct BindGroupCache {
     frame: Cell<u64>,
-    textures: RefCell<HashMap<wgpu::TextureView, (wgpu::BindGroup, u64)>>,
+    textures: RefCell<HashMap<(wgpu::TextureView, wgpu::TextureView), (wgpu::BindGroup, u64)>>,
     instances: RefCell<HashMap<(wgpu::Buffer, u64, u64), (wgpu::BindGroup, u64)>>,
 }
 
@@ -42,10 +42,12 @@ impl BindGroupCache {
         sampler: &wgpu::Sampler,
         label: &str,
         view: &wgpu::TextureView,
+        backdrop: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         let frame = self.frame.get();
         let mut textures = self.textures.borrow_mut();
-        if let Some((bind_group, used)) = textures.get_mut(view) {
+        let key = (view.clone(), backdrop.clone());
+        if let Some((bind_group, used)) = textures.get_mut(&key) {
             *used = frame;
             return bind_group.clone();
         }
@@ -61,9 +63,13 @@ impl BindGroupCache {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(backdrop),
+                },
             ],
         });
-        textures.insert(view.clone(), (bind_group.clone(), frame));
+        textures.insert(key, (bind_group.clone(), frame));
         bind_group
     }
 

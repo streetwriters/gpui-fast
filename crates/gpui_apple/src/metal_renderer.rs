@@ -157,6 +157,11 @@ pub struct MetalRenderer {
     effect_texture_pool: Vec<metal::Texture>,
     /// Counts of the effect-group work done since the renderer was made.
     pub effect_stats: EffectStats,
+    /// A 1x1 texture bound where a draw has no backdrop.
+    dummy_backdrop: metal::Texture,
+    /// What a blended sprite reads: a copy of the target made just before it.
+    pub(crate) backdrop: Option<metal::Texture>,
+    backdrop_cache: Option<metal::Texture>,
     pub(crate) fast_layers: crate::fast::layers::TileCache,
 }
 
@@ -393,6 +398,7 @@ impl MetalRenderer {
             MTLPixelFormat::BGRA8Unorm,
         );
 
+        let dummy_backdrop = new_dummy_texture(&device);
         let command_queue = device.new_command_queue();
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), supports_shared_storage));
@@ -444,6 +450,9 @@ impl MetalRenderer {
             effect_group_textures: Default::default(),
             effect_texture_pool: Vec::new(),
             effect_stats: EffectStats::default(),
+            dummy_backdrop,
+            backdrop: None,
+            backdrop_cache: None,
             fast_layers: crate::fast::layers::TileCache::default(),
         }
     }
@@ -568,6 +577,56 @@ impl MetalRenderer {
             command_buffer.present_drawable(drawable);
             command_buffer.commit();
         }
+    }
+
+    /// The texture blended sprites read: the backdrop copied for them, or a
+    /// stand-in.
+    pub(crate) fn backdrop_texture(&self) -> &metal::TextureRef {
+        self.backdrop.as_ref().unwrap_or(&self.dummy_backdrop)
+    }
+
+    /// Copies `target` into the texture blended sprites read, with `blit`
+    /// commands that run before the next render pass encoded on
+    /// `command_buffer`.
+    pub(crate) fn copy_backdrop(
+        &mut self,
+        command_buffer: &metal::CommandBufferRef,
+        target: &metal::TextureRef,
+    ) {
+        let (width, height) = (target.width(), target.height());
+        let fits =
+            |texture: &metal::Texture| texture.width() == width && texture.height() == height;
+        if !self.backdrop_cache.as_ref().is_some_and(fits) {
+            let descriptor = metal::TextureDescriptor::new();
+            descriptor.set_width(width);
+            descriptor.set_height(height);
+            descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+            descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
+            descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+            self.backdrop_cache = Some(self.device.new_texture(&descriptor));
+        }
+        let backdrop = self
+            .backdrop_cache
+            .clone()
+            .expect("the backdrop was just made");
+        let blit = command_buffer.new_blit_command_encoder();
+        blit.copy_from_texture(
+            target,
+            0,
+            0,
+            metal::MTLOrigin { x: 0, y: 0, z: 0 },
+            metal::MTLSize {
+                width,
+                height,
+                depth: 1,
+            },
+            &backdrop,
+            0,
+            0,
+            metal::MTLOrigin { x: 0, y: 0, z: 0 },
+        );
+        blit.end_encoding();
+        self.backdrop = Some(backdrop);
     }
 
     /// Moves last frame's group textures back to the pool.
@@ -875,14 +934,29 @@ impl MetalRenderer {
                         viewport_size,
                         command_encoder,
                     ),
-                PrimitiveBatch::PolychromeSprites { texture_id, range } => self
-                    .draw_polychrome_sprites(
+                PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                    let blended = is_blend_batch(scene, &range);
+                    if blended {
+                        command_encoder.end_encoding();
+                        self.copy_backdrop(command_buffer, texture);
+                        command_encoder = new_command_encoder_for_texture(
+                            command_buffer,
+                            texture,
+                            viewport_size,
+                            None,
+                        );
+                    }
+                    self.draw_polychrome_sprites(
                         texture_id,
                         range,
                         instance_bindings,
                         viewport_size,
                         command_encoder,
-                    ),
+                    );
+                    if blended {
+                        self.backdrop = None;
+                    }
+                }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(
                     &scene.surfaces[range.clone()],
                     range.start,
@@ -1337,6 +1411,10 @@ impl MetalRenderer {
             instance_bindings.polychrome_sprites.offset as u64,
         );
         command_encoder.set_fragment_texture(SpriteInputIndex::AtlasTexture as u64, Some(&texture));
+        command_encoder.set_fragment_texture(
+            SpriteInputIndex::Backdrop as u64,
+            Some(self.backdrop.as_ref().unwrap_or(&self.dummy_backdrop)),
+        );
 
         command_encoder.draw_primitives_instanced_base_instance(
             metal::MTLPrimitiveType::Triangle,
@@ -1503,6 +1581,24 @@ fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
     }
 
     RgbaImage::from_raw(width, height, pixels).context("failed to create RgbaImage from pixel data")
+}
+
+/// Whether `range` of the scene's polychrome sprites is one that is combined
+/// with the backdrop under it.
+pub(crate) fn is_blend_batch(scene: &Scene, range: &Range<usize>) -> bool {
+    scene
+        .polychrome_sprites
+        .get(range.start)
+        .is_some_and(|sprite| sprite.mode() == gpui::BLEND_SPRITE)
+}
+
+fn new_dummy_texture(device: &metal::DeviceRef) -> metal::Texture {
+    let descriptor = metal::TextureDescriptor::new();
+    descriptor.set_width(1);
+    descriptor.set_height(1);
+    descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
+    device.new_texture(&descriptor)
 }
 
 fn build_pipeline_state(
@@ -1810,6 +1906,7 @@ pub(crate) enum SpriteInputIndex {
     ViewportSize = 2,
     AtlasTextureSize = 3,
     AtlasTexture = 4,
+    Backdrop = 5,
 }
 
 #[repr(C)]
@@ -2286,6 +2383,61 @@ mod tests {
                 "{x},{y}"
             );
         }
+    }
+
+    /// Draws an orange group blended by `mode` over a grey window.
+    fn blended_over_grey(mode: gpui::BlendMode) -> [u8; 4] {
+        let mut scene = Scene::default();
+        colored_quad(&mut scene, scaled_bounds(0., 0., 200., 200.), 0x808080);
+        let scope = scene.begin_effect_group_blended(1.0, gpui::GroupEffect::None, mode);
+        colored_quad(&mut scene, scaled_bounds(50., 50., 100., 100.), 0xff8000);
+        scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        // Outside the group the backdrop is untouched.
+        assert_eq!(image.get_pixel(10, 10).0, [128, 128, 128, 255]);
+        image.get_pixel(100, 100).0
+    }
+
+    fn assert_close(actual: [u8; 4], expected: [u8; 3]) {
+        assert!(
+            actual[..3]
+                .iter()
+                .zip(expected)
+                .all(|(a, e)| a.abs_diff(e) <= 3),
+            "{actual:?} vs {expected:?}"
+        );
+    }
+
+    #[test]
+    fn blend_modes_combine_a_group_with_the_backdrop() {
+        use gpui::BlendMode::*;
+        assert_close(blended_over_grey(Normal), [255, 128, 0]);
+        assert_close(blended_over_grey(Multiply), [128, 64, 0]);
+        assert_close(blended_over_grey(Screen), [255, 191, 128]);
+        assert_close(blended_over_grey(Difference), [127, 0, 128]);
+        assert_close(blended_over_grey(Exclusion), [127, 128, 128]);
+        assert_close(blended_over_grey(Darken), [128, 128, 0]);
+        assert_close(blended_over_grey(Lighten), [255, 128, 128]);
+        assert_close(blended_over_grey(HardLight), [255, 128, 0]);
+        assert_close(blended_over_grey(Luminosity), [152, 152, 152]);
+    }
+
+    #[test]
+    fn a_blended_group_sees_only_the_isolated_group_it_is_in() {
+        let mut scene = Scene::default();
+        colored_quad(&mut scene, scaled_bounds(0., 0., 200., 200.), 0x808080);
+        let isolated = scene.begin_effect_group_with(1.0, gpui::GroupEffect::Isolate);
+        let inner = scene.begin_effect_group_blended(
+            1.0,
+            gpui::GroupEffect::None,
+            gpui::BlendMode::Multiply,
+        );
+        colored_quad(&mut scene, scaled_bounds(50., 50., 100., 100.), 0xff8000);
+        scene.end_effect_group(inner, scaled_bounds(0., 0., 200., 200.));
+        scene.end_effect_group(isolated, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        // Multiplied with nothing, the orange stays as it is.
+        assert_close(image.get_pixel(100, 100).0, [255, 128, 0]);
     }
 
     #[test]

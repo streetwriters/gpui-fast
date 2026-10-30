@@ -275,6 +275,32 @@ pub struct EffectGroup {
     pub opacity: f32,
     /// What is done to the texture before it is composited.
     pub effect: GroupEffect,
+    /// How the composited picture is combined with what is beneath it.
+    pub blend: BlendMode,
+}
+
+/// How a group's picture is combined with the backdrop beneath it, as in
+/// CSS compositing's `mix-blend-mode`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(missing_docs)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 /// What an effect group does to its picture.
@@ -283,6 +309,9 @@ pub enum GroupEffect {
     /// Nothing: the picture is composited as it is.
     #[default]
     None,
+    /// Nothing, but the content is painted as a group of its own, so that
+    /// blend modes inside it see only what is inside it.
+    Isolate,
     /// A gaussian blur of standard deviation `sigma`, in device pixels.
     Blur {
         /// The standard deviation.
@@ -306,7 +335,7 @@ impl GroupEffect {
     /// How far past the picture's bounds the effect reaches, in device pixels.
     fn margin(&self) -> f32 {
         match self {
-            GroupEffect::None => 0.0,
+            GroupEffect::None | GroupEffect::Isolate => 0.0,
             GroupEffect::Blur { sigma } | GroupEffect::DropShadow { sigma, .. } => {
                 (sigma * 3.0).ceil()
             }
@@ -316,7 +345,7 @@ impl GroupEffect {
     /// The blur's standard deviation, if the picture is blurred.
     pub fn sigma(&self) -> Option<f32> {
         match self {
-            GroupEffect::None => None,
+            GroupEffect::None | GroupEffect::Isolate => None,
             GroupEffect::Blur { sigma } | GroupEffect::DropShadow { sigma, .. } => {
                 (*sigma > 0.0).then_some(*sigma)
             }
@@ -373,6 +402,10 @@ pub const PREMULTIPLIED_SPRITE: u32 = 2;
 pub const BLUR_HORIZONTAL_SPRITE: u32 = 4;
 /// Like [`BLUR_HORIZONTAL_SPRITE`], vertically.
 pub const BLUR_VERTICAL_SPRITE: u32 = 5;
+/// The low byte of a sprite that is combined with the backdrop under it by a
+/// blend mode; the rest of the word is the mode's index. The texture holds
+/// premultiplied colour.
+pub const BLEND_SPRITE: u32 = 6;
 
 #[expect(missing_docs)]
 impl Scene {
@@ -443,11 +476,23 @@ impl Scene {
         opacity: f32,
         effect: GroupEffect,
     ) -> EffectGroupScope {
+        self.begin_effect_group_blended(opacity, effect, BlendMode::Normal)
+    }
+
+    /// Like [`Self::begin_effect_group_with`], combining the picture with the
+    /// backdrop by `blend` when it is composited.
+    pub fn begin_effect_group_blended(
+        &mut self,
+        opacity: f32,
+        effect: GroupEffect,
+        blend: BlendMode,
+    ) -> EffectGroupScope {
         let previous = self.current_transform;
         self.groups.push(EffectGroup {
             bounds: Bounds::default(),
             opacity,
             effect,
+            blend,
         });
         let id = self.groups.len() as u32;
         // The colour filter in force outside colours the composited picture,
@@ -468,7 +513,7 @@ impl Scene {
     pub fn end_effect_group(&mut self, scope: EffectGroupScope, window: Bounds<ScaledPixels>) {
         self.current_transform = scope.previous;
         let record = &self.groups[scope.id as usize - 1];
-        let (opacity, effect) = (record.opacity, record.effect);
+        let (opacity, effect, blend) = (record.opacity, record.effect, record.blend);
         if record.bounds.is_empty() {
             return;
         }
@@ -544,11 +589,11 @@ impl Scene {
         let transform = self
             .transforms
             .intern_in_group(TransformationMatrix::unit(), outer, group);
-        self.insert_under(
-            sprite(GROUP_CONTENT, bounds, opacity).into(),
-            transform,
-            false,
-        );
+        let mut content = sprite(GROUP_CONTENT, bounds, opacity);
+        if blend != BlendMode::Normal {
+            content.grayscale = PaddedBool32(BLEND_SPRITE | (blend as u32) << 8);
+        }
+        self.insert_under(content.into(), transform, false);
     }
 
     /// The passes that draw the frame's effect groups, in the order they
@@ -708,6 +753,7 @@ impl Scene {
                                 bounds: old.bounds,
                                 opacity: old.opacity,
                                 effect: old.effect,
+                                blend: old.blend,
                             });
                             scene.groups.len() as u32
                         })
@@ -1541,6 +1587,13 @@ pub struct PolychromeSprite {
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub tile: AtlasTile,
+}
+
+impl PolychromeSprite {
+    /// The low byte of the sprite's flag word: how its texture is read.
+    pub fn mode(&self) -> u32 {
+        self.grayscale.0 & 0xff
+    }
 }
 
 impl From<PolychromeSprite> for Primitive {

@@ -95,6 +95,7 @@ struct GammaParams {
 @group(0) @binding(1) var<uniform> gamma_params: GammaParams;
 @group(2) @binding(0) var t_sprite: texture_2d<f32>;
 @group(2) @binding(1) var s_sprite: sampler;
+@group(2) @binding(2) var t_backdrop: texture_2d<f32>;
 
 const M_PI_F: f32 = 3.1415926;
 const GRAYSCALE_FACTORS: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
@@ -1468,6 +1469,93 @@ fn blur_taps(uv: vec2<f32>, sprite: PolychromeSprite, horizontal: bool) -> vec4<
     return sum / total;
 }
 
+
+// CSS compositing's blend functions: `cb` is the backdrop's colour, `cs` the
+// source's, both straight (not premultiplied).
+fn blend_hard_light(cb: f32, cs: f32) -> f32 {
+    if (cs <= 0.5) {
+        return cb * 2.0 * cs;
+    }
+    return cb + (2.0 * cs - 1.0) - cb * (2.0 * cs - 1.0);
+}
+
+fn blend_soft_light(cb: f32, cs: f32) -> f32 {
+    if (cs <= 0.5) {
+        return cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb);
+    }
+    var d = sqrt(cb);
+    if (cb <= 0.25) {
+        d = ((16.0 * cb - 12.0) * cb + 4.0) * cb;
+    }
+    return cb + (2.0 * cs - 1.0) * (d - cb);
+}
+
+fn blend_dodge(cb: f32, cs: f32) -> f32 {
+    if (cb == 0.0) { return 0.0; }
+    if (cs >= 1.0) { return 1.0; }
+    return min(1.0, cb / (1.0 - cs));
+}
+
+fn blend_burn(cb: f32, cs: f32) -> f32 {
+    if (cb >= 1.0) { return 1.0; }
+    if (cs <= 0.0) { return 0.0; }
+    return 1.0 - min(1.0, (1.0 - cb) / cs);
+}
+
+fn blend_lum(c: vec3<f32>) -> f32 { return 0.3 * c.r + 0.59 * c.g + 0.11 * c.b; }
+
+fn blend_clip_color(color: vec3<f32>) -> vec3<f32> {
+    var c = color;
+    let l = blend_lum(c);
+    let n = min(min(c.r, c.g), c.b);
+    let x = max(max(c.r, c.g), c.b);
+    if (n < 0.0) { c = l + (c - l) * l / (l - n); }
+    if (x > 1.0) { c = l + (c - l) * (1.0 - l) / (x - l); }
+    return c;
+}
+
+fn blend_set_lum(c: vec3<f32>, l: f32) -> vec3<f32> { return blend_clip_color(c + (l - blend_lum(c))); }
+
+fn blend_sat(c: vec3<f32>) -> f32 { return max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b); }
+
+fn blend_set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    let mx = max(max(c.r, c.g), c.b);
+    let mn = min(min(c.r, c.g), c.b);
+    if (mx <= mn) { return vec3<f32>(0.0); }
+    return (c - mn) * s / (mx - mn);
+}
+
+fn blend_rgb(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    switch (mode) {
+        case 1u: { return cb * cs; }
+        case 2u: { return cb + cs - cb * cs; }
+        case 3u: { return vec3<f32>(blend_hard_light(cs.r, cb.r), blend_hard_light(cs.g, cb.g), blend_hard_light(cs.b, cb.b)); }
+        case 4u: { return min(cb, cs); }
+        case 5u: { return max(cb, cs); }
+        case 6u: { return vec3<f32>(blend_dodge(cb.r, cs.r), blend_dodge(cb.g, cs.g), blend_dodge(cb.b, cs.b)); }
+        case 7u: { return vec3<f32>(blend_burn(cb.r, cs.r), blend_burn(cb.g, cs.g), blend_burn(cb.b, cs.b)); }
+        case 8u: { return vec3<f32>(blend_hard_light(cb.r, cs.r), blend_hard_light(cb.g, cs.g), blend_hard_light(cb.b, cs.b)); }
+        case 9u: { return vec3<f32>(blend_soft_light(cb.r, cs.r), blend_soft_light(cb.g, cs.g), blend_soft_light(cb.b, cs.b)); }
+        case 10u: { return abs(cb - cs); }
+        case 11u: { return cb + cs - 2.0 * cb * cs; }
+        case 12u: { return blend_set_lum(blend_set_sat(cs, blend_sat(cb)), blend_lum(cb)); }
+        case 13u: { return blend_set_lum(blend_set_sat(cb, blend_sat(cs)), blend_lum(cb)); }
+        case 14u: { return blend_set_lum(cs, blend_lum(cb)); }
+        case 15u: { return blend_set_lum(cb, blend_lum(cs)); }
+        default: { return cs; }
+    }
+}
+
+// The colour to hand the ordinary alpha blend so that it lands on the
+// composite of the source over the backdrop under blend mode `mode`:
+// `(1 - ab) * cs + ab * B(cb, cs)`, where `backdrop` is premultiplied.
+fn blend_source_color(mode: u32, backdrop: vec4<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let ab = backdrop.a;
+    var cb = vec3<f32>(0.0);
+    if (ab > 0.00001) { cb = backdrop.rgb / ab; }
+    return (1.0 - ab) * cs + ab * clamp(blend_rgb(mode, cb, cs), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
     let sprite = load_poly_sprite(input.sprite_id);
     let mode = sprite.grayscale & 0xffu;
@@ -1487,6 +1575,11 @@ fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
     if (mode >= 2u) {
         // An effect group's texture holds premultiplied colour.
         color = vec4<f32>(color.rgb / max(color.a, 0.00001), color.a);
+        if (mode == 6u) {
+            // Combined with what is beneath by the mode in the high bits.
+            let backdrop = textureLoad(t_backdrop, vec2<i32>(input.position.xy), 0);
+            color = vec4<f32>(blend_source_color(sprite.grayscale >> 8u, backdrop, color.rgb), color.a);
+        }
     } else if (sprite.grayscale != 0u) {
         let grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = vec4<f32>(vec3<f32>(grayscale), sample.a);
