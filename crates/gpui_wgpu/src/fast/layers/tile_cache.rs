@@ -32,10 +32,30 @@ pub(crate) struct TileCache {
     frame: u64,
     budget_bytes: u64,
     /// Per tile size: the globals tiles are drawn with.
-    globals: FxHashMap<u32, TileGlobals>,
+    globals: FxHashMap<(u32, u32), TileGlobals>,
     /// Per tile size: the path intermediate textures of tiles.
-    paths: FxHashMap<u32, TilePaths>,
+    paths: FxHashMap<(u32, u32), TilePaths>,
+    /// The textures this frame's effect groups are drawn into, by group id.
+    groups: FxHashMap<u32, GroupTexture>,
+    /// Textures of earlier frames' groups, by size, free to be drawn into.
+    group_pool: Vec<GroupTexture>,
 }
+
+/// A texture an effect group is drawn into: its size is the group's rounded
+/// up to a multiple of [`GROUP_QUANTUM`], so frames of groups that grow a
+/// little reuse it.
+pub(crate) struct GroupTexture {
+    pub(crate) size: (u32, u32),
+    /// Read back by the pixel tests; the view keeps it alive otherwise.
+    #[cfg_attr(not(test), allow(dead_code))]
+    texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
+}
+
+const GROUP_QUANTUM: u32 = 64;
+
+/// Group textures kept for reuse.
+const GROUP_POOL_LIMIT: usize = 256;
 
 impl Default for TileCache {
     fn default() -> Self {
@@ -47,6 +67,8 @@ impl Default for TileCache {
             budget_bytes: DEFAULT_BUDGET_BYTES,
             globals: FxHashMap::default(),
             paths: FxHashMap::default(),
+            groups: FxHashMap::default(),
+            group_pool: Vec::new(),
         }
     }
 }
@@ -304,6 +326,8 @@ impl TileCache {
         self.pool.clear();
         self.globals.clear();
         self.paths.clear();
+        self.groups.clear();
+        self.group_pool.clear();
     }
 
     /// Gives every tile in `planned` a texture, fits the cache in its
@@ -337,23 +361,64 @@ impl TileCache {
         }
         for &(index, _) in planned {
             let tile_size = layers.frames[index].tile_size;
-            self.ensure_globals(target, tile_size);
-            self.ensure_paths(target, tile_size);
+            self.ensure_globals(target, (tile_size, tile_size));
+            self.ensure_paths(target, (tile_size, tile_size));
         }
     }
 
     pub(crate) fn globals(&self, tile_size: u32) -> Option<&TileGlobals> {
-        self.globals.get(&tile_size)
+        self.globals.get(&(tile_size, tile_size))
     }
 
     pub(crate) fn paths(&self, tile_size: u32) -> Option<&TilePaths> {
-        self.paths.get(&tile_size)
+        self.paths.get(&(tile_size, tile_size))
     }
 
-    fn ensure_globals(&mut self, target: &FrameTarget, tile_size: u32) {
+    /// The texture the effect group `id` is drawn into this frame.
+    pub(crate) fn group(&self, id: u32) -> Option<&GroupTexture> {
+        self.groups.get(&id)
+    }
+
+    /// Gives every effect group of the frame a transparent-clearable texture
+    /// and makes the globals and path textures of the sizes they come in.
+    pub(crate) fn prepare_groups(&mut self, target: &FrameTarget, scene: &gpui::Scene) {
+        for (_, texture) in self.groups.drain() {
+            self.group_pool.push(texture);
+        }
+        self.group_pool.truncate(GROUP_POOL_LIMIT);
+        let limit = target.device.limits().max_texture_dimension_2d;
+        for (index, group) in scene.groups.iter().enumerate() {
+            if index >= scene.group_scenes.len() || group.bounds.is_empty() {
+                continue;
+            }
+            let round =
+                |length: f32| ((length as u32).max(1).next_multiple_of(GROUP_QUANTUM)).min(limit);
+            let size = (
+                round(group.bounds.size.width.0),
+                round(group.bounds.size.height.0),
+            );
+            let texture = match self.group_pool.iter().position(|t| t.size == size) {
+                Some(position) => self.group_pool.swap_remove(position),
+                None => create_group_texture(target.device, target.format, size),
+            };
+            self.groups.insert(index as u32 + 1, texture);
+            self.ensure_globals(target, size);
+            self.ensure_paths(target, size);
+        }
+    }
+
+    pub(crate) fn size_globals(&self, size: (u32, u32)) -> Option<&TileGlobals> {
+        self.globals.get(&size)
+    }
+
+    pub(crate) fn size_paths(&self, size: (u32, u32)) -> Option<&TilePaths> {
+        self.paths.get(&size)
+    }
+
+    pub(crate) fn ensure_globals(&mut self, target: &FrameTarget, size: (u32, u32)) {
         if self
             .globals
-            .get(&tile_size)
+            .get(&size)
             .is_some_and(|globals| globals.premultiplied_alpha == target.premultiplied_alpha)
         {
             return;
@@ -369,7 +434,7 @@ impl TileCache {
             mapped_at_creation: false,
         });
         let globals = GlobalParams {
-            viewport_size: [tile_size as f32, tile_size as f32],
+            viewport_size: [size.0 as f32, size.1 as f32],
             premultiplied_alpha: target.premultiplied_alpha as u32,
             pad: 0,
         };
@@ -405,11 +470,11 @@ impl TileCache {
             path_globals: bind_group("tile_path_globals_bind_group", path_offset),
             _buffer: buffer,
         };
-        self.globals.insert(tile_size, tile_globals);
+        self.globals.insert(size, tile_globals);
     }
 
-    fn ensure_paths(&mut self, target: &FrameTarget, tile_size: u32) {
-        if self.paths.get(&tile_size).is_some_and(|paths| {
+    pub(crate) fn ensure_paths(&mut self, target: &FrameTarget, size: (u32, u32)) {
+        if self.paths.get(&size).is_some_and(|paths| {
             paths.format == target.format && paths.sample_count == target.path_sample_count
         }) {
             return;
@@ -417,19 +482,19 @@ impl TileCache {
         let (intermediate_texture, intermediate) = WgpuRendererCore::create_path_intermediate(
             target.device,
             target.format,
-            tile_size,
-            tile_size,
+            size.0,
+            size.1,
         );
         let (msaa_texture, msaa) = WgpuRendererCore::create_msaa_if_needed(
             target.device,
             target.format,
-            tile_size,
-            tile_size,
+            size.0,
+            size.1,
             target.path_sample_count,
         )
         .unzip();
         self.paths.insert(
-            tile_size,
+            size,
             TilePaths {
                 format: target.format,
                 sample_count: target.path_sample_count,
@@ -465,6 +530,35 @@ fn create_tile_texture(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     TileTexture {
+        size,
+        texture,
+        view,
+    }
+}
+
+fn create_group_texture(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    size: (u32, u32),
+) -> GroupTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("effect_group"),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    GroupTexture {
         size,
         texture,
         view,

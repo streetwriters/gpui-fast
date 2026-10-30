@@ -1454,7 +1454,10 @@ fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
     let distance = quad_sdf(frag_pos, sprite.bounds, sprite.corner_radii);
 
     var color = sample;
-    if (sprite.grayscale != 0u) {
+    if (sprite.grayscale == 2u) {
+        // An effect group's texture holds premultiplied colour.
+        color = vec4<f32>(color.rgb / max(color.a, 0.00001), color.a);
+    } else if (sprite.grayscale != 0u) {
         let grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = vec4<f32>(vec3<f32>(grayscale), sample.a);
     }

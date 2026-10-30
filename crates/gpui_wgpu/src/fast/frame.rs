@@ -253,6 +253,16 @@ fn record_with(
             path_batches,
         });
     }
+    // Effect groups follow the tiles, innermost first: a group's sprite in
+    // an outer group needs the inner one drawn.
+    for sub in scene.group_scenes.iter().rev() {
+        let mut path_batches = Vec::new();
+        plan_paths(sub, &mut vertices, &mut sprites, &mut path_batches);
+        scenes.push(PlannedScene {
+            scene: sub,
+            path_batches,
+        });
+    }
     let mut path_batches = std::mem::take(&mut state.path_batches);
     plan_paths(scene, &mut vertices, &mut sprites, &mut path_batches);
     scenes.push(PlannedScene {
@@ -277,6 +287,7 @@ fn record_with(
         .and_then(|(uploads, paths)| {
             let target = host.target()?;
             state.layers.prepare(&target, &scene.layers, &planned);
+            state.layers.prepare_groups(&target, scene);
             // Only the frame's own scene paints external textures: layer
             // tiles never hold one (`gpui::fast::layers::overlay`).
             state.external_textures.prepare(
@@ -515,6 +526,42 @@ fn record(
             &scenes[index].path_batches,
         );
     }
+    for (position, sub) in scene.group_scenes.iter().rev().enumerate() {
+        let id = (scene.group_scenes.len() - position) as u32;
+        let index = rasters.len() + position;
+        let (Some(texture), Some(size)) = (
+            state.layers.group(id),
+            state.layers.group(id).map(|texture| texture.size),
+        ) else {
+            continue;
+        };
+        let (Some(globals), Some(group_paths)) = (
+            state.layers.size_globals(size),
+            state.layers.size_paths(size),
+        ) else {
+            continue;
+        };
+        draw_scene(
+            target,
+            state,
+            &mut encoder,
+            &SceneDraw {
+                scene: sub,
+                upload: &uploads[index],
+                paths,
+                path_batches: &scenes[index].path_batches,
+                view: &texture.view,
+                clear: wgpu::Color::TRANSPARENT,
+                label: "effect_group_pass",
+                globals: &globals.globals,
+                path_targets: PathTargets {
+                    globals: &globals.path_globals,
+                    intermediate: Some(&group_paths.intermediate),
+                    msaa: group_paths.msaa.as_ref(),
+                },
+            },
+        );
+    }
     let main = scenes.len() - 1;
     draw_scene(
         target,
@@ -716,6 +763,24 @@ pub(crate) fn draw_scene(
                         run,
                     );
                 }
+            }
+            PrimitiveBatch::PolychromeSprites { texture_id, range }
+                if gpui::decode_effect_group(texture_id).is_some() =>
+            {
+                let Some(group) =
+                    gpui::decode_effect_group(texture_id).and_then(|id| state.layers.group(id))
+                else {
+                    continue;
+                };
+                draw_batch(
+                    &mut pass,
+                    &mut bound,
+                    draw.globals,
+                    &pipelines.poly_sprites,
+                    &upload.polychrome_sprites,
+                    Some(&texture_bind_group("effect_group_bind_group", &group.view)),
+                    range,
+                );
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
                 let Some(texture) = atlas_bind_group(target.atlas, &texture_bind_group, texture_id)

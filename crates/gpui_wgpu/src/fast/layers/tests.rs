@@ -1377,3 +1377,87 @@ mod transforms {
         assert!(!is_red(&pixels, 100, 100));
     }
 }
+
+mod groups {
+    use super::*;
+
+    const SIZE: usize = 200;
+
+    fn render(harness: &mut Harness, mut scene: Scene) -> Vec<u8> {
+        scene.finish();
+        harness.render(
+            &scene,
+            device_size(SIZE as i32, SIZE as i32),
+            rgba(0xffffffff),
+        )
+    }
+
+    fn near(actual: [u8; 4], expected: [u8; 3]) -> bool {
+        actual[..3]
+            .iter()
+            .zip(expected)
+            .all(|(a, e)| a.abs_diff(e) <= 4)
+    }
+
+    #[test]
+    fn two_overlapping_children_fade_as_one_picture() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group(0.5);
+        scene.insert_primitive(quad(sp(20., 20., 100., 100.), Hsla::from(rgba(0xff0000ff))));
+        scene.insert_primitive(quad(sp(60., 60., 100., 100.), Hsla::from(rgba(0x0000ffff))));
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        // Half red on white; half blue on white where the children overlap,
+        // with no red in it.
+        assert!(near(pixel(&pixels, SIZE, 30, 30), [255, 128, 128]));
+        assert!(near(pixel(&pixels, SIZE, 90, 90), [128, 128, 255]));
+        assert!(near(pixel(&pixels, SIZE, 150, 150), [128, 128, 255]));
+        assert!(near(pixel(&pixels, SIZE, 10, 10), [255, 255, 255]));
+    }
+
+    #[test]
+    fn a_group_in_a_group_fades_twice() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let outer = scene.begin_effect_group(0.5);
+        let inner = scene.begin_effect_group(0.5);
+        scene.insert_primitive(quad(sp(50., 50., 100., 100.), Hsla::from(rgba(0x000000ff))));
+        scene.end_effect_group(inner, sp(0., 0., 200., 200.));
+        scene.end_effect_group(outer, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        assert!(near(pixel(&pixels, SIZE, 100, 100), [191, 191, 191]));
+    }
+
+    #[test]
+    fn a_path_in_a_group_is_faded_with_it() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group(0.5);
+        let mut path = Path::new(point(px(100.), px(100.)));
+        path.line_to(point(px(180.), px(100.)));
+        path.line_to(point(px(100.), px(180.)));
+        path.line_to(point(px(100.), px(100.)));
+        path.content_mask = ContentMask::new(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(200.), px(200.)),
+        });
+        path.color = Hsla::from(rgba(0x00ff00ff)).into();
+        scene.insert_primitive(path.scale(1.));
+        scene.insert_primitive(quad(sp(90., 90., 30., 30.), Hsla::from(rgba(0xff0000ff))));
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        assert!(near(pixel(&pixels, SIZE, 110, 150), [128, 255, 128]));
+        assert!(near(pixel(&pixels, SIZE, 100, 100), [255, 128, 128]));
+        assert!(near(pixel(&pixels, SIZE, 170, 170), [255, 255, 255]));
+    }
+}
