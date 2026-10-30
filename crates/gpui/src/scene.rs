@@ -732,6 +732,19 @@ impl Scene {
         let mut carried = (TransformIndex::IDENTITY, TransformIndex::IDENTITY);
         // The previous frame's effect groups, by their id in this one.
         let mut regrouped: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        // The groups whose pictures are composited inside the range. Any other
+        // group a replayed primitive was in encloses the range, and is
+        // whichever group encloses it now.
+        let enclosed: std::collections::HashSet<u32> = prev_scene.paint_operations[range.clone()]
+            .iter()
+            .filter_map(|operation| match operation {
+                PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) => {
+                    decode_effect_group(sprite.tile.texture_id).map(|(group, _)| group)
+                }
+                _ => None,
+            })
+            .collect();
+        let enclosing = self.transforms.group(self.current_transform);
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
@@ -759,10 +772,10 @@ impl Scene {
                             scene.groups.len() as u32
                         })
                     };
-                    let group = if old_group == 0 {
-                        0
-                    } else {
+                    let group = if enclosed.contains(&old_group) {
                         regroup(self, old_group)
+                    } else {
+                        enclosing
                     };
                     // The sprite that composites a group points at the group's
                     // texture, which is numbered anew.

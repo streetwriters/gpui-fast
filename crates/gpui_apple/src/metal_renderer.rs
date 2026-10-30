@@ -2442,6 +2442,40 @@ mod tests {
     }
 
     #[test]
+    fn primitives_replayed_inside_a_group_join_the_group_around_them() {
+        let paint = |scene: &mut Scene, from: Option<(&Scene, std::ops::Range<usize>)>| {
+            colored_quad(scene, scaled_bounds(0., 0., 200., 200.), 0x808080);
+            let isolated = scene.begin_effect_group_with(1.0, gpui::GroupEffect::Isolate);
+            let before = scene.len();
+            match from {
+                // The child as a previous frame painted it, inside its parent.
+                Some((previous, range)) => scene.replay(range, previous),
+                None => {
+                    let inner = scene.begin_effect_group_blended(
+                        1.0,
+                        gpui::GroupEffect::None,
+                        gpui::BlendMode::Multiply,
+                    );
+                    colored_quad(scene, scaled_bounds(50., 50., 100., 100.), 0xff8000);
+                    scene.end_effect_group(inner, scaled_bounds(0., 0., 200., 200.));
+                }
+            }
+            let after = scene.len();
+            scene.end_effect_group(isolated, scaled_bounds(0., 0., 200., 200.));
+            (before, after)
+        };
+        let mut first = Scene::default();
+        let (before, after) = paint(&mut first, None);
+        let direct = render(&mut first);
+        let mut second = Scene::default();
+        paint(&mut second, Some((&first, before..after)));
+        assert_eq!(second.groups.len(), first.groups.len());
+        let replayed = render(&mut second);
+        assert_eq!(direct.get_pixel(100, 100), replayed.get_pixel(100, 100));
+        assert_close(replayed.get_pixel(100, 100).0, [255, 128, 0]);
+    }
+
+    #[test]
     fn a_color_filter_recolours_what_is_drawn_under_it() {
         let mut scene = Scene::default();
         let previous = scene.push_color_filter(grayscale());
