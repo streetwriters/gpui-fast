@@ -450,9 +450,11 @@ impl Scene {
             effect,
         });
         let id = self.groups.len() as u32;
+        // The colour filter in force outside colours the composited picture,
+        // not what is painted into it.
         self.current_transform = self.transforms.intern_in_group(
             self.transforms.get(previous),
-            self.transforms.filter(previous),
+            ColorFilter::IDENTITY,
             id,
         );
         EffectGroupScope { previous, id }
@@ -490,6 +492,7 @@ impl Scene {
             return;
         }
         let group = self.transforms.group(scope.previous);
+        let outer = self.transforms.filter(scope.previous);
         let sprite = |slot: u8, bounds: Bounds<ScaledPixels>, opacity: f32| PolychromeSprite {
             order: 0,
             transform_index: 0,
@@ -522,9 +525,11 @@ impl Scene {
                     [0., 0., 0., color[3], 0.],
                 ],
             };
-            let transform =
-                self.transforms
-                    .intern_in_group(TransformationMatrix::unit(), tint, group);
+            let transform = self.transforms.intern_in_group(
+                TransformationMatrix::unit(),
+                outer.after(&tint),
+                group,
+            );
             let moved = Bounds {
                 origin: point(
                     ScaledPixels(bounds.origin.x.0 + dx),
@@ -536,11 +541,9 @@ impl Scene {
             shadow.tile.bounds.origin = Point::default();
             self.insert_under(shadow.into(), transform, false);
         }
-        let transform = self.transforms.intern_in_group(
-            TransformationMatrix::unit(),
-            ColorFilter::IDENTITY,
-            group,
-        );
+        let transform = self
+            .transforms
+            .intern_in_group(TransformationMatrix::unit(), outer, group);
         self.insert_under(
             sprite(GROUP_CONTENT, bounds, opacity).into(),
             transform,

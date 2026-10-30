@@ -2243,6 +2243,24 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_outside_a_group_colours_its_picture_once() {
+        let mut scene = Scene::default();
+        let previous = scene.push_color_filter(grayscale());
+        let scope = scene.begin_effect_group(0.5);
+        colored_quad(&mut scene, scaled_bounds(20., 20., 100., 100.), 0xff0000);
+        colored_quad(&mut scene, scaled_bounds(60., 60., 100., 100.), 0xff0000);
+        scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        scene.pop_transform(previous);
+        let image = render(&mut scene);
+        // Red turns to grey 54, and half of it over black is 27.
+        let [r, g, b, _] = image.get_pixel(90, 90).0;
+        assert!(
+            r.abs_diff(27) < 6 && g.abs_diff(27) < 6 && b.abs_diff(27) < 6,
+            "{r} {g} {b}"
+        );
+    }
+
+    #[test]
     fn a_color_filter_recolours_what_is_drawn_under_it() {
         let mut scene = Scene::default();
         let previous = scene.push_color_filter(grayscale());
