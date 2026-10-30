@@ -1639,6 +1639,30 @@ pub(crate) fn ignore_if_window_removed<T>(result: Result<T>) -> Option<T> {
     }
 }
 
+/// Runs `update` on a window now, or one foreground tick later when the
+/// platform delivered the callback while the `App` was already borrowed: a
+/// platform that notifies a change synchronously, from inside the call that
+/// made it, would otherwise fail `handle.update` with a re-entrant borrow.
+fn update_or_defer(
+    handle: AnyWindowHandle,
+    cx: &crate::AsyncApp,
+    update: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    let mut cx = cx.clone();
+    if cx.is_borrowed() {
+        let executor = cx.foreground_executor().clone();
+        executor
+            .spawn(async move {
+                ignore_if_window_removed(
+                    handle.update(&mut cx, |_, window, app| update(window, app)),
+                );
+            })
+            .detach();
+    } else {
+        ignore_if_window_removed(handle.update(&mut cx, |_, window, app| update(window, app)));
+    }
+}
+
 impl Window {
     pub(crate) fn new(
         handle: AnyWindowHandle,
@@ -1995,24 +2019,16 @@ impl Window {
         }));
         invalidator.set_platform_waker(platform_window.frame_waker());
         platform_window.on_visual_viewport_changed(Box::new({
-            let mut cx = cx.to_async();
-            move || {
-                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| window.refresh()));
-            }
+            let cx = cx.to_async();
+            move || update_or_defer(handle, &cx, |window, _| window.refresh())
         }));
         platform_window.on_insets_changed(Box::new({
-            let mut cx = cx.to_async();
-            move |_| {
-                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| window.refresh()));
-            }
+            let cx = cx.to_async();
+            move |_| update_or_defer(handle, &cx, |window, _| window.refresh())
         }));
         platform_window.on_resize(Box::new({
-            let mut cx = cx.to_async();
-            move |_, _| {
-                ignore_if_window_removed(
-                    handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx)),
-                );
-            }
+            let cx = cx.to_async();
+            move |_, _| update_or_defer(handle, &cx, |window, cx| window.bounds_changed(cx))
         }));
         platform_window.on_moved(Box::new({
             let cx = cx.to_async();
@@ -2060,20 +2076,16 @@ impl Window {
             }
         }));
         platform_window.on_button_layout_changed(Box::new({
-            let mut cx = cx.to_async();
-            move || {
-                ignore_if_window_removed(
-                    handle.update(&mut cx, |_, window, cx| window.button_layout_changed(cx)),
-                );
-            }
+            let cx = cx.to_async();
+            move || update_or_defer(handle, &cx, |window, cx| window.button_layout_changed(cx))
         }));
         platform_window.on_active_status_change(Box::new({
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
             move |active| {
                 // The platform can deliver this after the window was removed (a
                 // dismissed menu popup, a closed child window); see
                 // `ignore_if_window_removed`.
-                ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
+                update_or_defer(handle, &cx, move |window, cx| {
                     window.active.set(active);
                     window.modifiers = window.platform_window.modifiers();
                     window.capslock = window.platform_window.capslock();
@@ -2086,29 +2098,27 @@ impl Window {
                     window.refresh();
 
                     SystemWindowTabController::update_last_active(cx, window.handle.id);
-                }));
+                });
             }
         }));
         platform_window.on_visibility_change(Box::new({
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
             move |_| {
                 // Delivered after the message that changed the visibility, so a
                 // window closed in between is already gone; see
                 // `ignore_if_window_removed`.
-                ignore_if_window_removed(handle.update(&mut cx, |_, window, cx| {
-                    window.refresh_visibility(cx);
-                }));
+                update_or_defer(handle, &cx, |window, cx| window.refresh_visibility(cx));
             }
         }));
         platform_window.on_hover_status_change(Box::new({
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
             move |active| {
                 // Delivered after the mouse message that changed the state; see
                 // `ignore_if_window_removed`.
-                ignore_if_window_removed(handle.update(&mut cx, |_, window, _| {
+                update_or_defer(handle, &cx, move |window, _| {
                     window.hovered.set(active);
                     window.refresh();
-                }));
+                });
             }
         }));
         platform_window.on_input({

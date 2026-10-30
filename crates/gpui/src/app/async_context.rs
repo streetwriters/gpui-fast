@@ -26,6 +26,14 @@ pub struct AsyncApp {
 }
 
 impl AsyncApp {
+    /// Whether the app is being updated by the caller further up the stack,
+    /// so that an update from here would fail to borrow it.
+    pub(crate) fn is_borrowed(&self) -> bool {
+        self.app
+            .upgrade()
+            .is_some_and(|app| app.try_borrow_mut().is_err())
+    }
+
     fn app(&self) -> std::rc::Rc<AppCell> {
         self.app
             .upgrade()
