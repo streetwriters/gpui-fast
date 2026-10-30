@@ -940,6 +940,21 @@ impl Window {
         Ok(composition)
     }
 
+    /// How the frame last drawn is split across GPUI surfaces, in composition
+    /// order. Empty until the window composes.
+    pub fn composed_scene_layers(&self) -> Vec<ComposedSceneLayer> {
+        let state = self.fast_composition.0.borrow();
+        if !state.enabled {
+            return Vec::new();
+        }
+        composed_scene_layers(
+            &state.tree,
+            &self.rendered_frame.fast_composition_starts.0,
+            self.rendered_frame.scene.len(),
+        )
+        .unwrap_or_default()
+    }
+
     /// Paints a scope of scene operations onto a GPUI surface in this window's
     /// composition tree, then restores the previous surface.
     ///
