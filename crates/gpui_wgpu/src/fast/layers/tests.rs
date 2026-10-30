@@ -1505,4 +1505,36 @@ mod groups {
         assert!(near(pixel(&pixels, SIZE, 60, 60), [255, 128, 128]));
         assert!(near(pixel(&pixels, SIZE, 10, 10), [255, 255, 255]));
     }
+
+    #[test]
+    fn a_rotated_quad_in_a_group_is_where_it_would_be_without_one() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let draw = |harness: &mut Harness, grouped: bool| {
+            let mut scene = Scene::default();
+            let scope = grouped.then(|| scene.begin_effect_group(0.999));
+            let previous = scene.push_transform(
+                TransformationMatrix::unit()
+                    .translate(point(ScaledPixels(100.), ScaledPixels(100.)))
+                    .rotate(gpui::Radians(45f32.to_radians()))
+                    .translate(point(ScaledPixels(-100.), ScaledPixels(-100.))),
+            );
+            scene.insert_primitive(quad(sp(70., 70., 60., 60.), Hsla::from(rgba(0xff0000ff))));
+            scene.pop_transform(previous);
+            if let Some(scope) = scope {
+                scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+            }
+            render(harness, scene)
+        };
+        let (plain, grouped) = (draw(&mut harness, false), draw(&mut harness, true));
+        for (x, y) in [(100, 100), (100, 62), (140, 100), (70, 70), (100, 150)] {
+            let (a, b) = (pixel(&plain, SIZE, x, y), pixel(&grouped, SIZE, x, y));
+            assert!(
+                a.iter().zip(&b).all(|(a, b)| a.abs_diff(*b) <= 3),
+                "{x},{y} {a:?} {b:?}"
+            );
+        }
+    }
 }

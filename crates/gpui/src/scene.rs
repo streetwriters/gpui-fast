@@ -184,18 +184,6 @@ impl TransformTable {
         self.entries[index.0 as usize] == TransformationMatrix::unit()
     }
 
-    /// Moves every entry that is not the unit matrix by `(dx, dy)` after its
-    /// own transform.
-    pub(crate) fn shift_entries(&mut self, dx: f32, dy: f32) {
-        for entry in &mut self.entries {
-            if *entry != TransformationMatrix::unit() {
-                entry.translation[0] += dx;
-                entry.translation[1] += dy;
-            }
-        }
-        self.lookup.clear();
-    }
-
     pub fn group(&self, index: TransformIndex) -> u32 {
         self.groups.get(index.0 as usize).copied().unwrap_or(0)
     }

@@ -10,8 +10,8 @@
 //! first, and the sprite [`Scene::end_effect_group`] inserted composites each.
 
 use crate::{
-    Path, PathId, PolychromeSprite, ScaledPixels, Scene, Shadow, Underline,
-    scene::MonochromeSprite, scene::Quad, scene::SubpixelSprite,
+    Path, PathId, PolychromeSprite, ScaledPixels, Scene, Shadow, TransformIndex, TransformTable,
+    Underline, scene::MonochromeSprite, scene::Quad, scene::SubpixelSprite,
 };
 
 /// Moves the primitives of every effect group out of `scene` into
@@ -73,57 +73,72 @@ pub(crate) fn split_groups(scene: &mut Scene) {
         path.id = PathId(target.paths.len());
         target.paths.push(path);
     }
+    // Entries that move something are copied for each group, moved to the
+    // group's texture, into the one table every scene of the frame shares:
+    // the renderers upload only the frame's own.
+    let mut table = std::mem::take(&mut scene.transforms);
     for (sub, group) in subs.iter_mut().zip(&scene.groups) {
         let origin = group.bounds.origin;
-        shift(sub, -origin.x.0, -origin.y.0);
+        shift(sub, &mut table, -origin.x.0, -origin.y.0);
     }
+    for sub in &mut subs {
+        sub.transforms = table.clone();
+    }
+    scene.transforms = table;
     scene.group_scenes = subs;
 }
 
 /// Moves what `scene` draws by `(dx, dy)`, so that it can be drawn into a
 /// texture whose top-left corner is the group's. A primitive under a matrix
-/// has its matrix moved; one under none, and every path, is moved itself.
-fn shift(scene: &mut Scene, dx: f32, dy: f32) {
-    let table = scene.transforms.clone();
-    let moved = |index: crate::TransformIndex| table.is_unit(index);
+/// gets a copy of it that moves by `(dx, dy)` after its own transform; one
+/// under none, and every path, is moved itself.
+fn shift(scene: &mut Scene, table: &mut TransformTable, dx: f32, dy: f32) {
+    let mut moved: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
     let by = |bounds: &mut crate::Bounds<ScaledPixels>| {
         bounds.origin.x.0 += dx;
         bounds.origin.y.0 += dy;
     };
-    for shadow in &mut scene.shadows {
-        if moved(crate::TransformIndex(shadow.transform_index)) {
-            by(&mut shadow.bounds);
-            by(&mut shadow.content_mask.bounds);
+    // The index a primitive is drawn under in the group's texture, or `None`
+    // when it is moved itself.
+    let mut index_in_texture = |index: TransformIndex| -> Option<TransformIndex> {
+        if table.is_unit(index) {
+            return None;
         }
+        let new = *moved.entry(index.0).or_insert_with(|| {
+            let mut matrix = table.get(index);
+            matrix.translation[0] += dx;
+            matrix.translation[1] += dy;
+            table
+                .intern_in_group(matrix, table.filter(index), table.group(index))
+                .0
+        });
+        Some(TransformIndex(new))
+    };
+    macro_rules! shift_all {
+        ($field:ident) => {
+            for item in &mut scene.$field {
+                match index_in_texture(TransformIndex(item.transform_index)) {
+                    Some(index) => item.transform_index = index.0,
+                    None => {
+                        by(&mut item.bounds);
+                        by(&mut item.content_mask.bounds);
+                    }
+                }
+            }
+        };
     }
+    shift_all!(shadows);
+    shift_all!(underlines);
+    shift_all!(monochrome_sprites);
+    shift_all!(subpixel_sprites);
+    shift_all!(polychrome_sprites);
     for quad in &mut scene.quads {
-        if moved(quad.transform_index()) {
-            by(&mut quad.bounds);
-            by(&mut quad.content_mask.bounds);
-        }
-    }
-    for underline in &mut scene.underlines {
-        if moved(crate::TransformIndex(underline.transform_index)) {
-            by(&mut underline.bounds);
-            by(&mut underline.content_mask.bounds);
-        }
-    }
-    for sprite in &mut scene.monochrome_sprites {
-        if moved(crate::TransformIndex(sprite.transform_index)) {
-            by(&mut sprite.bounds);
-            by(&mut sprite.content_mask.bounds);
-        }
-    }
-    for sprite in &mut scene.subpixel_sprites {
-        if moved(crate::TransformIndex(sprite.transform_index)) {
-            by(&mut sprite.bounds);
-            by(&mut sprite.content_mask.bounds);
-        }
-    }
-    for sprite in &mut scene.polychrome_sprites {
-        if moved(crate::TransformIndex(sprite.transform_index)) {
-            by(&mut sprite.bounds);
-            by(&mut sprite.content_mask.bounds);
+        match index_in_texture(quad.transform_index()) {
+            Some(index) => quad.set_transform_index(index),
+            None => {
+                by(&mut quad.bounds);
+                by(&mut quad.content_mask.bounds);
+            }
         }
     }
     for path in &mut scene.paths {
@@ -135,5 +150,4 @@ fn shift(scene: &mut Scene, dx: f32, dy: f32) {
             by(&mut vertex.content_mask.bounds);
         }
     }
-    scene.transforms.shift_entries(dx, dy);
 }
