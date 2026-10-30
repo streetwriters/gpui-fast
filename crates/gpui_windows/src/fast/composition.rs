@@ -36,7 +36,6 @@ use windows::{
             Direct3D11::{ID3D11RenderTargetView, ID3D11Texture2D},
             DirectComposition::{
                 IDCompositionDevice, IDCompositionRectangleClip, IDCompositionVisual,
-                IDCompositionVisual3,
             },
             Dxgi::{DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGISwapChain1},
         },
@@ -511,14 +510,11 @@ impl PortalState {
         unsafe {
             replacement.visual.SetOffsetX2(x)?;
             replacement.visual.SetOffsetY2(y)?;
+            let (width, height) = if visible { (width, height) } else { (0.0, 0.0) };
             replacement.clip.SetLeft2(0.0)?;
             replacement.clip.SetTop2(0.0)?;
             replacement.clip.SetRight2(width)?;
             replacement.clip.SetBottom2(height)?;
-            replacement
-                .visual
-                .cast::<IDCompositionVisual3>()?
-                .SetOpacity2(if visible { 1.0 } else { 0.0 })?;
         }
         replacement.bounds.set(bounds);
         replacement.parent_origin.set(parent_origin);
@@ -540,6 +536,11 @@ impl PlatformSurfaceAttachment for Portal {
         unsafe {
             state.visual.SetOffsetX2(x)?;
             state.visual.SetOffsetY2(y)?;
+            let (width, height) = if state.visible.get() {
+                (width, height)
+            } else {
+                (0.0, 0.0)
+            };
             state.clip.SetLeft2(0.0)?;
             state.clip.SetTop2(0.0)?;
             state.clip.SetRight2(width)?;
@@ -566,11 +567,20 @@ impl PlatformSurfaceAttachment for Portal {
     fn set_visible(&self, visible: bool) -> Result<()> {
         let state = self.state.borrow();
         if state.visible.get() != visible {
+            // Hidden by an empty clip: a visual from a plain DirectComposition
+            // device has no opacity, which `IDCompositionVisual3` would add.
+            let bounds = state.bounds.get();
+            let (width, height) = if visible {
+                (
+                    bounds.size.width.0.max(0) as f32,
+                    bounds.size.height.0.max(0) as f32,
+                )
+            } else {
+                (0.0, 0.0)
+            };
             unsafe {
-                state
-                    .visual
-                    .cast::<IDCompositionVisual3>()?
-                    .SetOpacity2(if visible { 1.0 } else { 0.0 })?;
+                state.clip.SetRight2(width)?;
+                state.clip.SetBottom2(height)?;
                 state.comp_device.Commit()?;
             }
             state.visible.set(visible);
