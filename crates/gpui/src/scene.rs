@@ -1798,7 +1798,7 @@ mod transform_tests {
         path.line_to(point(crate::px(10.), crate::px(0.)));
         path.line_to(point(crate::px(10.), crate::px(10.)));
         let scaled = Path {
-            group: self.group,
+            group: 0,
             id: path.id,
             order: path.order,
             bounds: path.bounds.scale(1.0),
