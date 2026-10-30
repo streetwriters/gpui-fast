@@ -1873,6 +1873,63 @@ mod tests {
         }
     }
 
+    /// Interleaved paths and quads: `overlap` puts each path on the last one, so
+    /// no two path batches can share a rasterization pass.
+    fn interleaved_paths(count: usize, overlap: bool) -> Scene {
+        let mut scene = Scene::default();
+        for index in 0..count {
+            let (column, row) = if overlap { (0, 0) } else { (index % 40, index / 40) };
+            let x = 20.0 + column as f32 * 56.0;
+            let y = 20.0 + row as f32 * 56.0;
+            scene.insert_primitive(gpui::Quad {
+                order: 0,
+                border_style_and_transform: 0,
+                bounds: scaled_bounds(x, y, 48., 48.),
+                content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 2400., 1600.)),
+                background: gpui::rgb(0x202020).into(),
+                border_color: gpui::Hsla::default(),
+                corner_radii: gpui::Corners::all(ScaledPixels(4.)),
+                border_widths: gpui::Edges::default(),
+            });
+            let mut path = gpui::Path::new(gpui::point(gpui::px(x + 4.), gpui::px(y + 4.)));
+            path.line_to(gpui::point(gpui::px(x + 44.), gpui::px(y + 10.)));
+            path.curve_to(
+                gpui::point(gpui::px(x + 10.), gpui::px(y + 44.)),
+                gpui::point(gpui::px(x + 40.), gpui::px(y + 40.)),
+            );
+            path.line_to(gpui::point(gpui::px(x + 4.), gpui::px(y + 4.)));
+            path.content_mask = gpui::ContentMask::new(gpui::Bounds {
+                origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+                size: gpui::size(gpui::px(2400.), gpui::px(1600.)),
+            });
+            path.color = gpui::Hsla::from(gpui::rgba(0x3388ffff)).into();
+            scene.insert_primitive(path.scale(1.));
+        }
+        scene.finish();
+        scene
+    }
+
+    /// `cargo test -p gpui_apple path_pass_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn path_pass_cost() {
+        let size = gpui::size(DevicePixels(2400), DevicePixels(1600));
+        for (name, overlap) in [("disjoint", false), ("stacked", true)] {
+            let scene = interleaved_paths(200, overlap);
+            let mut renderer = MetalHeadlessRenderer::new();
+            for _ in 0..3 {
+                gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)
+                    .unwrap();
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)
+                    .unwrap();
+            }
+            println!("{name}: {:?} per frame", start.elapsed() / 20);
+        }
+    }
+
     #[test]
     fn a_color_filter_recolours_what_is_drawn_under_it() {
         let mut scene = Scene::default();
