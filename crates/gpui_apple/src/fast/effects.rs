@@ -52,6 +52,7 @@ pub(crate) fn render_groups(
             continue;
         }
         let texture = renderer.group_texture(width as u64, height as u64);
+        renderer.effect_stats.groups_rasterized += 1;
         GROUP_PASS.with(|pass| pass.set(Some((f64::from(x), f64::from(y)))));
         let drawn = renderer.render_frame(sub, &texture, viewport_size);
         GROUP_PASS.with(|pass| pass.set(None));

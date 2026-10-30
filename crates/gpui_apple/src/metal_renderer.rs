@@ -111,6 +111,16 @@ impl InstanceBufferPool {
     }
 }
 
+/// What the effect groups cost: groups rasterized, textures made rather than
+/// taken from the pool, and the most texture memory held at once.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EffectStats {
+    pub groups_rasterized: u64,
+    pub textures_allocated: u64,
+    pub peak_texture_bytes: u64,
+    pub texture_bytes: u64,
+}
+
 pub struct MetalRenderer {
     pub(crate) device: metal::Device,
     layer: Option<metal::MetalLayer>,
@@ -145,6 +155,8 @@ pub struct MetalRenderer {
     pub(crate) effect_group_textures: std::collections::HashMap<u32, (metal::Texture, (i32, i32))>,
     /// Group textures of earlier frames, kept to be drawn into again.
     effect_texture_pool: Vec<metal::Texture>,
+    /// Counts of the effect-group work done since the renderer was made.
+    pub effect_stats: EffectStats,
     pub(crate) fast_layers: crate::fast::layers::TileCache,
 }
 
@@ -431,6 +443,7 @@ impl MetalRenderer {
             headless_render_target: None,
             effect_group_textures: Default::default(),
             effect_texture_pool: Vec::new(),
+            effect_stats: EffectStats::default(),
             fast_layers: crate::fast::layers::TileCache::default(),
         }
     }
@@ -563,7 +576,12 @@ impl MetalRenderer {
             self.effect_texture_pool.push(texture);
         }
         // Keep the pool from growing without bound.
-        self.effect_texture_pool.truncate(256);
+        for texture in self
+            .effect_texture_pool
+            .drain(256.min(self.effect_texture_pool.len())..)
+        {
+            self.effect_stats.texture_bytes -= texture.width() * texture.height() * 4;
+        }
     }
 
     /// A transparent-clearable texture of `width` by `height`, from the pool
@@ -576,6 +594,12 @@ impl MetalRenderer {
         {
             return self.effect_texture_pool.swap_remove(position);
         }
+        self.effect_stats.textures_allocated += 1;
+        self.effect_stats.texture_bytes += width * height * 4;
+        self.effect_stats.peak_texture_bytes = self
+            .effect_stats
+            .peak_texture_bytes
+            .max(self.effect_stats.texture_bytes);
         let descriptor = metal::TextureDescriptor::new();
         descriptor.set_width(width);
         descriptor.set_height(height);
@@ -1988,7 +2012,7 @@ mod tests {
             order: 0,
             border_style_and_transform: 0,
             bounds,
-            content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 200., 200.)),
+            content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 4000., 4000.)),
             background: gpui::rgb(color).into(),
             border_color: gpui::Hsla::default(),
             corner_radii: gpui::Corners::default(),
@@ -2022,33 +2046,51 @@ mod tests {
     #[ignore = "a timing, not a check"]
     fn group_pass_cost() {
         let size = gpui::size(DevicePixels(2400), DevicePixels(1600));
-        for (name, grouped) in [("ungrouped", false), ("200 groups", true)] {
-            let mut scene = Scene::default();
-            for i in 0..200 {
-                let (x, y) = ((i % 20) as f32 * 110., (i / 20) as f32 * 150.);
-                let scope = grouped.then(|| scene.begin_effect_group(0.5));
-                colored_quad(&mut scene, scaled_bounds(x, y, 100., 100.), 0xff0000);
-                colored_quad(
-                    &mut scene,
-                    scaled_bounds(x + 30., y + 30., 100., 100.),
-                    0x0000ff,
-                );
-                if let Some(scope) = scope {
-                    scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        // `churn` resizes every group each frame, so no pooled texture fits.
+        for (name, grouped, churn) in [
+            ("ungrouped", false, false),
+            ("200 groups", true, false),
+            ("200 groups, every texture new", true, true),
+        ] {
+            let scene_for = |frame: usize| {
+                let mut scene = Scene::default();
+                let extra = if churn { (frame % 40) as f32 } else { 0. };
+                for i in 0..200 {
+                    let (x, y) = ((i % 20) as f32 * 110., (i / 20) as f32 * 150.);
+                    let scope = grouped.then(|| scene.begin_effect_group(0.5));
+                    colored_quad(&mut scene, scaled_bounds(x, y, 100., 100.), 0xff0000);
+                    colored_quad(
+                        &mut scene,
+                        scaled_bounds(x + 30., y + 30., 100. + extra, 100. + extra),
+                        0x0000ff,
+                    );
+                    if let Some(scope) = scope {
+                        scene.end_effect_group(scope, scaled_bounds(0., 0., 2400., 1600.));
+                    }
                 }
-            }
-            scene.finish();
+                scene.finish();
+                scene
+            };
             let mut renderer = MetalHeadlessRenderer::new();
-            for _ in 0..3 {
-                gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)
+            let mut frame = 0;
+            let mut render = |renderer: &mut MetalHeadlessRenderer| {
+                let scene = scene_for(frame);
+                frame += 1;
+                gpui::PlatformHeadlessRenderer::render_scene_to_image(renderer, &scene, size)
                     .unwrap();
+            };
+            for _ in 0..3 {
+                render(&mut renderer);
             }
             let start = std::time::Instant::now();
-            for _ in 0..20 {
-                gpui::PlatformHeadlessRenderer::render_scene_to_image(&mut renderer, &scene, size)
-                    .unwrap();
+            for _ in 0..40 {
+                render(&mut renderer);
             }
-            println!("{name}: {:?} per frame", start.elapsed() / 20);
+            println!(
+                "{name}: {:?} per frame, {:?}",
+                start.elapsed() / 40,
+                renderer.renderer.effect_stats
+            );
         }
     }
 
