@@ -21,6 +21,12 @@ pub(crate) fn composited_tiles(scene: &Scene) -> impl Iterator<Item = (LayerKey,
     scene
         .polychrome_sprites
         .iter()
+        .chain(
+            scene
+                .group_scenes
+                .iter()
+                .flat_map(|group| group.polychrome_sprites.iter()),
+        )
         .take_while(move |_| has_layers)
         .filter_map(|sprite| decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id))
 }

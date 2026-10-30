@@ -1460,4 +1460,49 @@ mod groups {
         assert!(near(pixel(&pixels, SIZE, 100, 100), [255, 128, 128]));
         assert!(near(pixel(&pixels, SIZE, 170, 170), [255, 255, 255]));
     }
+
+    #[test]
+    fn a_scroll_layer_in_a_group_is_faded_with_it() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no wgpu adapter");
+            return;
+        };
+        let key = LayerKey(9);
+        let tile = coord(0, 0);
+        let mut content = Scene::default();
+        content.insert_primitive(quad(
+            sp(0., 0., TILE as f32, TILE as f32),
+            Hsla::from(rgba(0xff0000ff)),
+        ));
+        content.finish();
+        let layer = layer_frame(key, 1, content, &[tile]);
+        let viewport = sp(20., 20., 100., 100.);
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group(0.5);
+        scene.push_layer(viewport);
+        scene.insert_primitive(PolychromeSprite {
+            order: 0,
+            transform_index: 0,
+            grayscale: false.into(),
+            opacity: 1.,
+            bounds: sp(0., 0., TILE as f32, TILE as f32),
+            content_mask: ContentMask::new(viewport),
+            corner_radii: Corners::default(),
+            tile: AtlasTile {
+                texture_id: layer_tile_texture_id(key),
+                tile_id: layer_tile_id(tile),
+                padding: 0,
+                bounds: Bounds {
+                    origin: point(DevicePixels(0), DevicePixels(0)),
+                    size: device_size(TILE as i32, TILE as i32),
+                },
+            },
+        });
+        scene.pop_layer();
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        scene.layers.frames.push(layer);
+        let pixels = render(&mut harness, scene);
+        assert!(near(pixel(&pixels, SIZE, 60, 60), [255, 128, 128]));
+        assert!(near(pixel(&pixels, SIZE, 10, 10), [255, 255, 255]));
+    }
 }

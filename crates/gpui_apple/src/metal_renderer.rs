@@ -616,8 +616,12 @@ impl MetalRenderer {
         texture: &metal::TextureRef,
         viewport_size: Size<DevicePixels>,
     ) -> Result<metal::CommandBuffer> {
+        // Tiles first: groups composite them too. A group's own pass has no
+        // layers, and must not age the cache.
+        if !crate::fast::effects::in_group_pass() {
+            crate::fast::layers::raster::rasterize_tiles(self, scene);
+        }
         crate::fast::effects::render_groups(self, scene, viewport_size)?;
-        crate::fast::layers::raster::rasterize_tiles(self, scene);
         let mut writer = InstanceBufferWriter::new(
             &self.device,
             &self.instance_buffer_pool,
