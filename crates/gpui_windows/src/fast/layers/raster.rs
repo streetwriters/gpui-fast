@@ -68,6 +68,7 @@ pub(crate) fn rasterize_groups(
     if scene.group_scenes.is_empty() {
         return Ok(());
     }
+    eprintln!("DBG groups {} subs {}", scene.groups.len(), scene.group_scenes.len());
     frame.layers.prepare_groups(target.device, scene)?;
     unbind_textures(target, frame);
     let context = target.device_context;
@@ -81,6 +82,7 @@ pub(crate) fn rasterize_groups(
                 return Ok(());
             };
             let size = texture.size;
+            eprintln!("DBG draw group {index} size {size:?} quads {}", sub.quads.len());
             let render_target = texture.render_target.clone();
             let globals = frame
                 .layers

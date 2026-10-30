@@ -254,6 +254,7 @@ pub(crate) fn draw_scene(
                 let Some(group) =
                     gpui::decode_effect_group(texture_id).and_then(|id| layers.group(id))
                 else {
+                    eprintln!("DBG no group texture for {texture_id:?}");
                     continue;
                 };
                 let pipeline = &pipelines.poly_sprites;
