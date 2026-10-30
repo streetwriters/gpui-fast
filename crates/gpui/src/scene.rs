@@ -301,6 +301,7 @@ pub enum BlendMode {
     Saturation,
     Color,
     Luminosity,
+    PlusLighter,
 }
 
 /// What an effect group does to its picture.

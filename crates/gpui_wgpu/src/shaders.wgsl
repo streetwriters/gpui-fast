@@ -1550,6 +1550,10 @@ fn blend_rgb(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
 // composite of the source over the backdrop under blend mode `mode`:
 // `(1 - ab) * cs + ab * B(cb, cs)`, where `backdrop` is premultiplied.
 fn blend_source_color(mode: u32, backdrop: vec4<f32>, cs: vec3<f32>) -> vec3<f32> {
+    if (mode == 16u) {
+        // Plus-lighter adds to the premultiplied backdrop.
+        return min(cs + backdrop.rgb, vec3<f32>(1.0));
+    }
     let ab = backdrop.a;
     var cb = vec3<f32>(0.0);
     if (ab > 0.00001) { cb = backdrop.rgb / ab; }

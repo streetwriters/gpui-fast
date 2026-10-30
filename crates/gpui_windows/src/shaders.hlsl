@@ -1494,6 +1494,10 @@ float3 blend_rgb(uint mode, float3 cb, float3 cs) {
 // composite of the source over the backdrop under blend mode `mode`:
 // `(1 - ab) * cs + ab * B(cb, cs)`, where `backdrop` is premultiplied.
 float3 blend_source_color(uint mode, float4 backdrop, float3 cs) {
+  if (mode == 16u) {
+    // Plus-lighter adds to the premultiplied backdrop.
+    return min(cs + backdrop.rgb, float3(1.0, 1.0, 1.0));
+  }
   float ab = backdrop.a;
   float3 cb = ab > 0.00001 ? backdrop.rgb / ab : float3(0.0, 0.0, 0.0);
   return (1.0 - ab) * cs + ab * clamp(blend_rgb(mode, cb, cs), 0.0, 1.0);

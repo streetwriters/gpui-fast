@@ -2420,6 +2420,7 @@ mod tests {
         assert_close(blended_over_grey(Lighten), [255, 128, 128]);
         assert_close(blended_over_grey(HardLight), [255, 128, 0]);
         assert_close(blended_over_grey(Luminosity), [152, 152, 152]);
+        assert_close(blended_over_grey(PlusLighter), [255, 255, 128]);
     }
 
     #[test]

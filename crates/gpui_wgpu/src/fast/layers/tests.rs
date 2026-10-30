@@ -1623,5 +1623,6 @@ mod groups {
         check(Lighten, [255, 128, 128]);
         check(HardLight, [255, 128, 0]);
         check(Luminosity, [152, 152, 152]);
+        check(PlusLighter, [255, 255, 128]);
     }
 }
