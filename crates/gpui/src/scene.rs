@@ -701,8 +701,11 @@ impl Scene {
                     let mut regroup = |scene: &mut Scene, old: u32| {
                         *regrouped.entry(old).or_insert_with(|| {
                             let old = &prev_scene.groups[old as usize - 1];
+                            // The group's final bounds, which the replayed
+                            // primitives lie within: the sprite that
+                            // composites it was made with them.
                             scene.groups.push(EffectGroup {
-                                bounds: Bounds::default(),
+                                bounds: old.bounds,
                                 opacity: old.opacity,
                                 effect: old.effect,
                             });

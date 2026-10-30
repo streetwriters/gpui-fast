@@ -2261,6 +2261,34 @@ mod tests {
     }
 
     #[test]
+    fn a_replayed_blurred_group_renders_like_the_original() {
+        let mut first = Scene::default();
+        let scope = first.begin_effect_group_with(
+            1.0,
+            gpui::GroupEffect::DropShadow {
+                dx: 10.0,
+                dy: 10.0,
+                sigma: 3.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        );
+        colored_quad(&mut first, scaled_bounds(40., 40., 60., 60.), 0xff0000);
+        first.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        let length = first.len();
+        let direct = render(&mut first);
+        let mut second = Scene::default();
+        second.replay(0..length, &first);
+        let replayed = render(&mut second);
+        for (x, y) in [(70, 70), (105, 105), (38, 70), (112, 112), (30, 30)] {
+            assert_eq!(
+                direct.get_pixel(x, y).0,
+                replayed.get_pixel(x, y).0,
+                "{x},{y}"
+            );
+        }
+    }
+
+    #[test]
     fn a_color_filter_recolours_what_is_drawn_under_it() {
         let mut scene = Scene::default();
         let previous = scene.push_color_filter(grayscale());
