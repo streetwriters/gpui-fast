@@ -61,6 +61,10 @@ pub(crate) struct TileCache {
     group_globals: FxHashMap<(u32, u32), Option<ID3D11Buffer>>,
     /// Per group texture size: the path textures groups are drawn through.
     group_paths: FxHashMap<(u32, u32), GroupPaths>,
+    /// Copies of targets that blended sprites read, by target size.
+    backdrops: std::cell::RefCell<
+        FxHashMap<(u32, u32), (ID3D11Texture2D, Option<ID3D11ShaderResourceView>)>,
+    >,
 }
 
 /// A texture an effect group is drawn into: the group's size rounded up to a
@@ -105,6 +109,7 @@ impl Default for TileCache {
             group_pool: Vec::new(),
             group_globals: FxHashMap::default(),
             group_paths: FxHashMap::default(),
+            backdrops: Default::default(),
         }
     }
 }
@@ -343,6 +348,7 @@ impl TileCache {
         self.group_pool.clear();
         self.group_globals.clear();
         self.group_paths.clear();
+        self.backdrops.get_mut().clear();
     }
 
     /// Gives every tile in `planned` a texture, fits the cache in its
@@ -439,6 +445,44 @@ impl TileCache {
             }
         }
         Ok(())
+    }
+
+    /// The texture a target `size` large is copied into for blended sprites
+    /// to read, and its view.
+    pub(crate) fn backdrop(
+        &self,
+        device: &ID3D11Device,
+        size: (u32, u32),
+    ) -> Result<(ID3D11Texture2D, Option<ID3D11ShaderResourceView>)> {
+        let mut backdrops = self.backdrops.borrow_mut();
+        if backdrops.len() > 8 {
+            backdrops.clear();
+        }
+        if let Some((texture, view)) = backdrops.get(&size) {
+            return Ok((texture.clone(), view.clone()));
+        }
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: size.0,
+            Height: size.1,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: RENDER_TARGET_FORMAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
+        let texture = texture.context("creating a backdrop texture")?;
+        let mut view = None;
+        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view))? };
+        backdrops.insert(size, (texture.clone(), view.clone()));
+        Ok((texture, view))
     }
 
     /// Forgets the previous frame's effect groups.

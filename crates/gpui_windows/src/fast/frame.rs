@@ -18,10 +18,11 @@ use gpui::{Path, PrimitiveBatch, ScaledPixels, Scene};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP},
     Direct3D11::{
-        ID3D11Buffer, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
-        ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
+        D3D11_TEXTURE2D_DESC, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
+        ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
     },
 };
+use windows::core::Interface as _;
 
 use crate::directx_renderer::{
     DirectXGlobalElements, DirectXRenderPipelines, DirectXResources, PathRasterizationSprite,
@@ -251,6 +252,13 @@ pub(crate) fn draw_scene(
             PrimitiveBatch::PolychromeSprites { texture_id, range }
                 if gpui::decode_effect_group(texture_id).is_some() =>
             {
+                let blended = scene
+                    .polychrome_sprites
+                    .get(range.start)
+                    .is_some_and(|sprite| sprite.mode() == gpui::BLEND_SPRITE);
+                if blended {
+                    copy_backdrop(target, layers)?;
+                }
                 let Some(group) = gpui::decode_effect_group(texture_id)
                     .and_then(|(id, slot)| layers.group(id, slot))
                 else {
@@ -273,6 +281,30 @@ pub(crate) fn draw_scene(
             PrimitiveBatch::ExternalTextures(_) => Ok(()),
         }
         .with_context(|| scene_too_large(scene))?;
+    }
+    Ok(())
+}
+
+/// Copies the render target the scene is drawn into, as it is, for the
+/// blended sprite about to be drawn to read from `t4`.
+fn copy_backdrop(target: &Target<'_>, layers: &TileCache) -> Result<()> {
+    let Some(render_target) = target
+        .paths
+        .as_ref()
+        .and_then(|paths| paths.render_target_view.as_ref())
+    else {
+        return Ok(());
+    };
+    let resource = unsafe { render_target.GetResource()? };
+    let texture: ID3D11Texture2D = resource.cast()?;
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { texture.GetDesc(&mut desc) };
+    let (backdrop, view) = layers.backdrop(target.device, (desc.Width, desc.Height))?;
+    unsafe {
+        target.device_context.CopyResource(&backdrop, &texture);
+        target
+            .device_context
+            .PSSetShaderResources(4, Some(slice::from_ref(&view)));
     }
     Ok(())
 }

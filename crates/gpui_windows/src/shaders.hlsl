@@ -15,6 +15,8 @@ cbuffer BatchParams: register(b1) {
 };
 
 Texture2D<float4> t_sprite: register(t0);
+// A copy of the target, which a blended sprite is combined with.
+Texture2D<float4> t_backdrop: register(t4);
 SamplerState s_sprite: register(s0);
 
 struct SubpixelSpriteFragmentOutput {
@@ -1418,6 +1420,85 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
     return output;
 }
 
+
+// CSS compositing's blend functions: `cb` is the backdrop's colour, `cs` the
+// source's, both straight (not premultiplied).
+float blend_hard_light(float cb, float cs) {
+  return cs <= 0.5 ? cb * 2.0 * cs : cb + (2.0 * cs - 1.0) - cb * (2.0 * cs - 1.0);
+}
+
+float blend_soft_light(float cb, float cs) {
+  if (cs <= 0.5) {
+    return cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb);
+  }
+  float d = cb <= 0.25 ? ((16.0 * cb - 12.0) * cb + 4.0) * cb : sqrt(cb);
+  return cb + (2.0 * cs - 1.0) * (d - cb);
+}
+
+float blend_dodge(float cb, float cs) {
+  if (cb == 0.0) { return 0.0; }
+  if (cs >= 1.0) { return 1.0; }
+  return min(1.0, cb / (1.0 - cs));
+}
+
+float blend_burn(float cb, float cs) {
+  if (cb >= 1.0) { return 1.0; }
+  if (cs <= 0.0) { return 0.0; }
+  return 1.0 - min(1.0, (1.0 - cb) / cs);
+}
+
+float blend_lum(float3 c) { return 0.3 * c.r + 0.59 * c.g + 0.11 * c.b; }
+
+float3 blend_clip_color(float3 c) {
+  float l = blend_lum(c);
+  float n = min(min(c.r, c.g), c.b);
+  float x = max(max(c.r, c.g), c.b);
+  if (n < 0.0) { c = l + (c - l) * l / (l - n); }
+  if (x > 1.0) { c = l + (c - l) * (1.0 - l) / (x - l); }
+  return c;
+}
+
+float3 blend_set_lum(float3 c, float l) { return blend_clip_color(c + (l - blend_lum(c))); }
+
+float blend_sat(float3 c) { return max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b); }
+
+float3 blend_set_sat(float3 c, float s) {
+  float mx = max(max(c.r, c.g), c.b);
+  float mn = min(min(c.r, c.g), c.b);
+  if (mx <= mn) { return float3(0.0, 0.0, 0.0); }
+  return (c - mn) * s / (mx - mn);
+}
+
+float3 blend_rgb(uint mode, float3 cb, float3 cs) {
+  switch (mode) {
+    case 1u: return cb * cs;
+    case 2u: return cb + cs - cb * cs;
+    case 3u: return float3(blend_hard_light(cs.r, cb.r), blend_hard_light(cs.g, cb.g), blend_hard_light(cs.b, cb.b));
+    case 4u: return min(cb, cs);
+    case 5u: return max(cb, cs);
+    case 6u: return float3(blend_dodge(cb.r, cs.r), blend_dodge(cb.g, cs.g), blend_dodge(cb.b, cs.b));
+    case 7u: return float3(blend_burn(cb.r, cs.r), blend_burn(cb.g, cs.g), blend_burn(cb.b, cs.b));
+    case 8u: return float3(blend_hard_light(cb.r, cs.r), blend_hard_light(cb.g, cs.g), blend_hard_light(cb.b, cs.b));
+    case 9u: return float3(blend_soft_light(cb.r, cs.r), blend_soft_light(cb.g, cs.g), blend_soft_light(cb.b, cs.b));
+    case 10u: return abs(cb - cs);
+    case 11u: return cb + cs - 2.0 * cb * cs;
+    case 12u: return blend_set_lum(blend_set_sat(cs, blend_sat(cb)), blend_lum(cb));
+    case 13u: return blend_set_lum(blend_set_sat(cb, blend_sat(cs)), blend_lum(cb));
+    case 14u: return blend_set_lum(cs, blend_lum(cb));
+    case 15u: return blend_set_lum(cb, blend_lum(cs));
+    default: return cs;
+  }
+}
+
+// The colour to hand the ordinary alpha blend so that it lands on the
+// composite of the source over the backdrop under blend mode `mode`:
+// `(1 - ab) * cs + ab * B(cb, cs)`, where `backdrop` is premultiplied.
+float3 blend_source_color(uint mode, float4 backdrop, float3 cs) {
+  float ab = backdrop.a;
+  float3 cb = ab > 0.00001 ? backdrop.rgb / ab : float3(0.0, 0.0, 0.0);
+  return (1.0 - ab) * cs + ab * clamp(blend_rgb(mode, cb, cs), 0.0, 1.0);
+}
+
 // One axis of a gaussian blur of an effect group's texture, within the
 // sprite's tile. The standard deviation is the flag word shifted down eight
 // bits, in sixteenths of a pixel; past 24 taps a side the taps are spread out
@@ -1459,6 +1540,11 @@ float4 polychrome_sprite_fragment_body(PolychromeSpriteFragmentInput input) {
     if (mode >= 2u) {
         // An effect group's texture holds premultiplied colour.
         color = float4(color.rgb / max(color.a, 0.00001), color.a);
+        if (mode == 6u) {
+            // Combined with what is beneath by the mode in the high bits.
+            float4 backdrop = t_backdrop.Load(int3(int2(input.position.xy), 0));
+            color = float4(blend_source_color(sprite.grayscale >> 8u, backdrop, color.rgb), color.a);
+        }
     } else if (sprite.grayscale != 0u) {
         float3 grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = float4(grayscale, sample.a);
