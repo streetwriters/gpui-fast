@@ -2476,6 +2476,31 @@ mod tests {
     }
 
     #[test]
+    fn a_replayed_isolated_group_with_a_blended_child_renders_like_the_original() {
+        let paint = |scene: &mut Scene| {
+            colored_quad(scene, scaled_bounds(0., 0., 200., 200.), 0x808080);
+            let isolated = scene.begin_effect_group_with(1.0, gpui::GroupEffect::Isolate);
+            let inner = scene.begin_effect_group_blended(
+                1.0,
+                gpui::GroupEffect::None,
+                gpui::BlendMode::Multiply,
+            );
+            colored_quad(scene, scaled_bounds(50., 50., 100., 100.), 0xff8000);
+            scene.end_effect_group(inner, scaled_bounds(0., 0., 200., 200.));
+            scene.end_effect_group(isolated, scaled_bounds(0., 0., 200., 200.));
+        };
+        let mut first = Scene::default();
+        paint(&mut first);
+        let length = first.len();
+        let direct = render(&mut first);
+        assert_close(direct.get_pixel(100, 100).0, [255, 128, 0]);
+        let mut second = Scene::default();
+        second.replay(0..length, &first);
+        let replayed = render(&mut second);
+        assert_eq!(direct.get_pixel(100, 100), replayed.get_pixel(100, 100));
+    }
+
+    #[test]
     fn a_color_filter_recolours_what_is_drawn_under_it() {
         let mut scene = Scene::default();
         let previous = scene.push_color_filter(grayscale());

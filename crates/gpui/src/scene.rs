@@ -745,6 +745,20 @@ impl Scene {
             })
             .collect();
         let enclosing = self.transforms.group(self.current_transform);
+        // Numbered in the order they were begun, so that a group encloses
+        // only groups with higher numbers: they are drawn highest first.
+        let mut begun: Vec<u32> = enclosed.iter().copied().collect();
+        begun.sort_unstable();
+        for old_id in begun {
+            let old = &prev_scene.groups[old_id as usize - 1];
+            self.groups.push(EffectGroup {
+                bounds: old.bounds,
+                opacity: old.opacity,
+                effect: old.effect,
+                blend: old.blend,
+            });
+            regrouped.insert(old_id, self.groups.len() as u32);
+        }
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => {
