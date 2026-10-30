@@ -1425,7 +1425,10 @@ float4 polychrome_sprite_fragment_body(PolychromeSpriteFragmentInput input) {
     float distance = quad_sdf(frag_pos, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;
-    if (sprite.grayscale != 0u) {
+    if (sprite.grayscale == 2u) {
+        // An effect group's texture holds premultiplied colour.
+        color = float4(color.rgb / max(color.a, 0.00001), color.a);
+    } else if (sprite.grayscale != 0u) {
         float3 grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = float4(grayscale, sample.a);
     }

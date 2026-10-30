@@ -88,7 +88,7 @@ pub(crate) fn draw_batches(renderer: &mut DirectXRenderer, scene: &Scene) -> Res
         .annotation
         .as_ref()
         .is_some_and(|annotation| unsafe { annotation.GetStatus().as_bool() });
-    if capturing && scene.layers.frames.is_empty() {
+    if capturing && scene.layers.frames.is_empty() && scene.group_scenes.is_empty() {
         return Ok(false);
     }
     let resources = renderer.resources.as_ref().context("resources missing")?;
@@ -247,6 +247,17 @@ pub(crate) fn draw_scene(
                     draw.sampler = sampler;
                     drawn
                 })
+            }
+            PrimitiveBatch::PolychromeSprites { texture_id, range }
+                if gpui::decode_effect_group(texture_id).is_some() =>
+            {
+                let Some(group) =
+                    gpui::decode_effect_group(texture_id).and_then(|id| layers.group(id))
+                else {
+                    continue;
+                };
+                let pipeline = &pipelines.poly_sprites;
+                draw.instances(pipeline, range.start, range.len(), Some(&group.view))
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
                 // The atlas has released the texture; upstream skips the batch.

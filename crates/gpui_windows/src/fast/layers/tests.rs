@@ -859,6 +859,12 @@ impl Harness {
                 paths: None,
             };
             rasterize(&tiles, &mut self.pipelines, &mut self.frame, scene)?;
+            crate::fast::layers::raster::rasterize_groups(
+                &tiles,
+                &mut self.pipelines,
+                &mut self.frame,
+                scene,
+            )?;
         }
 
         let (width, height) = (size.width.0 as u32, size.height.0 as u32);
@@ -1194,5 +1200,61 @@ mod transforms {
         );
         assert_eq!(a, 255);
         assert!(is_red(&pixels, 5, 5));
+    }
+}
+
+mod groups {
+    use super::*;
+
+    const SIZE: usize = 200;
+
+    fn render(harness: &mut Harness, mut scene: Scene) -> Vec<u8> {
+        scene.finish();
+        harness.render(
+            &scene,
+            device_size(SIZE as i32, SIZE as i32),
+            rgba(0xffffffff),
+        )
+    }
+
+    fn near(actual: [u8; 4], expected: [u8; 3]) -> bool {
+        actual[..3]
+            .iter()
+            .zip(expected)
+            .all(|(a, e)| a.abs_diff(e) <= 4)
+    }
+
+    #[test]
+    fn two_overlapping_children_fade_as_one_picture() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group(0.5);
+        scene.insert_primitive(quad(sp(20., 20., 100., 100.), Hsla::from(rgba(0xff0000ff))));
+        scene.insert_primitive(quad(sp(60., 60., 100., 100.), Hsla::from(rgba(0x0000ffff))));
+        scene.end_effect_group(scope, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        assert!(near(pixel(&pixels, SIZE, 30, 30), [255, 128, 128]));
+        assert!(near(pixel(&pixels, SIZE, 90, 90), [128, 128, 255]));
+        assert!(near(pixel(&pixels, SIZE, 150, 150), [128, 128, 255]));
+        assert!(near(pixel(&pixels, SIZE, 10, 10), [255, 255, 255]));
+    }
+
+    #[test]
+    fn a_group_in_a_group_fades_twice() {
+        let Some(mut harness) = Harness::new() else {
+            eprintln!("skipped: no Direct3D 11 device");
+            return;
+        };
+        let mut scene = Scene::default();
+        let outer = scene.begin_effect_group(0.5);
+        let inner = scene.begin_effect_group(0.5);
+        scene.insert_primitive(quad(sp(50., 50., 100., 100.), Hsla::from(rgba(0x000000ff))));
+        scene.end_effect_group(inner, sp(0., 0., 200., 200.));
+        scene.end_effect_group(outer, sp(0., 0., 200., 200.));
+        let pixels = render(&mut harness, scene);
+        assert!(near(pixel(&pixels, SIZE, 100, 100), [191, 191, 191]));
     }
 }

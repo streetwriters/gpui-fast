@@ -24,7 +24,10 @@ use windows::Win32::Graphics::{
 };
 
 use crate::DirectXRenderer;
-use crate::directx_renderer::{GlobalParams, RENDER_TARGET_FORMAT};
+use crate::directx_renderer::{
+    GlobalParams, RENDER_TARGET_FORMAT, create_path_intermediate_msaa_texture_and_view,
+    create_path_intermediate_texture,
+};
 
 /// How much tile texture memory a window keeps, by default (spec §5.6).
 pub(crate) const DEFAULT_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
@@ -50,7 +53,43 @@ pub(crate) struct TileCache {
     /// texture coordinate lands a hair off the texel center, where a linear
     /// filter would blend in a neighbour.
     sampler: Option<ID3D11SamplerState>,
+    /// The textures this frame's effect groups are drawn into, by group id.
+    groups: FxHashMap<u32, GroupTexture>,
+    /// Textures of earlier frames' groups, free to be drawn into.
+    group_pool: Vec<GroupTexture>,
+    /// Per group texture size: the global parameters groups are drawn with.
+    group_globals: FxHashMap<(u32, u32), Option<ID3D11Buffer>>,
+    /// Per group texture size: the path textures groups are drawn through.
+    group_paths: FxHashMap<(u32, u32), GroupPaths>,
 }
+
+/// A texture an effect group is drawn into: the group's size rounded up to a
+/// multiple of [`GROUP_QUANTUM`], so frames of groups that grow a little
+/// reuse it.
+pub(crate) struct GroupTexture {
+    pub(crate) size: (u32, u32),
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) texture: ID3D11Texture2D,
+    pub(crate) render_target: Option<ID3D11RenderTargetView>,
+    pub(crate) view: Option<ID3D11ShaderResourceView>,
+}
+
+/// The textures the paths of a group are rasterized through, sized like the
+/// group's texture.
+pub(crate) struct GroupPaths {
+    pub(crate) intermediate_texture: ID3D11Texture2D,
+    pub(crate) intermediate_srv: Option<ID3D11ShaderResourceView>,
+    pub(crate) msaa_texture: ID3D11Texture2D,
+    pub(crate) msaa_view: Option<ID3D11RenderTargetView>,
+}
+
+const GROUP_QUANTUM: u32 = 64;
+
+/// Direct3D 11's largest texture side.
+const MAX_TEXTURE_SIDE: u32 = 16384;
+
+/// Group textures kept for reuse.
+const GROUP_POOL_LIMIT: usize = 256;
 
 impl Default for TileCache {
     fn default() -> Self {
@@ -62,6 +101,10 @@ impl Default for TileCache {
             budget_bytes: DEFAULT_BUDGET_BYTES,
             globals: FxHashMap::default(),
             sampler: None,
+            groups: FxHashMap::default(),
+            group_pool: Vec::new(),
+            group_globals: FxHashMap::default(),
+            group_paths: FxHashMap::default(),
         }
     }
 }
@@ -296,6 +339,10 @@ impl TileCache {
         self.pool.clear();
         self.globals.clear();
         self.sampler = None;
+        self.groups.clear();
+        self.group_pool.clear();
+        self.group_globals.clear();
+        self.group_paths.clear();
     }
 
     /// Gives every tile in `planned` a texture, fits the cache in its
@@ -336,6 +383,75 @@ impl TileCache {
             }
         }
         Ok(())
+    }
+
+    /// Gives every effect group of the frame a texture, and makes the globals
+    /// and path textures of the sizes they come in.
+    pub(crate) fn prepare_groups(
+        &mut self,
+        device: &ID3D11Device,
+        scene: &gpui::Scene,
+    ) -> Result<()> {
+        for (_, texture) in self.groups.drain() {
+            self.group_pool.push(texture);
+        }
+        self.group_pool.truncate(GROUP_POOL_LIMIT);
+        for (index, group) in scene.groups.iter().enumerate() {
+            if index >= scene.group_scenes.len() || group.bounds.is_empty() {
+                continue;
+            }
+            let round = |length: f32| {
+                (length as u32)
+                    .max(1)
+                    .next_multiple_of(GROUP_QUANTUM)
+                    .min(MAX_TEXTURE_SIDE)
+            };
+            let size = (
+                round(group.bounds.size.width.0),
+                round(group.bounds.size.height.0),
+            );
+            let texture = match self.group_pool.iter().position(|t| t.size == size) {
+                Some(position) => self.group_pool.swap_remove(position),
+                None => create_group_texture(device, size)?,
+            };
+            self.groups.insert(index as u32 + 1, texture);
+            if let Entry::Vacant(entry) = self.group_globals.entry(size) {
+                entry.insert(create_globals(device, size.0, size.1)?);
+            }
+            if let Entry::Vacant(entry) = self.group_paths.entry(size) {
+                let (intermediate_texture, intermediate_srv) =
+                    create_path_intermediate_texture(device, size.0, size.1)?;
+                let (msaa_texture, msaa_view) =
+                    create_path_intermediate_msaa_texture_and_view(device, size.0, size.1)?;
+                entry.insert(GroupPaths {
+                    intermediate_texture,
+                    intermediate_srv,
+                    msaa_texture,
+                    msaa_view,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Forgets the previous frame's effect groups.
+    pub(crate) fn clear_groups(&mut self) {
+        for (_, texture) in self.groups.drain() {
+            self.group_pool.push(texture);
+        }
+    }
+
+    /// The texture the effect group `id` is drawn into this frame.
+    pub(crate) fn group(&self, id: u32) -> Option<&GroupTexture> {
+        self.groups.get(&id)
+    }
+
+    pub(crate) fn group_globals(&self, size: (u32, u32)) -> Option<&Option<ID3D11Buffer>> {
+        self.group_globals.get(&size)
+    }
+
+    pub(crate) fn group_paths(&self, size: (u32, u32)) -> Option<&GroupPaths> {
+        self.group_paths.get(&size)
     }
 
     /// The global parameters buffer tiles of `tile_size` are drawn with.
@@ -410,6 +526,37 @@ fn create_point_sampler(device: &ID3D11Device) -> Result<Option<ID3D11SamplerSta
     let mut sampler = None;
     unsafe { device.CreateSamplerState(&desc, Some(&mut sampler))? };
     Ok(sampler)
+}
+
+fn create_group_texture(device: &ID3D11Device, size: (u32, u32)) -> Result<GroupTexture> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: size.0,
+        Height: size.1,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: RENDER_TARGET_FORMAT,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture))? };
+    let texture = texture.context("creating an effect group texture")?;
+    let mut render_target = None;
+    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut render_target))? };
+    let mut view = None;
+    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view))? };
+    Ok(GroupTexture {
+        size,
+        texture,
+        render_target,
+        view,
+    })
 }
 
 pub(crate) fn create_tile_texture(device: &ID3D11Device, size: u32) -> Result<TileTexture> {
