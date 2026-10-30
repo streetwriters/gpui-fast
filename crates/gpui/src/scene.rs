@@ -354,6 +354,34 @@ impl GroupEffect {
     }
 }
 
+/// What the effect groups cost a renderer so far: passes drawn, textures
+/// made rather than taken from the pool, and the texture memory held.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EffectStats {
+    /// Passes drawn into group textures: painting, and each blur pass.
+    pub passes_drawn: u64,
+    /// Textures created because none of the size was pooled.
+    pub textures_allocated: u64,
+    /// Bytes of texture held now, in use or pooled.
+    pub texture_bytes: u64,
+    /// The most `texture_bytes` has been.
+    pub peak_texture_bytes: u64,
+}
+
+impl EffectStats {
+    /// Records a texture of `bytes` bytes made.
+    pub fn texture_allocated(&mut self, bytes: u64) {
+        self.textures_allocated += 1;
+        self.texture_bytes += bytes;
+        self.peak_texture_bytes = self.peak_texture_bytes.max(self.texture_bytes);
+    }
+
+    /// Records a texture of `bytes` bytes dropped.
+    pub fn texture_released(&mut self, bytes: u64) {
+        self.texture_bytes = self.texture_bytes.saturating_sub(bytes);
+    }
+}
+
 /// A pass over an effect group's texture that blurs it along one axis: a
 /// scene of one sprite that reads texture `from` of the group and is drawn
 /// into texture `to`.
@@ -518,7 +546,9 @@ impl Scene {
         if record.bounds.is_empty() {
             return;
         }
-        let margin = effect.margin();
+        // A pixel more than what was painted: a shape under a transform has
+        // an antialiased fringe past its bounds.
+        let margin = effect.margin().max(1.0);
         let drawn = record
             .bounds
             .dilate(ScaledPixels(margin))

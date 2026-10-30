@@ -1345,4 +1345,53 @@ mod groups {
         check(Luminosity, [152, 152, 152]);
         check(PlusLighter, [255, 255, 128]);
     }
+
+    /// `cargo test -p gpui_windows --release --features gpui/test-support group_pass_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn group_pass_cost() {
+        let Some(mut harness) = Harness::new() else {
+            return;
+        };
+        let size = device_size(2400, 1600);
+        for (name, grouped, churn) in [
+            ("ungrouped", false, false),
+            ("200 groups", true, false),
+            ("200 groups, every texture new", true, true),
+        ] {
+            let mut frame = 0;
+            let mut render = |harness: &mut Harness| {
+                let mut scene = Scene::default();
+                let extra = if churn { (frame % 130) as f32 } else { 0. };
+                frame += 1;
+                for i in 0..200 {
+                    let (x, y) = ((i % 20) as f32 * 110., (i / 20) as f32 * 150.);
+                    let scope = grouped.then(|| scene.begin_effect_group(0.5));
+                    scene
+                        .insert_primitive(quad(sp(x, y, 100., 100.), Hsla::from(rgba(0xff0000ff))));
+                    scene.insert_primitive(quad(
+                        sp(x + 30., y + 30., 100. + extra, 100. + extra),
+                        Hsla::from(rgba(0x0000ffff)),
+                    ));
+                    if let Some(scope) = scope {
+                        scene.end_effect_group(scope, sp(0., 0., 2400., 1600.));
+                    }
+                }
+                scene.finish();
+                harness.render(&scene, size, rgba(0x000000ff));
+            };
+            for _ in 0..3 {
+                render(&mut harness);
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..40 {
+                render(&mut harness);
+            }
+            println!(
+                "{name}: {:?} per frame, {:?}",
+                start.elapsed() / 40,
+                harness.frame.layers.effect_stats()
+            );
+        }
+    }
 }

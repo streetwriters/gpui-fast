@@ -62,6 +62,7 @@ pub(crate) struct TileCache {
     /// Per group texture size: the path textures groups are drawn through.
     group_paths: FxHashMap<(u32, u32), GroupPaths>,
     /// Copies of targets that blended sprites read, by target size.
+    stats: gpui::EffectStats,
     backdrops: std::cell::RefCell<
         FxHashMap<(u32, u32), (ID3D11Texture2D, Option<ID3D11ShaderResourceView>)>,
     >,
@@ -109,6 +110,7 @@ impl Default for TileCache {
             group_pool: Vec::new(),
             group_globals: FxHashMap::default(),
             group_paths: FxHashMap::default(),
+            stats: gpui::EffectStats::default(),
             backdrops: Default::default(),
         }
     }
@@ -401,7 +403,14 @@ impl TileCache {
         for (_, texture) in self.groups.drain() {
             self.group_pool.push(texture);
         }
-        self.group_pool.truncate(GROUP_POOL_LIMIT);
+        for released in self
+            .group_pool
+            .drain(GROUP_POOL_LIMIT.min(self.group_pool.len())..)
+        {
+            self.stats
+                .texture_released(u64::from(released.size.0) * u64::from(released.size.1) * 4);
+        }
+        self.stats.passes_drawn += scene.effect_passes().count() as u64;
         for (index, group) in scene.groups.iter().enumerate() {
             if index >= scene.group_scenes.len() || group.bounds.is_empty() {
                 continue;
@@ -424,7 +433,11 @@ impl TileCache {
                 }
                 let texture = match self.group_pool.iter().position(|t| t.size == size) {
                     Some(position) => self.group_pool.swap_remove(position),
-                    None => create_group_texture(device, size)?,
+                    None => {
+                        self.stats
+                            .texture_allocated(u64::from(size.0) * u64::from(size.1) * 4);
+                        create_group_texture(device, size)?
+                    }
                 };
                 self.groups.insert((index as u32 + 1, slot), texture);
             }
@@ -483,6 +496,11 @@ impl TileCache {
         unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut view))? };
         backdrops.insert(size, (texture.clone(), view.clone()));
         Ok((texture, view))
+    }
+
+    /// What the effect groups have cost so far.
+    pub(crate) fn effect_stats(&self) -> gpui::EffectStats {
+        self.stats
     }
 
     /// Forgets the previous frame's effect groups.

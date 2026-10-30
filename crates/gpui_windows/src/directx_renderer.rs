@@ -166,6 +166,11 @@ impl DirectXRendererDevices {
 }
 
 impl DirectXRenderer {
+    /// What the effect groups have cost this renderer so far.
+    pub fn effect_stats(&self) -> gpui::EffectStats {
+        self.fast_frame.layers.effect_stats()
+    }
+
     pub(crate) fn new(
         hwnd: HWND,
         directx_devices: &DirectXDevices,

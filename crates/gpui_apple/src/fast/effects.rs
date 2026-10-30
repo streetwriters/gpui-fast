@@ -45,7 +45,7 @@ pub(crate) fn render_groups(
         }
         let size = gpui::size(DevicePixels(width), DevicePixels(height));
         let content = renderer.group_texture(width as u64, height as u64);
-        renderer.effect_stats.groups_rasterized += 1;
+        renderer.effect_stats.passes_drawn += 1;
         GROUP_PASS.with(|pass| pass.set(true));
         let drawn = renderer.render_frame(sub, &content, size);
         GROUP_PASS.with(|pass| pass.set(false));
@@ -64,6 +64,7 @@ pub(crate) fn render_groups(
                     texture
                 }
             };
+            renderer.effect_stats.passes_drawn += 1;
             GROUP_PASS.with(|flag| flag.set(true));
             let drawn = renderer.render_frame(&pass.scene, &target, size);
             GROUP_PASS.with(|flag| flag.set(false));

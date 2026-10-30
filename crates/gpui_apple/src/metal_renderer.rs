@@ -111,16 +111,6 @@ impl InstanceBufferPool {
     }
 }
 
-/// What the effect groups cost: groups rasterized, textures made rather than
-/// taken from the pool, and the most texture memory held at once.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct EffectStats {
-    pub groups_rasterized: u64,
-    pub textures_allocated: u64,
-    pub peak_texture_bytes: u64,
-    pub texture_bytes: u64,
-}
-
 pub struct MetalRenderer {
     pub(crate) device: metal::Device,
     layer: Option<metal::MetalLayer>,
@@ -156,7 +146,7 @@ pub struct MetalRenderer {
     /// Group textures of earlier frames, kept to be drawn into again.
     effect_texture_pool: Vec<metal::Texture>,
     /// Counts of the effect-group work done since the renderer was made.
-    pub effect_stats: EffectStats,
+    pub effect_stats: gpui::EffectStats,
     /// A 1x1 texture bound where a draw has no backdrop.
     dummy_backdrop: metal::Texture,
     /// What a blended sprite reads: a copy of the target made just before it.
@@ -449,7 +439,7 @@ impl MetalRenderer {
             headless_render_target: None,
             effect_group_textures: Default::default(),
             effect_texture_pool: Vec::new(),
-            effect_stats: EffectStats::default(),
+            effect_stats: gpui::EffectStats::default(),
             dummy_backdrop,
             backdrop: None,
             backdrop_cache: None,
@@ -639,7 +629,8 @@ impl MetalRenderer {
             .effect_texture_pool
             .drain(256.min(self.effect_texture_pool.len())..)
         {
-            self.effect_stats.texture_bytes -= texture.width() * texture.height() * 4;
+            self.effect_stats
+                .texture_released(texture.width() * texture.height() * 4);
         }
     }
 
@@ -653,12 +644,7 @@ impl MetalRenderer {
         {
             return self.effect_texture_pool.swap_remove(position);
         }
-        self.effect_stats.textures_allocated += 1;
-        self.effect_stats.texture_bytes += width * height * 4;
-        self.effect_stats.peak_texture_bytes = self
-            .effect_stats
-            .peak_texture_bytes
-            .max(self.effect_stats.texture_bytes);
+        self.effect_stats.texture_allocated(width * height * 4);
         let descriptor = metal::TextureDescriptor::new();
         descriptor.set_width(width);
         descriptor.set_height(height);
@@ -2498,6 +2484,42 @@ mod tests {
         second.replay(0..length, &first);
         let replayed = render(&mut second);
         assert_eq!(direct.get_pixel(100, 100), replayed.get_pixel(100, 100));
+    }
+
+    #[test]
+    fn a_group_under_a_scale_is_as_sharp_as_the_same_content_without_one() {
+        let draw = |grouped: bool| {
+            let mut scene = Scene::default();
+            let scale = gpui::TransformationMatrix::unit()
+                .translate(gpui::point(ScaledPixels(100.), ScaledPixels(100.)))
+                .scale(gpui::size(2.0, 2.0))
+                .translate(gpui::point(ScaledPixels(-100.), ScaledPixels(-100.)));
+            let previous = scene.push_transform(scale);
+            let scope = grouped.then(|| scene.begin_effect_group(1.0 - f32::EPSILON));
+            scene.insert_primitive(gpui::Quad {
+                order: 0,
+                border_style_and_transform: 0,
+                bounds: scaled_bounds(85., 85., 30., 30.),
+                content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 200., 200.)),
+                background: gpui::rgb(0xff0000).into(),
+                border_color: gpui::Hsla::default(),
+                corner_radii: gpui::Corners::all(ScaledPixels(7.)),
+                border_widths: gpui::Edges::default(),
+            });
+            if let Some(scope) = scope {
+                scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+            }
+            scene.pop_transform(previous);
+            render(&mut scene)
+        };
+        let (plain, grouped) = (draw(false), draw(true));
+        let mut worst = 0;
+        for (a, b) in plain.pixels().zip(grouped.pixels()) {
+            for channel in 0..4 {
+                worst = worst.max(a.0[channel].abs_diff(b.0[channel]));
+            }
+        }
+        assert!(worst <= 2, "the largest difference is {worst}");
     }
 
     #[test]

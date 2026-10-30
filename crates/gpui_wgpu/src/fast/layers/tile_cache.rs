@@ -41,6 +41,7 @@ pub(crate) struct TileCache {
     group_pool: Vec<GroupTexture>,
     /// Copies of targets that blended sprites read, by target size.
     backdrops: FxHashMap<(u32, u32), Backdrop>,
+    stats: gpui::EffectStats,
 }
 
 /// A copy of a target, which a blended sprite is combined with.
@@ -78,6 +79,7 @@ impl Default for TileCache {
             groups: FxHashMap::default(),
             group_pool: Vec::new(),
             backdrops: FxHashMap::default(),
+            stats: gpui::EffectStats::default(),
         }
     }
 }
@@ -416,6 +418,11 @@ impl TileCache {
         self.backdrops.get(&size)
     }
 
+    /// What the effect groups have cost so far.
+    pub(crate) fn effect_stats(&self) -> gpui::EffectStats {
+        self.stats
+    }
+
     /// The texture the effect group `id` is drawn into this frame.
     pub(crate) fn group(&self, id: u32, slot: u8) -> Option<&GroupTexture> {
         self.groups.get(&(id, slot))
@@ -427,7 +434,14 @@ impl TileCache {
         for (_, texture) in self.groups.drain() {
             self.group_pool.push(texture);
         }
-        self.group_pool.truncate(GROUP_POOL_LIMIT);
+        for released in self
+            .group_pool
+            .drain(GROUP_POOL_LIMIT.min(self.group_pool.len())..)
+        {
+            self.stats
+                .texture_released(u64::from(released.size.0) * u64::from(released.size.1) * 4);
+        }
+        self.stats.passes_drawn += scene.effect_passes().count() as u64;
         let limit = target.device.limits().max_texture_dimension_2d;
         for (index, group) in scene.groups.iter().enumerate() {
             if index >= scene.group_scenes.len() || group.bounds.is_empty() {
@@ -447,7 +461,11 @@ impl TileCache {
                 }
                 let texture = match self.group_pool.iter().position(|t| t.size == size) {
                     Some(position) => self.group_pool.swap_remove(position),
-                    None => create_group_texture(target.device, target.format, size),
+                    None => {
+                        self.stats
+                            .texture_allocated(u64::from(size.0) * u64::from(size.1) * 4);
+                        create_group_texture(target.device, target.format, size)
+                    }
                 };
                 self.groups.insert((index as u32 + 1, slot), texture);
             }
