@@ -11,20 +11,13 @@ use gpui::{DevicePixels, Scene, Size};
 use crate::metal_renderer::MetalRenderer;
 
 thread_local! {
-    /// Set while a group's texture is being drawn: the window position of the
-    /// texture's top-left corner. The viewport is moved by it, so the scene's
-    /// window-space primitives land in the texture without being changed.
-    static GROUP_PASS: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
-}
-
-/// The viewport origin offset of the pass being drawn.
-pub(crate) fn group_origin() -> (f64, f64) {
-    GROUP_PASS.with(Cell::get).unwrap_or((0., 0.))
+    /// Set while a group's texture is being drawn, which starts transparent.
+    static GROUP_PASS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Whether a group's texture is being drawn, which starts transparent.
 pub(crate) fn in_group_pass() -> bool {
-    GROUP_PASS.with(Cell::get).is_some()
+    GROUP_PASS.with(Cell::get)
 }
 
 /// Draws every effect group of `scene` into its texture. The command buffers
@@ -33,7 +26,7 @@ pub(crate) fn in_group_pass() -> bool {
 pub(crate) fn render_groups(
     renderer: &mut MetalRenderer,
     scene: &Scene,
-    viewport_size: Size<DevicePixels>,
+    _viewport_size: Size<DevicePixels>,
 ) -> Result<()> {
     // A group's own pass has no groups, and must not recycle its siblings'.
     if in_group_pass() {
@@ -53,9 +46,13 @@ pub(crate) fn render_groups(
         }
         let texture = renderer.group_texture(width as u64, height as u64);
         renderer.effect_stats.groups_rasterized += 1;
-        GROUP_PASS.with(|pass| pass.set(Some((f64::from(x), f64::from(y)))));
-        let drawn = renderer.render_frame(sub, &texture, viewport_size);
-        GROUP_PASS.with(|pass| pass.set(None));
+        GROUP_PASS.with(|pass| pass.set(true));
+        let drawn = renderer.render_frame(
+            sub,
+            &texture,
+            gpui::size(DevicePixels(width), DevicePixels(height)),
+        );
+        GROUP_PASS.with(|pass| pass.set(false));
         drawn?.commit();
         renderer
             .effect_group_textures

@@ -1463,10 +1463,9 @@ pub(crate) fn new_command_encoder_for_texture<'a>(
     }
 
     let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
-    let origin = crate::fast::effects::group_origin();
     command_encoder.set_viewport(metal::MTLViewport {
-        originX: -origin.0,
-        originY: -origin.1,
+        originX: 0.0,
+        originY: 0.0,
         width: i32::from(viewport_size.width) as f64,
         height: i32::from(viewport_size.height) as f64,
         znear: 0.0,
@@ -2121,6 +2120,79 @@ mod tests {
             );
         }
         assert_eq!(replayed.get_pixel(180, 180).0, [255, 255, 255, 255]);
+    }
+
+    fn triangle(scene: &mut Scene, x: f32, y: f32) {
+        let mut path = gpui::Path::new(gpui::point(gpui::px(x), gpui::px(y)));
+        path.line_to(gpui::point(gpui::px(x + 80.), gpui::px(y)));
+        path.line_to(gpui::point(gpui::px(x), gpui::px(y + 80.)));
+        path.line_to(gpui::point(gpui::px(x), gpui::px(y)));
+        path.content_mask = gpui::ContentMask::new(gpui::Bounds {
+            origin: gpui::point(gpui::px(0.), gpui::px(0.)),
+            size: gpui::size(gpui::px(200.), gpui::px(200.)),
+        });
+        path.color = gpui::Hsla::from(gpui::rgba(0x00ff00ff)).into();
+        scene.insert_primitive(path.scale(1.));
+    }
+
+    #[test]
+    fn a_path_in_a_group_is_faded_with_it() {
+        let mut scene = Scene::default();
+        let scope = scene.begin_effect_group(0.5);
+        triangle(&mut scene, 100., 100.);
+        colored_quad(&mut scene, scaled_bounds(90., 90., 30., 30.), 0xff0000);
+        scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        // On the triangle's body, away from the quad.
+        let [r, g, b, _] = image.get_pixel(110, 150).0;
+        assert!(r < 12 && g.abs_diff(128) < 6 && b < 12, "{r} {g} {b}");
+        let [r, g, _, _] = image.get_pixel(100, 100).0;
+        assert!(r.abs_diff(128) < 6 && g < 12, "{r} {g}");
+        // Outside the triangle's hypotenuse.
+        assert_eq!(image.get_pixel(170, 170).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_rotated_quad_in_a_group_is_where_it_would_be_without_one() {
+        let draw = |grouped: bool| {
+            let mut scene = Scene::default();
+            let scope = grouped.then(|| scene.begin_effect_group(1.0 - f32::EPSILON));
+            quad_under(
+                &mut scene,
+                rotation_about(45., 100., 100.),
+                scaled_bounds(70., 70., 60., 60.),
+                0.,
+                None,
+            );
+            if let Some(scope) = scope {
+                scene.end_effect_group(scope, scaled_bounds(0., 0., 200., 200.));
+            }
+            render(&mut scene)
+        };
+        let (plain, grouped) = (draw(false), draw(true));
+        for (x, y) in [(100, 100), (100, 62), (140, 100), (70, 70), (100, 150)] {
+            let (a, b) = (plain.get_pixel(x, y).0, grouped.get_pixel(x, y).0);
+            assert!(
+                a.iter().zip(&b).all(|(a, b)| a.abs_diff(*b) <= 2),
+                "{x},{y} {a:?} {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_group_in_a_group_fades_twice() {
+        let mut scene = Scene::default();
+        let outer = scene.begin_effect_group(0.5);
+        let inner = scene.begin_effect_group(0.5);
+        colored_quad(&mut scene, scaled_bounds(50., 50., 100., 100.), 0xffffff);
+        scene.end_effect_group(inner, scaled_bounds(0., 0., 200., 200.));
+        scene.end_effect_group(outer, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        let [r, g, b, _] = image.get_pixel(100, 100).0;
+        assert!(
+            r.abs_diff(64) < 6 && g.abs_diff(64) < 6 && b.abs_diff(64) < 6,
+            "{r} {g} {b}"
+        );
     }
 
     #[test]

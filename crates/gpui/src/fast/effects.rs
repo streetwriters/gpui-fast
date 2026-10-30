@@ -73,5 +73,67 @@ pub(crate) fn split_groups(scene: &mut Scene) {
         path.id = PathId(target.paths.len());
         target.paths.push(path);
     }
+    for (sub, group) in subs.iter_mut().zip(&scene.groups) {
+        let origin = group.bounds.origin;
+        shift(sub, -origin.x.0, -origin.y.0);
+    }
     scene.group_scenes = subs;
+}
+
+/// Moves what `scene` draws by `(dx, dy)`, so that it can be drawn into a
+/// texture whose top-left corner is the group's. A primitive under a matrix
+/// has its matrix moved; one under none, and every path, is moved itself.
+fn shift(scene: &mut Scene, dx: f32, dy: f32) {
+    let table = scene.transforms.clone();
+    let moved = |index: crate::TransformIndex| table.is_unit(index);
+    let by = |bounds: &mut crate::Bounds<ScaledPixels>| {
+        bounds.origin.x.0 += dx;
+        bounds.origin.y.0 += dy;
+    };
+    for shadow in &mut scene.shadows {
+        if moved(crate::TransformIndex(shadow.transform_index)) {
+            by(&mut shadow.bounds);
+            by(&mut shadow.content_mask.bounds);
+        }
+    }
+    for quad in &mut scene.quads {
+        if moved(quad.transform_index()) {
+            by(&mut quad.bounds);
+            by(&mut quad.content_mask.bounds);
+        }
+    }
+    for underline in &mut scene.underlines {
+        if moved(crate::TransformIndex(underline.transform_index)) {
+            by(&mut underline.bounds);
+            by(&mut underline.content_mask.bounds);
+        }
+    }
+    for sprite in &mut scene.monochrome_sprites {
+        if moved(crate::TransformIndex(sprite.transform_index)) {
+            by(&mut sprite.bounds);
+            by(&mut sprite.content_mask.bounds);
+        }
+    }
+    for sprite in &mut scene.subpixel_sprites {
+        if moved(crate::TransformIndex(sprite.transform_index)) {
+            by(&mut sprite.bounds);
+            by(&mut sprite.content_mask.bounds);
+        }
+    }
+    for sprite in &mut scene.polychrome_sprites {
+        if moved(crate::TransformIndex(sprite.transform_index)) {
+            by(&mut sprite.bounds);
+            by(&mut sprite.content_mask.bounds);
+        }
+    }
+    for path in &mut scene.paths {
+        by(&mut path.bounds);
+        by(&mut path.content_mask.bounds);
+        for vertex in &mut path.vertices {
+            vertex.xy_position.x.0 += dx;
+            vertex.xy_position.y.0 += dy;
+            by(&mut vertex.content_mask.bounds);
+        }
+    }
+    scene.transforms.shift_entries(dx, dy);
 }

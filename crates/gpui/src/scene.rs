@@ -179,6 +179,23 @@ impl TransformTable {
     }
 
     /// The effect group `index` belongs to; 0 for none.
+    /// Whether the entry at `index` moves nothing.
+    pub(crate) fn is_unit(&self, index: TransformIndex) -> bool {
+        self.entries[index.0 as usize] == TransformationMatrix::unit()
+    }
+
+    /// Moves every entry that is not the unit matrix by `(dx, dy)` after its
+    /// own transform.
+    pub(crate) fn shift_entries(&mut self, dx: f32, dy: f32) {
+        for entry in &mut self.entries {
+            if *entry != TransformationMatrix::unit() {
+                entry.translation[0] += dx;
+                entry.translation[1] += dy;
+            }
+        }
+        self.lookup.clear();
+    }
+
     pub fn group(&self, index: TransformIndex) -> u32 {
         self.groups.get(index.0 as usize).copied().unwrap_or(0)
     }
