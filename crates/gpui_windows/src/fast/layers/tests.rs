@@ -1236,6 +1236,9 @@ mod groups {
         scene.insert_primitive(quad(sp(60., 60., 100., 100.), Hsla::from(rgba(0x0000ffff))));
         scene.end_effect_group(scope, sp(0., 0., 200., 200.));
         let pixels = render(&mut harness, scene);
+        for (x, y) in [(10, 10), (30, 30), (90, 90), (150, 150)] {
+            eprintln!("PX {x},{y} {:?}", pixel(&pixels, SIZE, x, y));
+        }
         assert!(near(pixel(&pixels, SIZE, 30, 30), [255, 128, 128]));
         assert!(near(pixel(&pixels, SIZE, 90, 90), [128, 128, 255]));
         assert!(near(pixel(&pixels, SIZE, 150, 150), [128, 128, 255]));
