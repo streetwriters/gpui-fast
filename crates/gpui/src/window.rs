@@ -6,8 +6,8 @@ use crate::Inspector;
 use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
-    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BlendMode, BorderStyle, Bounds,
+    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     GroupEffect, Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent,
@@ -4445,13 +4445,27 @@ impl Window {
         effect: GroupEffect,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        if (opacity >= 1.0 && effect == GroupEffect::None) || self.fast_layers.painting.is_some() {
+        self.with_blended_group(opacity, effect, BlendMode::Normal, f)
+    }
+
+    /// Like [`Window::with_group_effect`], combining the group's picture with
+    /// what is beneath it by `blend`.
+    pub fn with_blended_group<R>(
+        &mut self,
+        opacity: f32,
+        effect: GroupEffect,
+        blend: BlendMode,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if (opacity >= 1.0 && effect == GroupEffect::None && blend == BlendMode::Normal)
+            || self.fast_layers.painting.is_some()
+        {
             return f(self);
         }
-        let scope = self
-            .next_frame
-            .scene
-            .begin_effect_group_with(opacity.max(0.0), effect);
+        let scope =
+            self.next_frame
+                .scene
+                .begin_effect_group_blended(opacity.max(0.0), effect, blend);
         let result = f(self);
         let scale = self.scale_factor;
         let window = Bounds::from_corners(
