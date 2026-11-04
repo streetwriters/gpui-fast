@@ -7,6 +7,8 @@
 //! call to it. The logic itself — data structures, algorithms, bookkeeping,
 //! tests — is written here, one file per topic.
 
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod adapter;
 pub(crate) mod bind_groups;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod composition;

@@ -293,7 +293,7 @@ impl WgpuContext {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn from_native_adapter_and_device(
+    pub(crate) fn from_native_adapter_and_device(
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         device: wgpu::Device,
@@ -323,7 +323,7 @@ impl WgpuContext {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn device_id_filter() -> Option<u32> {
+    pub(crate) fn device_id_filter() -> Option<u32> {
         match std::env::var("ZED_DEVICE_ID") {
             Ok(value) => parse_pci_id(&value)
                 .context("Failed to parse device ID from `ZED_DEVICE_ID` environment variable")
@@ -559,8 +559,16 @@ impl WgpuContext {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn instance(display: Option<Box<dyn wgpu::wgt::WgpuHasDisplayHandle>>) -> wgpu::Instance {
+        Self::instance_for(wgpu::Backends::VULKAN | wgpu::Backends::GL, display)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn instance_for(
+        backends: wgpu::Backends,
+        display: Option<Box<dyn wgpu::wgt::WgpuHasDisplayHandle>>,
+    ) -> wgpu::Instance {
         wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            backends,
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
@@ -729,7 +737,7 @@ impl WgpuContext {
     /// Try to use an adapter with a surface by creating a device and testing configuration.
     /// Returns the device and queue if successful, allowing them to be reused.
     #[cfg(not(target_family = "wasm"))]
-    async fn try_adapter_with_surface(
+    pub(crate) async fn try_adapter_with_surface(
         adapter: &wgpu::Adapter,
         surface: &wgpu::Surface<'_>,
         config: &WgpuSurfaceConfig,

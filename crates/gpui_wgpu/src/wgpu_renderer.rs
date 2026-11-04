@@ -372,6 +372,31 @@ impl WgpuRenderer {
             .window_handle()
             .map_err(|e| anyhow::anyhow!("Failed to get window handle: {e}"))?;
 
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let first_context = gpu_context.borrow().is_none();
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if first_context
+            && let Some((context, surface)) = crate::fast::adapter::select_named(
+                window,
+                window_handle.as_raw(),
+                &config,
+                compositor_gpu,
+            )
+        {
+            let mut ctx_ref = gpu_context.borrow_mut();
+            let context = ctx_ref.insert(context);
+            let atlas = Arc::new(WgpuAtlas::from_context(context));
+            return Self::new_internal(
+                Some(Rc::clone(&gpu_context)),
+                context,
+                surface,
+                config,
+                true,
+                compositor_gpu,
+                atlas,
+            );
+        }
+
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
             // Fall back to the display handle already provided via InstanceDescriptor::display.
             raw_display_handle: None,
