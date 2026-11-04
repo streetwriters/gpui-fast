@@ -318,6 +318,7 @@ pub(crate) struct X11WindowStatePtr {
     pub(crate) callbacks: Rc<RefCell<Callbacks>>,
     pub(crate) xcb: Rc<XCBConnection>,
     pub(crate) x_window: xproto::Window,
+    pub(crate) frame: Rc<crate::fast::x11_frame::FrameDemand>,
 }
 
 impl rwh::HasWindowHandle for RawWindow {
@@ -948,6 +949,7 @@ impl X11Window {
         parent_window: Option<X11WindowStatePtr>,
         supports_xinput_gestures: bool,
         is_bgr: bool,
+        frame: Rc<crate::fast::x11_frame::FrameDemand>,
     ) -> anyhow::Result<Self> {
         let ptr = X11WindowStatePtr {
             state: Rc::new(RefCell::new(X11WindowState::new(
@@ -971,6 +973,7 @@ impl X11Window {
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
             xcb: xcb.clone(),
             x_window,
+            frame,
         };
 
         let state = ptr.state.borrow_mut();
@@ -1752,6 +1755,14 @@ impl PlatformWindow for X11Window {
         self.0.state.borrow().fullscreen
     }
 
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        Some(crate::fast::x11_frame::waker(&self.0.frame))
+    }
+
+    fn schedule_frame(&self) {
+        crate::fast::x11_frame::FrameDemand::request(&self.0.frame);
+    }
+
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.callbacks.borrow_mut().request_frame = Some(callback);
     }
@@ -1827,6 +1838,7 @@ impl PlatformWindow for X11Window {
             }
 
             inner.force_render_after_recovery = true;
+            crate::fast::x11_frame::FrameDemand::request(&self.0.frame);
             return;
         }
 
@@ -1834,6 +1846,7 @@ impl PlatformWindow for X11Window {
 
         if renderer.needs_redraw() {
             inner.force_render_after_recovery = true;
+            crate::fast::x11_frame::FrameDemand::request(&self.0.frame);
         }
     }
 

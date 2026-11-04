@@ -82,6 +82,7 @@ const GPUI_X11_SCALE_FACTOR_ENV: &str = "GPUI_X11_SCALE_FACTOR";
 pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
     refresh_state: Option<RefreshState>,
+    frame: Rc<crate::fast::x11_frame::FrameDemand>,
     last_visibility: Visibility,
     is_mapped: bool,
 }
@@ -113,6 +114,9 @@ impl Deref for WindowRef {
 
 enum RefreshState {
     Hidden {
+        refresh_rate: Duration,
+    },
+    Parked {
         refresh_rate: Duration,
     },
     PeriodicRefresh {
@@ -183,6 +187,7 @@ pub struct X11ClientState {
     /// A weak pointer to this state, for event-loop callbacks registered by its methods.
     this: X11ClientStatePtr,
     pub(crate) loop_handle: LoopHandle<'static, ()>,
+    frame_ping: calloop::ping::Ping,
     /// Long-lived sources this client registered on the loop, removed when its
     /// [`X11Connection`] drops.
     registrations: Vec<RegistrationToken>,
@@ -498,6 +503,8 @@ impl X11Connection {
         };
 
         let background_executor = common.borrow().background_executor.clone();
+        let (frame_ping, frame_ping_source) =
+            calloop::ping::make_ping().context("failed to create X11 frame ping")?;
         let connection = X11Connection(X11Client(Rc::new_cyclic(|this| {
             RefCell::new(X11ClientState {
                 this: X11ClientStatePtr(this.clone()),
@@ -511,6 +518,7 @@ impl X11Connection {
                 last_modifiers_changed_event: Modifiers::default(),
                 last_capslock_changed_event: Capslock::default(),
                 loop_handle: handle.clone(),
+                frame_ping,
                 common,
                 last_click: Instant::now(),
                 last_mouse_button: None,
@@ -557,6 +565,13 @@ impl X11Connection {
             })
         })));
         // From here on, `Drop` removes whatever was registered if a later step fails.
+        let frame_token = handle
+            .insert_source(frame_ping_source, {
+                let client = connection.0.clone();
+                move |_, _, _| client.0.borrow_mut().restart_parked_refresh_loops()
+            })
+            .map_err(|err| anyhow!("Failed to initialize X11 frame source: {err:?}"))?;
+        connection.0.0.borrow_mut().registrations.push(frame_token);
         connection.register_sources(&handle, background_executor)?;
         let xcb_connection = connection.0.0.borrow().xcb_connection.clone();
         xcb_flush(&xcb_connection);
@@ -1749,6 +1764,7 @@ impl X11Client {
             .resource_database
             .get_string("Xft.rgba", "Xft.Rgba")
             .is_some_and(|v| v.eq_ignore_ascii_case("bgr"));
+        let frame = crate::fast::x11_frame::FrameDemand::new(state.frame_ping.clone());
         let window = X11Window::new(
             handle,
             X11ClientStatePtr(Rc::downgrade(&self.0)),
@@ -1766,6 +1782,7 @@ impl X11Client {
             parent_window,
             supports_xinput_gestures,
             is_bgr,
+            frame.clone(),
         )?;
         check_reply(
             || "Failed to set XdndAware property",
@@ -1783,6 +1800,7 @@ impl X11Client {
         let window_ref = WindowRef {
             window: window.0.clone(),
             refresh_state: None,
+            frame,
             last_visibility: Visibility::UNOBSCURED,
             is_mapped: false,
         };
@@ -2012,8 +2030,13 @@ impl X11ClientState {
         match (is_visible, window_ref.refresh_state.take()) {
             (false, refresh_state @ Some(RefreshState::Hidden { .. }))
             | (false, refresh_state @ None)
-            | (true, refresh_state @ Some(RefreshState::PeriodicRefresh { .. })) => {
+            | (true, refresh_state @ Some(RefreshState::PeriodicRefresh { .. }))
+            | (true, refresh_state @ Some(RefreshState::Parked { .. })) => {
                 window_ref.refresh_state = refresh_state;
+            }
+            (false, Some(RefreshState::Parked { refresh_rate })) => {
+                crate::fast::x11_frame::FrameDemand::hidden(&window_ref.frame);
+                window_ref.refresh_state = Some(RefreshState::Hidden { refresh_rate });
             }
             (
                 false,
@@ -2023,6 +2046,7 @@ impl X11ClientState {
                 }),
             ) => {
                 self.loop_handle.remove(event_loop_token);
+                crate::fast::x11_frame::FrameDemand::hidden(&window_ref.frame);
                 window_ref.refresh_state = Some(RefreshState::Hidden { refresh_rate });
             }
             (true, Some(RefreshState::Hidden { refresh_rate })) => {
@@ -2084,6 +2108,39 @@ impl X11ClientState {
         }
     }
 
+    fn park_refresh_loop(&mut self, x_window: xproto::Window, refresh_rate: Duration) -> bool {
+        let Some(window) = self.windows.get_mut(&x_window) else {
+            return false;
+        };
+        if !crate::fast::x11_frame::FrameDemand::park_if_idle(&window.frame) {
+            return false;
+        }
+        window.refresh_state = Some(RefreshState::Parked { refresh_rate });
+        true
+    }
+
+    fn restart_parked_refresh_loops(&mut self) {
+        let restart = self
+            .windows
+            .iter()
+            .filter(|(_, window)| crate::fast::x11_frame::FrameDemand::needs_restart(&window.frame))
+            .filter_map(|(x_window, window)| match window.refresh_state {
+                Some(RefreshState::Parked { refresh_rate }) => Some((*x_window, refresh_rate)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (x_window, refresh_rate) in restart {
+            let event_loop_token = self.start_refresh_loop(x_window, refresh_rate);
+            if let Some(window) = self.windows.get_mut(&x_window) {
+                crate::fast::x11_frame::FrameDemand::resumed(&window.frame);
+                window.refresh_state = Some(RefreshState::PeriodicRefresh {
+                    refresh_rate,
+                    event_loop_token,
+                });
+            }
+        }
+    }
+
     #[must_use]
     fn start_refresh_loop(
         &self,
@@ -2101,6 +2158,7 @@ impl X11ClientState {
                         let mut state = client.0.borrow_mut();
                         let xcb_connection = state.xcb_connection.clone();
                         if let Some(window) = state.windows.get_mut(&x_window) {
+                            crate::fast::x11_frame::FrameDemand::begin_tick(&window.frame);
                             let window = window.window.clone();
                             drop(state);
                             window.refresh(RequestFrameOptions {
@@ -2113,6 +2171,14 @@ impl X11ClientState {
                         xcb_connection
                     };
                     client.process_x11_events(&xcb_connection).log_err();
+
+                    if client
+                        .0
+                        .borrow_mut()
+                        .park_refresh_loop(x_window, refresh_rate)
+                    {
+                        return calloop::timer::TimeoutAction::Drop;
+                    }
 
                     // Take into account that some frames have been skipped
                     let now = Instant::now();

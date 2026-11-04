@@ -22,6 +22,10 @@ name = "windows_idle_frames"
 required-features = ["fast"]
 
 [[example]]
+name = "x11_idle_frames"
+required-features = ["fast"]
+
+[[example]]
 name = "content_mask"
 required-features = ["fast"]
 
