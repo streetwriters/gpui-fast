@@ -81,8 +81,8 @@ const GPUI_X11_SCALE_FACTOR_ENV: &str = "GPUI_X11_SCALE_FACTOR";
 
 pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
-    refresh_state: Option<RefreshState>,
-    frame: Rc<crate::fast::x11_frame::FrameDemand>,
+    pub(crate) refresh_state: Option<RefreshState>,
+    pub(crate) frame: Rc<crate::fast::x11_frame::FrameDemand>,
     last_visibility: Visibility,
     is_mapped: bool,
 }
@@ -112,7 +112,7 @@ impl Deref for WindowRef {
     }
 }
 
-enum RefreshState {
+pub(crate) enum RefreshState {
     Hidden {
         refresh_rate: Duration,
     },
@@ -568,7 +568,9 @@ impl X11Connection {
         let frame_token = handle
             .insert_source(frame_ping_source, {
                 let client = connection.0.clone();
-                move |_, _, _| client.0.borrow_mut().restart_parked_refresh_loops()
+                move |_, _, _| {
+                    crate::fast::x11_frame::restart_parked_refresh_loops(&mut client.0.borrow_mut())
+                }
             })
             .map_err(|err| anyhow!("Failed to initialize X11 frame source: {err:?}"))?;
         connection.0.0.borrow_mut().registrations.push(frame_token);
@@ -2108,41 +2110,8 @@ impl X11ClientState {
         }
     }
 
-    fn park_refresh_loop(&mut self, x_window: xproto::Window, refresh_rate: Duration) -> bool {
-        let Some(window) = self.windows.get_mut(&x_window) else {
-            return false;
-        };
-        if !crate::fast::x11_frame::FrameDemand::park_if_idle(&window.frame) {
-            return false;
-        }
-        window.refresh_state = Some(RefreshState::Parked { refresh_rate });
-        true
-    }
-
-    fn restart_parked_refresh_loops(&mut self) {
-        let restart = self
-            .windows
-            .iter()
-            .filter(|(_, window)| crate::fast::x11_frame::FrameDemand::needs_restart(&window.frame))
-            .filter_map(|(x_window, window)| match window.refresh_state {
-                Some(RefreshState::Parked { refresh_rate }) => Some((*x_window, refresh_rate)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        for (x_window, refresh_rate) in restart {
-            let event_loop_token = self.start_refresh_loop(x_window, refresh_rate);
-            if let Some(window) = self.windows.get_mut(&x_window) {
-                crate::fast::x11_frame::FrameDemand::resumed(&window.frame);
-                window.refresh_state = Some(RefreshState::PeriodicRefresh {
-                    refresh_rate,
-                    event_loop_token,
-                });
-            }
-        }
-    }
-
     #[must_use]
-    fn start_refresh_loop(
+    pub(crate) fn start_refresh_loop(
         &self,
         x_window: xproto::Window,
         refresh_rate: Duration,
@@ -2172,11 +2141,11 @@ impl X11ClientState {
                     };
                     client.process_x11_events(&xcb_connection).log_err();
 
-                    if client
-                        .0
-                        .borrow_mut()
-                        .park_refresh_loop(x_window, refresh_rate)
-                    {
+                    if crate::fast::x11_frame::park_refresh_loop(
+                        &mut client.0.borrow_mut(),
+                        x_window,
+                        refresh_rate,
+                    ) {
                         return calloop::timer::TimeoutAction::Drop;
                     }
 
