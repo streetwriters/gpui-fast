@@ -10,6 +10,7 @@
 #[path = "../../../gpui/src/fast/buffer_shrink.rs"]
 pub(crate) mod buffer_shrink;
 pub(crate) mod class_names;
+pub(crate) mod color_glyphs;
 pub(crate) mod composition;
 pub(crate) mod device_recovery;
 pub(crate) mod device_wake;
