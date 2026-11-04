@@ -38,12 +38,17 @@ impl Shrink {
 
 /// A buffer that is uploaded to any number of times in a frame, as one that
 /// holds a draw's batches is. Only the frame's biggest upload counts.
+#[allow(
+    dead_code,
+    reason = "only the DirectX renderer judges buffers uploaded to many times a frame"
+)]
 pub(crate) struct Use {
     shrink: Shrink,
     peak: usize,
     initial: usize,
 }
 
+#[allow(dead_code)]
 impl Use {
     pub(crate) fn new(initial: usize) -> Self {
         Self {
