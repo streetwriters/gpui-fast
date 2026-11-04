@@ -959,7 +959,13 @@ impl DirectWriteState {
         Ok(bitmap_data)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "crate::fast::color_glyphs draws colour glyphs; this is its test oracle"
+        )
+    )]
     pub(crate) fn rasterize_color(
         &self,
         components: &DirectWriteComponents,
