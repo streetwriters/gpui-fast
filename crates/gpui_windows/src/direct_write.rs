@@ -37,8 +37,8 @@ pub(crate) struct FontInfo {
 }
 
 pub(crate) struct DirectWriteTextSystem {
-    components: DirectWriteComponents,
-    state: RwLock<DirectWriteState>,
+    pub(crate) components: DirectWriteComponents,
+    pub(crate) state: RwLock<DirectWriteState>,
 }
 
 pub(crate) struct DirectWriteComponents {
@@ -873,7 +873,12 @@ impl DirectWriteState {
         }
 
         let bitmap_data = if params.is_emoji {
-            if let Ok(color) = self.rasterize_color(components, params, glyph_bounds) {
+            if let Ok(color) = crate::fast::color_glyphs::rasterize(
+                components,
+                &self.fonts[params.font_id.0],
+                params,
+                glyph_bounds,
+            ) {
                 color
             } else {
                 let monochrome = self.rasterize_monochrome(components, params, glyph_bounds)?;
@@ -954,7 +959,8 @@ impl DirectWriteState {
         Ok(bitmap_data)
     }
 
-    fn rasterize_color(
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn rasterize_color(
         &self,
         components: &DirectWriteComponents,
         params: &RenderGlyphParams,
