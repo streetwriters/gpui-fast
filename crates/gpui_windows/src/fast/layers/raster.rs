@@ -34,6 +34,10 @@ pub(crate) fn rasterize_tiles(renderer: &mut DirectXRenderer, scene: &Scene) -> 
     {
         return Ok(());
     }
+    renderer
+        .fast_frame
+        .layers
+        .fit_budget_to_window(renderer.width as u32, renderer.height as u32);
     let devices = renderer.devices.as_ref().context("devices missing")?;
     let target = Target {
         device: &devices.device,

@@ -296,6 +296,11 @@ impl TileCache {
         }
     }
 
+    /// Sizes the budget to a window of `width` by `height` device pixels.
+    pub(crate) fn fit_budget_to_window(&mut self, width: u32, height: u32) {
+        self.budget_bytes = crate::fast::layer_budget::for_window(width, height);
+    }
+
     /// Releases tiles, least recently used first, until the tiles and the
     /// pool fit in `budget_bytes`. Tiles this frame composites or
     /// rasterizes are kept even when they alone exceed the budget.

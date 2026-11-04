@@ -44,6 +44,10 @@ const TILE_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
 pub(crate) fn rasterize_tiles(renderer: &mut MetalRenderer, scene: &Scene) {
     crate::fast::rounded_clip::raster_nested_tiles(renderer, scene);
     let cache = &mut renderer.fast_layers;
+    if let Some(layer) = &renderer.layer {
+        let size = layer.drawableSize();
+        cache.fit_budget_to_window(size.width as u32, size.height as u32);
+    }
     if cache.take_failure() {
         cache.clear();
     }

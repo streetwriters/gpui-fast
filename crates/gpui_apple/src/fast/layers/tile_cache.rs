@@ -107,6 +107,21 @@ impl TileCache {
             .map(|texture| &*texture.texture)
     }
 
+    /// The texture memory the cache keeps, tiles and pool.
+    #[cfg(test)]
+    pub(crate) fn held_bytes(&self) -> u64 {
+        self.tiles
+            .values()
+            .filter(|tile| tile.texture.is_some())
+            .map(|tile| tile_bytes(tile.tile_size))
+            .sum::<u64>()
+            + self
+                .pool
+                .iter()
+                .map(|texture| tile_bytes(texture.size))
+                .sum::<u64>()
+    }
+
     #[cfg(test)]
     pub(crate) fn holds(&self, layer: LayerKey, tile: TileCoord) -> bool {
         self.tiles
@@ -299,6 +314,11 @@ impl TileCache {
                 self.pool.push(texture);
             }
         }
+    }
+
+    /// Sizes the budget to a window of `width` by `height` device pixels.
+    pub(crate) fn fit_budget_to_window(&mut self, width: u32, height: u32) {
+        self.budget_bytes = crate::fast::layer_budget::for_window(width, height);
     }
 
     /// Releases tiles, least recently used first, until the tiles and the

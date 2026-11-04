@@ -1136,6 +1136,71 @@ fn a_blurred_group_inside_a_rounded_clip_matches_the_group_alone(cx: &mut gpui::
     );
 }
 
+/// `cargo test -p gpui_apple tile_memory_after_a_long_scroll --release -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement, not a check"]
+fn tile_memory_after_a_long_scroll() {
+    use objc2_metal::MTLDevice as _;
+    for (width, height) in [(1400, 1000), (2800, 1800), (5600, 3200)] {
+        for scaled in [false, true] {
+            let Some(mut harness) = Harness::new() else {
+                return;
+            };
+            if scaled {
+                harness
+                    .renderer
+                    .fast_layers
+                    .fit_budget_to_window(width as u32, height as u32);
+            }
+            let window = Window {
+                size: device_size(width, height),
+                viewport: sp(0., 0., width as f32, height as f32),
+            };
+            let before = harness.renderer.device.currentAllocatedSize();
+            let key = LayerKey(9);
+            let columns = (width as u32).div_ceil(TILE) as i32 + 1;
+            let rows = (height as u32).div_ceil(TILE) as i32 + 1;
+            let mut times = Vec::new();
+            // Down 40 screens by a quarter of a screen, then back up 10.
+            let step = height as f32 / 4.;
+            let offsets: Vec<f32> = (0..160)
+                .map(|i| i as f32 * step)
+                .chain((0..40).map(|i| (160 - i) as f32 * step))
+                .collect();
+            for offset in offsets {
+                let first_row = (offset / TILE as f32).floor() as i32;
+                let tiles: Vec<TileCoord> = (0..columns)
+                    .flat_map(|x| (first_row..first_row + rows).map(move |y| coord(x, y)))
+                    .collect();
+                let dirty = tiles.clone();
+                let layer = layer_frame(key, 1, Scene::default(), &dirty);
+                let translation = (0., -offset);
+                let scene = composited(&window, layer, &tiles, translation, false);
+                let start = std::time::Instant::now();
+                harness
+                    .renderer
+                    .render_scene(&scene, window.size)
+                    .expect("scene rendered");
+                times.push(start.elapsed().as_secs_f64() * 1e3);
+            }
+            let held = harness.renderer.device.currentAllocatedSize() - before;
+            times.sort_by(f64::total_cmp);
+            println!(
+                "{width}x{height} {}: tiles held {:.1} MB (cache), device allocation +{:.1} MB, frame median {:.2} ms, p95 {:.2} ms",
+                if scaled {
+                    "scaled budget"
+                } else {
+                    "64 MB budget"
+                },
+                harness.cache().held_bytes() as f64 / 1048576.,
+                held as f64 / 1048576.,
+                times[times.len() / 2],
+                times[times.len() * 95 / 100],
+            );
+        }
+    }
+}
+
 /// Draws scenes with a headless renderer, as a window's frames are drawn.
 struct Harness {
     renderer: MetalRenderer,
