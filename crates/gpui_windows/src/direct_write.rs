@@ -76,7 +76,7 @@ pub(crate) struct DirectWriteState {
     gpu_state: Option<GPUState>,
     pub(crate) system_font_collection: IDWriteFontCollection1,
     pub(crate) custom_font_collection: IDWriteFontCollection1,
-    fonts: Vec<FontInfo>,
+    pub(crate) fonts: Vec<FontInfo>,
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
     layout_line_scratch: Vec<u16>,

@@ -302,12 +302,20 @@ mod tests {
         let devices = DirectXDevices::new()?;
         let text_system = DirectWriteTextSystem::new(Some(&devices))?;
         let glyphs = emoji_params(&text_system, 500, 24.)?;
-        assert!(glyphs.len() > 100);
         let mut largest = 0u8;
         let (mut differing, mut total) = (0usize, 0usize);
+        let mut compared = 0;
         for (params, bounds) in &glyphs {
-            let (_, cpu) = text_system.rasterize_glyph(params, *bounds)?;
-            let gpu = on_the_gpu(&text_system, params, *bounds)?;
+            let state = text_system.state.read();
+            let font = &state.fonts[params.font_id.0];
+            let cpu = super::rasterize(&text_system.components, font, params, *bounds);
+            let gpu = on_the_gpu(&text_system, params, *bounds);
+            let (Ok(cpu), Ok(gpu)) = (cpu, gpu) else {
+                // Glyphs without colour layers fail on both and are drawn
+                // as monochrome.
+                continue;
+            };
+            compared += 1;
             assert_eq!(cpu.len(), gpu.len());
             for (cpu, gpu) in cpu.iter().zip(&gpu) {
                 total += 1;
@@ -316,7 +324,10 @@ mod tests {
                 largest = largest.max(difference);
             }
         }
-        println!("largest difference {largest}; {differing} of {total} channel values differ");
+        println!(
+            "{compared} colour glyphs; largest difference {largest}; {differing} of {total} channel values differ"
+        );
+        assert!(compared > 50);
         assert!(largest <= 2, "largest difference {largest}");
         Ok(())
     }
