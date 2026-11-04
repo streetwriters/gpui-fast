@@ -424,7 +424,7 @@ fn rasterize_paths(
             corner_radii: path.content_mask.corner_radii,
         }));
     }
-    crate::fast::path_textures::shift_vertices(vertices, targets.region);
+    crate::fast::path_textures::move_vertices(vertices, targets.region);
     pipeline.update_buffer(device, context, vertices)?;
     draw.state
         .set_pipeline(context, pipeline, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -475,7 +475,7 @@ fn composite_paths(
             region: Default::default(),
         });
     }
-    crate::fast::path_textures::set_regions(sprites, targets.region);
+    crate::fast::path_textures::set_sprite_regions(sprites, targets.region);
 
     let context = draw.device_context;
     pipeline.update_buffer(device, context, sprites)?;

@@ -21,7 +21,7 @@ use crate::directx_renderer::{
 };
 
 /// The size, in device pixels, of the textures while no path is drawn.
-pub(crate) const PLACEHOLDER: u32 = 1;
+pub(crate) const PLACEHOLDER: (u32, u32) = (1, 1);
 
 /// The granularity, in device pixels, of the region's origin and size.
 const BUCKET: i32 = 256;
@@ -162,8 +162,8 @@ fn bucketed_placeholder() -> Bounds<DevicePixels> {
     Bounds {
         origin: point(DevicePixels(0), DevicePixels(0)),
         size: size(
-            DevicePixels(PLACEHOLDER as i32),
-            DevicePixels(PLACEHOLDER as i32),
+            DevicePixels(PLACEHOLDER.0 as i32),
+            DevicePixels(PLACEHOLDER.1 as i32),
         ),
     }
 }
@@ -183,8 +183,30 @@ fn replace(renderer: &mut DirectXRenderer, region: Bounds<DevicePixels>) -> Resu
     Ok(())
 }
 
+/// The part of the window the path textures cover.
+fn window_region(renderer: &DirectXRenderer) -> Option<Bounds<DevicePixels>> {
+    let resources = renderer.resources.as_ref()?;
+    Some(
+        renderer
+            .fast_frame
+            .path_textures
+            .region_of(&resources.path_intermediate_texture),
+    )
+}
+
+/// `move_vertices` for upstream's own path drawing, which draws into the
+/// window's textures.
+pub(crate) fn shift_vertices(vertices: &mut [PathRasterizationSprite], renderer: &DirectXRenderer) {
+    move_vertices(vertices, window_region(renderer));
+}
+
+/// `set_regions` for upstream's own path drawing.
+pub(crate) fn set_regions(sprites: &mut [PathSprite], renderer: &DirectXRenderer) {
+    set_sprite_regions(sprites, window_region(renderer));
+}
+
 /// Moves a pass's path vertices into `region`.
-pub(crate) fn shift_vertices(
+pub(crate) fn move_vertices(
     vertices: &mut [PathRasterizationSprite],
     region: Option<Bounds<DevicePixels>>,
 ) {
@@ -203,7 +225,7 @@ pub(crate) fn shift_vertices(
 }
 
 /// Tells path sprites where their texture is.
-pub(crate) fn set_regions(sprites: &mut [PathSprite], region: Option<Bounds<DevicePixels>>) {
+pub(crate) fn set_sprite_regions(sprites: &mut [PathSprite], region: Option<Bounds<DevicePixels>>) {
     let Some(region) = region else {
         return;
     };

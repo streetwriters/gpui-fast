@@ -693,14 +693,7 @@ impl DirectXRenderer {
             }));
         }
 
-        crate::fast::path_textures::shift_vertices(
-            &mut vertices,
-            Some(
-                self.fast_frame
-                    .path_textures
-                    .region_of(&resources.path_intermediate_texture),
-            ),
-        );
+        crate::fast::path_textures::shift_vertices(&mut vertices, self);
         self.pipelines.path_rasterization_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
@@ -765,14 +758,7 @@ impl DirectXRenderer {
 
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
-        crate::fast::path_textures::set_regions(
-            &mut sprites,
-            Some(
-                self.fast_frame
-                    .path_textures
-                    .region_of(&resources.path_intermediate_texture),
-            ),
-        );
+        crate::fast::path_textures::set_regions(&mut sprites, self);
         self.pipelines.path_sprite_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
@@ -1473,17 +1459,11 @@ fn create_resources(
 )> {
     let (render_target, render_target_view) =
         create_render_target_and_its_view(swap_chain, &devices.device)?;
-    let (path_intermediate_texture, path_intermediate_srv) = create_path_intermediate_texture(
-        &devices.device,
-        crate::fast::path_textures::PLACEHOLDER,
-        crate::fast::path_textures::PLACEHOLDER,
-    )?;
+    let (path_width, path_height) = crate::fast::path_textures::PLACEHOLDER;
+    let (path_intermediate_texture, path_intermediate_srv) =
+        create_path_intermediate_texture(&devices.device, path_width, path_height)?;
     let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
-        create_path_intermediate_msaa_texture_and_view(
-            &devices.device,
-            crate::fast::path_textures::PLACEHOLDER,
-            crate::fast::path_textures::PLACEHOLDER,
-        )?;
+        create_path_intermediate_msaa_texture_and_view(&devices.device, path_width, path_height)?;
     let viewport = D3D11_VIEWPORT {
         TopLeftX: 0.0,
         TopLeftY: 0.0,
