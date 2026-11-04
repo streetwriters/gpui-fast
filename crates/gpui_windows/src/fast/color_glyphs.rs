@@ -83,18 +83,14 @@ pub(crate) fn composite(
                 }
                 let alpha =
                     corrected_alpha(sample as f32 / 255.0, color, contrast, gamma) * layer.color.a;
-                let source = [
-                    to_unorm(color[2] * alpha),
-                    to_unorm(color[1] * alpha),
-                    to_unorm(color[0] * alpha),
-                    to_unorm(alpha),
-                ];
-                let inverse = 1.0 - source[3] as f32 / 255.0;
+                // The blender takes the shader's output as it is and rounds
+                // only what it writes.
+                let source = [color[2] * alpha, color[1] * alpha, color[0] * alpha, alpha];
+                let inverse = 1.0 - saturate(alpha);
                 let at = (row as usize * width + column as usize) * 4;
                 for channel in 0..4 {
                     let behind = bitmap[at + channel] as f32 / 255.0;
-                    bitmap[at + channel] =
-                        to_unorm(source[channel] as f32 / 255.0 + behind * inverse);
+                    bitmap[at + channel] = to_unorm(saturate(source[channel]) + behind * inverse);
                 }
             }
         }
@@ -328,7 +324,11 @@ mod tests {
             "{compared} colour glyphs; largest difference {largest}; {differing} of {total} channel values differ"
         );
         assert!(compared > 50);
-        assert!(largest <= 2, "largest difference {largest}");
+        assert!(largest <= 1, "largest difference {largest}");
+        assert!(
+            differing * 200 < total,
+            "{differing} of {total} channel values differ"
+        );
         Ok(())
     }
 
