@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, PaintSurface, Path,
-    Point, PrimitiveBatch, ScaledPixels, Scene, Size, size,
+    Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -320,7 +320,7 @@ impl MetalRenderer {
         // https://developer.apple.com/documentation/metal/mtlgpufamily
         let is_apple_gpu = device.supportsFamily(MTLGPUFamily::Apple1);
 
-        let crate::fast::shared_device::Shared {
+        let crate::fast::shared_device::Gpu {
             unit_vertices,
             paths_rasterization_pipeline_state,
             path_sprites_pipeline_state,
@@ -330,11 +330,133 @@ impl MetalRenderer {
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
-            command_queue,
-            sprite_atlas,
-        } = crate::fast::shared_device::get(&device)?;
+        } = crate::fast::shared_device::gpu(&device, || {
+            #[cfg(feature = "runtime_shaders")]
+            let library = device
+                .newLibraryWithSource_options_error(
+                    &NSString::from_str(SHADERS_SOURCE_FILE),
+                    Some(&objc2_metal::MTLCompileOptions::new()),
+                )
+                .context("building Metal library")?;
+            #[cfg(not(feature = "runtime_shaders"))]
+            let library = device
+                .newLibraryWithData_error(&dispatch2::DispatchData::from_static_bytes(
+                    SHADERS_METALLIB,
+                ))
+                .context("loading Metal library")?;
+
+            fn to_float2_bits(point: PointF) -> u64 {
+                let mut output = point.y.to_bits() as u64;
+                output <<= 32;
+                output |= point.x.to_bits() as u64;
+                output
+            }
+
+            let unit_vertices = [
+                to_float2_bits(point(0., 0.)),
+                to_float2_bits(point(1., 0.)),
+                to_float2_bits(point(0., 1.)),
+                to_float2_bits(point(0., 1.)),
+                to_float2_bits(point(1., 0.)),
+                to_float2_bits(point(1., 1.)),
+            ];
+            // SAFETY: Metal copies the live array using its exact byte length.
+            let unit_vertices = unsafe {
+                device.newBufferWithBytes_length_options(
+                    ptr::NonNull::from(&unit_vertices).cast(),
+                    mem::size_of_val(&unit_vertices),
+                    if is_unified_memory {
+                        MTLResourceOptions::StorageModeShared
+                            | MTLResourceOptions::CPUCacheModeWriteCombined
+                    } else {
+                        MTLResourceOptions::StorageModeManaged
+                    },
+                )
+            }
+            .context("allocating unit vertex buffer")?;
+
+            let paths_rasterization_pipeline_state = build_path_rasterization_pipeline_state(
+                &device,
+                &library,
+                "paths_rasterization",
+                "path_rasterization_vertex",
+                "path_rasterization_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+                PATH_SAMPLE_COUNT,
+            )?;
+            let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
+                &device,
+                &library,
+                "path_sprites",
+                "path_sprite_vertex",
+                "path_sprite_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+            let shadows_pipeline_state = build_pipeline_state(
+                &device,
+                &library,
+                "shadows",
+                "shadow_vertex",
+                "shadow_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+            let quads_pipeline_state = build_pipeline_state(
+                &device,
+                &library,
+                "quads",
+                "quad_vertex",
+                "quad_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+            let underlines_pipeline_state = build_pipeline_state(
+                &device,
+                &library,
+                "underlines",
+                "underline_vertex",
+                "underline_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+            let monochrome_sprites_pipeline_state = build_pipeline_state(
+                &device,
+                &library,
+                "monochrome_sprites",
+                "monochrome_sprite_vertex",
+                "monochrome_sprite_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+            let polychrome_sprites_pipeline_state = build_pipeline_state(
+                &device,
+                &library,
+                "polychrome_sprites",
+                "polychrome_sprite_vertex",
+                "polychrome_sprite_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+            let surfaces_pipeline_state = build_pipeline_state(
+                &device,
+                &library,
+                "surfaces",
+                "surface_vertex",
+                "surface_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+            )?;
+
+            Ok(crate::fast::shared_device::Gpu {
+                unit_vertices,
+                paths_rasterization_pipeline_state,
+                path_sprites_pipeline_state,
+                shadows_pipeline_state,
+                quads_pipeline_state,
+                underlines_pipeline_state,
+                monochrome_sprites_pipeline_state,
+                polychrome_sprites_pipeline_state,
+                surfaces_pipeline_state,
+            })
+        })?;
         let dummy_backdrop = new_dummy_texture(&device)?;
+        let command_queue = crate::fast::dynamic_textures::command_queue(&device)?;
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
+        let sprite_atlas = crate::fast::shared_device::atlas(&device);
         crate::fast::dynamic_textures::init(device.clone(), supports_shared_storage);
         let mut cache = ptr::null_mut();
         // SAFETY: The output pointer is writable and both optional attribute dictionaries are absent.
@@ -2136,7 +2258,6 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::point;
     use objc2_core_foundation::{CFDictionary, CFType};
     use objc2_core_video::{
         CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane,

@@ -1122,6 +1122,31 @@ mod tests {
     }
 
     #[test]
+    fn a_variant_one_window_still_paints_is_not_released_when_another_stops() {
+        let (window_a, window_b) = (Some(EntityId::from(1u64)), Some(EntityId::from(2u64)));
+        let start = Instant::now();
+        let mut registry = Variants::default();
+        let (id, src) = source();
+        let wanted = device(1000, 1000);
+        registry.select(id, &src, wanted, window_a, start);
+        ready(&mut registry, (id, wanted), 1000, start);
+        // Both windows paint it; then A stops. B keeps painting it, so the
+        // variant is not idle however long A has been away.
+        registry.select(id, &src, wanted, window_b, start);
+        let mut now = start;
+        for _ in 0..10 {
+            now += IDLE / 2;
+            assert!(registry.select(id, &src, wanted, window_b, now).is_some());
+            assert!(registry.evict(now).is_empty());
+        }
+        // Once B stops too, it goes after IDLE.
+        assert_eq!(
+            registry.evict(now + IDLE + Duration::from_millis(1)).len(),
+            1
+        );
+    }
+
+    #[test]
     fn a_failed_decode_is_reported() {
         let (id, src) = source();
         let view = Some(EntityId::from(1u64));
