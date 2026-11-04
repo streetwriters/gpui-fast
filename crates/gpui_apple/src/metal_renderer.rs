@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, PaintSurface, Path,
-    Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    Point, PrimitiveBatch, ScaledPixels, Scene, Size, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -40,12 +40,14 @@ use std::{
 pub(crate) type PointF = gpui::Point<f32>;
 
 #[cfg(not(feature = "runtime_shaders"))]
-const SHADERS_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
+pub(crate) const SHADERS_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
 #[cfg(feature = "runtime_shaders")]
-const SHADERS_SOURCE_FILE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"));
+pub(crate) const SHADERS_SOURCE_FILE: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"));
 // Use 4x MSAA, all devices support it.
 // https://developer.apple.com/documentation/metal/mtldevice/1433355-supportstexturesamplecount
-const PATH_SAMPLE_COUNT: u32 = 4;
+pub(crate) const PATH_SAMPLE_COUNT: u32 = 4;
 /// Metal requires the offset a buffer is bound at to be 256-byte aligned.
 const INSTANCE_BUFFER_ALIGNMENT: usize = 256;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
@@ -307,27 +309,6 @@ impl MetalRenderer {
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     ) -> Result<Self> {
-        #[cfg(feature = "runtime_shaders")]
-        let library = device
-            .newLibraryWithSource_options_error(
-                &NSString::from_str(SHADERS_SOURCE_FILE),
-                Some(&objc2_metal::MTLCompileOptions::new()),
-            )
-            .context("building Metal library")?;
-        #[cfg(not(feature = "runtime_shaders"))]
-        let library = device
-            .newLibraryWithData_error(&dispatch2::DispatchData::from_static_bytes(
-                SHADERS_METALLIB,
-            ))
-            .context("loading Metal library")?;
-
-        fn to_float2_bits(point: PointF) -> u64 {
-            let mut output = point.y.to_bits() as u64;
-            output <<= 32;
-            output |= point.x.to_bits() as u64;
-            output
-        }
-
         // Shared memory can be used only if CPU and GPU share the same memory space.
         // https://developer.apple.com/documentation/metal/setting-resource-storage-modes
         // iOS does not support managed resources. Its simulator may report a
@@ -339,103 +320,21 @@ impl MetalRenderer {
         // https://developer.apple.com/documentation/metal/mtlgpufamily
         let is_apple_gpu = device.supportsFamily(MTLGPUFamily::Apple1);
 
-        let unit_vertices = [
-            to_float2_bits(point(0., 0.)),
-            to_float2_bits(point(1., 0.)),
-            to_float2_bits(point(0., 1.)),
-            to_float2_bits(point(0., 1.)),
-            to_float2_bits(point(1., 0.)),
-            to_float2_bits(point(1., 1.)),
-        ];
-        // SAFETY: Metal copies the live array using its exact byte length.
-        let unit_vertices = unsafe {
-            device.newBufferWithBytes_length_options(
-                ptr::NonNull::from(&unit_vertices).cast(),
-                mem::size_of_val(&unit_vertices),
-                if is_unified_memory {
-                    MTLResourceOptions::StorageModeShared
-                        | MTLResourceOptions::CPUCacheModeWriteCombined
-                } else {
-                    MTLResourceOptions::StorageModeManaged
-                },
-            )
-        }
-        .context("allocating unit vertex buffer")?;
-
-        let paths_rasterization_pipeline_state = build_path_rasterization_pipeline_state(
-            &device,
-            &library,
-            "paths_rasterization",
-            "path_rasterization_vertex",
-            "path_rasterization_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-            PATH_SAMPLE_COUNT,
-        )?;
-        let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
-            &device,
-            &library,
-            "path_sprites",
-            "path_sprite_vertex",
-            "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-        let shadows_pipeline_state = build_pipeline_state(
-            &device,
-            &library,
-            "shadows",
-            "shadow_vertex",
-            "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-        let quads_pipeline_state = build_pipeline_state(
-            &device,
-            &library,
-            "quads",
-            "quad_vertex",
-            "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-        let underlines_pipeline_state = build_pipeline_state(
-            &device,
-            &library,
-            "underlines",
-            "underline_vertex",
-            "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-        let monochrome_sprites_pipeline_state = build_pipeline_state(
-            &device,
-            &library,
-            "monochrome_sprites",
-            "monochrome_sprite_vertex",
-            "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-        let polychrome_sprites_pipeline_state = build_pipeline_state(
-            &device,
-            &library,
-            "polychrome_sprites",
-            "polychrome_sprite_vertex",
-            "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-        let surfaces_pipeline_state = build_pipeline_state(
-            &device,
-            &library,
-            "surfaces",
-            "surface_vertex",
-            "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
-        )?;
-
+        let crate::fast::shared_device::Shared {
+            unit_vertices,
+            paths_rasterization_pipeline_state,
+            path_sprites_pipeline_state,
+            shadows_pipeline_state,
+            quads_pipeline_state,
+            underlines_pipeline_state,
+            monochrome_sprites_pipeline_state,
+            polychrome_sprites_pipeline_state,
+            surfaces_pipeline_state,
+            command_queue,
+            sprite_atlas,
+        } = crate::fast::shared_device::get(&device)?;
         let dummy_backdrop = new_dummy_texture(&device)?;
-        let command_queue = crate::fast::dynamic_textures::command_queue(&device)?;
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
-        #[expect(
-            clippy::arc_with_non_send_sync,
-            reason = "PlatformWindow::sprite_atlas requires Arc, not Send or Sync"
-        )]
-        let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), supports_shared_storage));
         crate::fast::dynamic_textures::init(device.clone(), supports_shared_storage);
         let mut cache = ptr::null_mut();
         // SAFETY: The output pointer is writable and both optional attribute dictionaries are absent.
@@ -1848,7 +1747,7 @@ fn new_dummy_texture(
         .context("allocating placeholder backdrop texture")
 }
 
-fn build_pipeline_state(
+pub(crate) fn build_pipeline_state(
     device: &ProtocolObject<dyn MTLDevice>,
     library: &ProtocolObject<dyn MTLLibrary>,
     label: &str,
@@ -1883,7 +1782,7 @@ fn build_pipeline_state(
         .with_context(|| format!("creating {label} render pipeline"))
 }
 
-fn build_path_sprite_pipeline_state(
+pub(crate) fn build_path_sprite_pipeline_state(
     device: &ProtocolObject<dyn MTLDevice>,
     library: &ProtocolObject<dyn MTLLibrary>,
     label: &str,
@@ -1918,7 +1817,7 @@ fn build_path_sprite_pipeline_state(
         .with_context(|| format!("creating {label} render pipeline"))
 }
 
-fn build_path_rasterization_pipeline_state(
+pub(crate) fn build_path_rasterization_pipeline_state(
     device: &ProtocolObject<dyn MTLDevice>,
     library: &ProtocolObject<dyn MTLLibrary>,
     label: &str,
@@ -2237,6 +2136,7 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::point;
     use objc2_core_foundation::{CFDictionary, CFType};
     use objc2_core_video::{
         CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane,

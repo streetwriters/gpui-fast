@@ -18,5 +18,6 @@ pub(crate) mod layers;
 pub(crate) mod path_textures;
 pub(crate) mod paths;
 pub(crate) mod rounded_clip;
+pub(crate) mod shared_device;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;

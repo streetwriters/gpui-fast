@@ -183,7 +183,7 @@ impl DirectXRenderer {
 
         let devices = DirectXRendererDevices::new(directx_devices, disable_direct_composition)
             .context("Creating DirectX devices")?;
-        let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
+        let atlas = crate::fast::shared_device::atlas(&devices);
 
         let resources = DirectXResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
             .context("Creating DirectX resources")?;
@@ -339,8 +339,7 @@ impl DirectXRenderer {
             Some(composition)
         };
 
-        self.atlas
-            .handle_device_lost(&devices.device, &devices.device_context);
+        crate::fast::shared_device::recover_atlas(&self.atlas, &devices);
 
         unsafe {
             devices
@@ -1193,14 +1192,16 @@ impl<T> PipelineState<T> {
         buffer_size: usize,
         blend_state: ID3D11BlendState,
     ) -> Result<Self> {
-        let vertex = {
-            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
-            create_vertex_shader(device, raw_shader.as_bytes())?
-        };
-        let fragment = {
-            let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
-            create_fragment_shader(device, raw_shader.as_bytes())?
-        };
+        let (vertex, fragment) =
+            crate::fast::shared_device::shaders(device, shader_module, || {
+                let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
+                let vertex = create_vertex_shader(device, raw_shader.as_bytes())?;
+                let raw_shader = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
+                Ok((
+                    vertex,
+                    create_fragment_shader(device, raw_shader.as_bytes())?,
+                ))
+            })?;
         let buffer = create_buffer(device, std::mem::size_of::<T>(), buffer_size)?;
         let view = create_buffer_view(device, &buffer)?;
 
