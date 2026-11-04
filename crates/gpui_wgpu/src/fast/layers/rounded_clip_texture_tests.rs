@@ -26,6 +26,29 @@ fn texture_renderer() -> crate::wgpu_renderer::WgpuHeadlessRenderer {
         1024,
         device.limits().max_texture_dimension_2d,
     );
+    // The instance-texture globals layout has no transform table binding.
+    let globals_size = std::mem::size_of::<crate::wgpu_renderer::GlobalParams>() as u64;
+    let gamma_size = std::mem::size_of::<crate::wgpu_renderer::GammaParams>() as u64;
+    let globals_group = |label: &str, offset: u64| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &layouts.globals,
+            entries: &crate::wgpu_renderer::globals_entries(
+                (&core.resources.globals_buffer, offset, globals_size),
+                (
+                    &core.resources.globals_buffer,
+                    core.gamma_offset,
+                    gamma_size,
+                ),
+                None,
+            ),
+        })
+    };
+    let path_globals = globals_group("path_globals_bind_group", core.path_globals_offset);
+    let globals = globals_group("globals_bind_group", 0);
+    core.resources.globals_bind_group = globals;
+    core.resources.transform_buffer = None;
+    core.resources.path_globals_bind_group = path_globals;
     core.resources.bind_group_layouts = layouts;
     core.resources.pipelines = pipelines;
     core.resources.instance_data = instances;

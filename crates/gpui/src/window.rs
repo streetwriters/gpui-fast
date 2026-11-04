@@ -19,12 +19,12 @@ use crate::{
     PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
     RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
     SMOOTH_SVG_SCALE_FACTOR, ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle,
-    Style, SubpixelSprite, Subscription, SystemWindowTab, SystemWindowTabController,
-    TabStopMap, Task, TextInputConfiguration, TextInputStateChange,
-    TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
-    Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControls, WindowDecorations, WindowInsets, WindowOptions, WindowParams, WindowTextSystem,
-    WindowVisibility, point, prelude::*, px, rems, size, transparent_black,
+    Style, SubpixelSprite, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap,
+    Task, TextInputConfiguration, TextInputStateChange, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowInsets, WindowOptions, WindowParams, WindowTextSystem, WindowVisibility, point,
+    prelude::*, px, rems, size, transparent_black,
 };
 
 use crate::gestures::{GestureTuning, RecognizedTouchGesture, TouchGestureRecognizer};

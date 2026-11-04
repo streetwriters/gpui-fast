@@ -6,8 +6,8 @@
 use std::cell::Cell;
 
 use anyhow::Result;
-use objc2_metal::MTLCommandBuffer;
 use gpui::{DevicePixels, GROUP_CONTENT, Scene, Size};
+use objc2_metal::MTLCommandBuffer;
 
 use crate::metal_renderer::MetalRenderer;
 

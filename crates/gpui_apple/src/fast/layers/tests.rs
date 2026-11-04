@@ -14,8 +14,8 @@ use gpui::{
     AtlasKey, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, Edges, FontId, GlyphId, Hsla,
     ImageId, LayerFrame, LayerKey, MonochromeSprite, Path, PlatformAtlas, PolychromeSprite, Quad,
     RenderGlyphParams, RenderImageParams, Rgba, ScaledPixels, Scene, SceneLayers, Shadow, Size,
-    TileCoord, Underline, decode_layer_tile, layer_tile_id,
-    layer_tile_texture_id, linear_color_stop, linear_gradient, point, px, rgba, size,
+    TileCoord, Underline, decode_layer_tile, layer_tile_id, layer_tile_texture_id,
+    linear_color_stop, linear_gradient, point, px, rgba, size,
 };
 use objc2_metal::{MTLCommandBuffer as _, MTLDevice as _};
 use parking_lot::Mutex;

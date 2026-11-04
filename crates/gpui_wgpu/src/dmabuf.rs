@@ -477,6 +477,8 @@ pub fn import(
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
+            wgpu::TextureUses::UNINITIALIZED,
+            true,
         )
     };
 

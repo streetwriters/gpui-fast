@@ -18,6 +18,8 @@ use objc2_core_video::{
 use objc2_foundation::{NSRange, NSString};
 #[cfg(target_os = "macos")]
 use objc2_metal::MTLCopyAllDevices;
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+use objc2_metal::MTLRegion;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable,
@@ -27,12 +29,12 @@ use objc2_metal::{
     MTLTextureDescriptor, MTLTextureType, MTLTextureUsage, MTLViewport,
 };
 use objc2_metal::{MTLBlitCommandEncoder, MTLOrigin, MTLSize};
-#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
-use objc2_metal::MTLRegion;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use parking_lot::Mutex;
 
-use std::{cell::Cell, collections::HashMap, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc};
+use std::{
+    cell::Cell, collections::HashMap, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc,
+};
 
 // Exported to metal
 pub(crate) type PointF = gpui::Point<f32>;
@@ -140,13 +142,15 @@ pub struct MetalRenderer {
     /// For headless rendering, tracks whether output should be opaque
     pub(crate) opaque: bool,
     pub(crate) command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    pub(crate) paths_rasterization_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    pub(crate) paths_rasterization_pipeline_state:
+        Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     path_sprites_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     shadows_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     quads_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     underlines_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     monochrome_sprites_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    pub(crate) polychrome_sprites_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    pub(crate) polychrome_sprites_pipeline_state:
+        Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     surfaces_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub(crate) unit_vertices: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub(crate) instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
@@ -551,7 +555,10 @@ impl MetalRenderer {
         crate::fast::layers::TileCache::clear(&mut self.fast_layers);
     }
 
-    pub(crate) fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) -> Result<()> {
+    pub(crate) fn update_path_intermediate_textures(
+        &mut self,
+        size: Size<DevicePixels>,
+    ) -> Result<()> {
         // We are uncertain when this happens, but sometimes size can be 0 here. Most likely before
         // the layout pass on window creation. Zero-sized texture creation causes SIGABRT.
         // https://github.com/zed-industries/zed/issues/36229
@@ -777,7 +784,8 @@ impl MetalRenderer {
         {
             return Ok(self.effect_texture_pool.swap_remove(position));
         }
-        self.effect_stats.texture_allocated((width * height * 4) as u64);
+        self.effect_stats
+            .texture_allocated((width * height * 4) as u64);
         let descriptor = MTLTextureDescriptor::new();
         // SAFETY: The dimensions are positive and this descriptor creates a 2D texture.
         unsafe {
@@ -1967,7 +1975,10 @@ pub(crate) const TRANSFORMS_BUFFER_INDEX: usize = 8;
 /// The fragment buffer slot of the scene's colour filters, in every pipeline.
 pub(crate) const COLOR_FILTERS_BUFFER_INDEX: usize = 9;
 
-pub(crate) fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
+pub(crate) fn write_instances(
+    scene: &Scene,
+    writer: &mut InstanceBufferWriter,
+) -> Result<InstanceBindings> {
     Ok(InstanceBindings {
         quads: writer.write(&scene.quads)?,
         shadows: writer.write(&scene.shadows)?,
@@ -3172,7 +3183,8 @@ mod tests {
         path_scene.insert_primitive(path.scale(1.));
         path_scene.finish();
 
-        let mut renderer = MetalRenderer::new_headless(Arc::new(Mutex::new(Default::default()))).unwrap();
+        let mut renderer =
+            MetalRenderer::new_headless(Arc::new(Mutex::new(Default::default()))).unwrap();
         for scene in [&quad_scene, &path_scene] {
             let image = renderer
                 .render_scene_to_image(scene, size(DevicePixels(64), DevicePixels(64)))

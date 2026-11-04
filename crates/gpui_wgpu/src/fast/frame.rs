@@ -88,7 +88,8 @@ pub(crate) struct FrameTarget<'a> {
     /// The buffer behind the globals bind groups, and where in it the gamma
     /// parameters are, for tile globals to share them.
     pub(crate) globals_buffer: &'a wgpu::Buffer,
-    pub(crate) transform_buffer: &'a wgpu::Buffer,
+    /// The transform table; the instance-texture transport has none.
+    pub(crate) transform_buffer: Option<&'a wgpu::Buffer>,
     pub(crate) gamma_offset: u64,
     pub(crate) gamma_size: u64,
     /// The format of the frame's texture, which tiles share.
@@ -142,9 +143,6 @@ impl FrameHost for WgpuRendererCore {
             InstanceData::Storage(buffer) => InstanceSource::Storage(buffer),
             InstanceData::Texture { view, .. } => InstanceSource::Texture(view),
         };
-        let Some(transform_buffer) = &resources.transform_buffer else {
-            anyhow::bail!("the storage buffer transport has no transform buffer");
-        };
         Ok(FrameTarget {
             device: &resources.device,
             queue: &resources.queue,
@@ -158,7 +156,7 @@ impl FrameHost for WgpuRendererCore {
             path_msaa_view: resources.path_msaa_view.as_ref(),
             instance_data,
             globals_buffer: &resources.globals_buffer,
-            transform_buffer,
+            transform_buffer: resources.transform_buffer.as_ref(),
             gamma_offset: self.gamma_offset,
             gamma_size: size_of::<crate::wgpu_renderer::GammaParams>() as u64,
             format: self.target_format,

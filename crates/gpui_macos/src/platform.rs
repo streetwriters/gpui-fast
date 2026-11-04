@@ -233,7 +233,6 @@ impl MacPlatform {
             Arc::new(gpui::NoopTextSystem::new())
         };
 
-
         let state = Mutex::new(MacPlatformState {
             headless,
             activation_policy: ActivationPolicy::Regular,

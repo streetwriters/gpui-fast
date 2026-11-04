@@ -527,7 +527,7 @@ impl TileCache {
                         target.gamma_offset,
                         target.gamma_size,
                     ),
-                    Some(target.transform_buffer),
+                    target.transform_buffer,
                 ),
             })
         };

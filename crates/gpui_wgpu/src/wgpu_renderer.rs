@@ -2926,7 +2926,10 @@ mod tests {
         };
         Quad {
             order: 0,
-            border_style: BorderStyle::Solid,
+            border_style_and_transform: Quad::pack_border_style(
+                BorderStyle::Solid,
+                gpui::TransformIndex::IDENTITY,
+            ),
             bounds,
             content_mask: ContentMask::new(bounds),
             background: color.into(),

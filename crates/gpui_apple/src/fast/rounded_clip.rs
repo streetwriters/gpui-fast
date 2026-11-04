@@ -123,7 +123,11 @@ pub(crate) fn draw(
     let queue = renderer.command_queue.clone();
     let command_buffer = queue.commandBuffer().context("creating command buffer")?;
     crate::fast::dynamic_textures::encode_uploads(&command_buffer);
-    let alpha = if renderer.opaque { 1. } else { 0. };
+    let alpha = if renderer.opaque && !crate::fast::effects::in_group_pass() {
+        1.
+    } else {
+        0.
+    };
     let encoder = new_command_encoder_for_texture(
         &command_buffer,
         texture,
@@ -259,8 +263,19 @@ fn encode(
                         renderer.fast_layers.note_composited(scene);
                     }
                 } else {
+                    let blended = crate::metal_renderer::is_blend_batch(scene, &range);
+                    if blended {
+                        encoder.endEncoding();
+                        renderer.copy_backdrop(commands, texture)?;
+                        encoder =
+                            new_command_encoder_for_texture(commands, texture, viewport, None)?;
+                        bind(&encoder, clips, &renderer.device);
+                    }
                     renderer
                         .draw_polychrome_sprites(texture_id, range, bindings, viewport, &encoder);
+                    if blended {
+                        renderer.backdrop = None;
+                    }
                 }
             }
             PrimitiveBatch::Paths(range) => {

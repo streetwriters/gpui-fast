@@ -843,13 +843,7 @@ impl Harness {
     /// A harness on the first adapter wgpu offers without a surface, or
     /// `None` when there is none (the tests then skip).
     pub(super) fn new() -> Option<Harness> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL | wgpu::Backends::METAL,
-            flags: wgpu::InstanceFlags::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            display: None,
-        });
+        let instance = crate::fast::rounded_clip::headless_instance();
         let adapter = gpui::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
@@ -1096,7 +1090,7 @@ impl FrameHost for Harness {
             path_msaa_view: path_targets.and_then(|targets| targets.msaa_view.as_ref()),
             instance_data: crate::fast::frame::InstanceSource::Storage(&self.instance_buffer),
             globals_buffer: &self.globals_buffer,
-            transform_buffer: &self.transform_buffer,
+            transform_buffer: Some(&self.transform_buffer),
             gamma_offset: self.gamma_offset,
             gamma_size: size_of::<GammaParams>() as u64,
             format: self.format,

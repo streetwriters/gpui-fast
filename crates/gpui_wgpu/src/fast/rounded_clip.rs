@@ -43,17 +43,33 @@ impl Clip {
     any(test, feature = "bench-support", feature = "test-support")
 ))]
 pub(crate) fn headless_instance() -> wgpu::Instance {
-    if cfg!(target_os = "macos") {
-        wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
-            flags: wgpu::InstanceFlags::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            display: None,
+    // One instance for the process: the Vulkan loader is not safe against an
+    // instance being destroyed while another thread creates objects on a
+    // second one, which headless renderers on parallel test threads do.
+    static INSTANCE: std::sync::OnceLock<wgpu::Instance> = std::sync::OnceLock::new();
+    INSTANCE
+        .get_or_init(|| {
+            if cfg!(target_os = "macos") {
+                wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::METAL,
+                    flags: wgpu::InstanceFlags::default(),
+                    backend_options: wgpu::BackendOptions::default(),
+                    memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                    display: None,
+                })
+            } else {
+                // GL contexts are bound to one thread at a time, so a GL
+                // adapter cannot be shared by parallel test threads.
+                wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::VULKAN,
+                    flags: wgpu::InstanceFlags::default(),
+                    backend_options: wgpu::BackendOptions::default(),
+                    memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                    display: None,
+                })
+            }
         })
-    } else {
-        crate::WgpuContext::instance(None)
-    }
+        .clone()
 }
 
 pub(crate) struct Bindings {

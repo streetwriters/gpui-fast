@@ -135,7 +135,7 @@ fn shapes_built_again_after_being_let_go_are_tessellated_again_the_same() {
 #[test]
 fn a_set_of_window_sized_paths_between_half_and_all_the_bytes_is_drawn_from_kept_ones() {
     let most = crate::fast::path_cache::MOST_HELD_BYTES as u64;
-    // A hundred shapes weigh in the window at 32-byte vertices.
+    // Shapes worth 100 of upstream's 32-byte vertices.
     let shapes = 100 * 32 / std::mem::size_of::<crate::PathVertex<crate::Pixels>>();
     for frame in 0..5 {
         for shape in 0..shapes {

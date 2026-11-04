@@ -384,7 +384,7 @@ mod tests {
     /// same offset. `BASE` mirrors the core's reserved range base, which is
     /// private to the `fast` module.
     fn test_id(offset: u32) -> DynamicTextureId {
-        const BASE: u32 = 0xE000_0000;
+        const BASE: u32 = 0xE800_0000;
         DynamicTextureId::from_atlas_texture_id(AtlasTextureId {
             index: BASE + offset,
             kind: AtlasTextureKind::Polychrome,
