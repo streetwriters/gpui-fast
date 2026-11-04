@@ -294,6 +294,7 @@ pub(crate) struct WgpuRendererCore {
     pub(crate) target_format: wgpu::TextureFormat,
     max_texture_size: u32,
     pub(crate) fast_frame: crate::fast::frame::FrameState,
+    pub(crate) instance_shrink: crate::fast::buffer_shrink::Shrink,
     pub(crate) fast_path_textures: crate::fast::path_textures::PathTextures,
 }
 
@@ -1637,6 +1638,7 @@ impl WgpuRendererCore {
             target_format,
             max_texture_size,
             fast_frame: crate::fast::frame::FrameState::default(),
+            instance_shrink: Default::default(),
             fast_path_textures: Default::default(),
         }
     }

@@ -121,6 +121,34 @@ pub(crate) trait FrameHost {
     }
 }
 
+/// What an instance buffer starts as, and shrinks no lower than.
+const INITIAL_INSTANCE_DATA_SIZE: u64 = 2 * 1024 * 1024;
+
+impl WgpuRendererCore {
+    /// Replaces the instance buffer by a smaller one between two frames. The
+    /// previous frame's bind groups keep the old buffer alive until the GPU is
+    /// done with it. The WebGL texture transport keeps its size.
+    fn shrink_instance_data(&mut self, capacity: u64) {
+        if self.uses_webgl_instance_data {
+            return;
+        }
+        log::debug!(
+            "instance data shrunk from {} to {capacity}",
+            self.instance_data_capacity
+        );
+        let resources = &mut self.resources;
+        resources.instance_data = crate::wgpu_renderer::InstanceData::Storage(
+            resources.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("instance_buffer"),
+                size: capacity,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        );
+        self.instance_data_capacity = capacity;
+    }
+}
+
 impl FrameHost for WgpuRendererCore {
     fn write_instance_texture(&self, offset: u64, data: &[u8]) {
         WgpuRendererCore::write_instance_texture(self.resources(), offset, data);
@@ -141,6 +169,12 @@ impl FrameHost for WgpuRendererCore {
     fn reserve_instance_data(&mut self, size: u64) -> Result<()> {
         if size > self.instance_data_capacity {
             self.grow_instance_data(size)?;
+        } else if let Some(capacity) = self.instance_shrink.frame(
+            size as usize,
+            self.instance_data_capacity as usize,
+            INITIAL_INSTANCE_DATA_SIZE as usize,
+        ) {
+            self.shrink_instance_data(capacity as u64);
         }
         Ok(())
     }

@@ -1178,6 +1178,8 @@ pub(crate) struct PipelineState<T> {
     pub(crate) fragment: ID3D11PixelShader,
     buffer: ID3D11Buffer,
     pub(crate) buffer_size: usize,
+    initial_size: usize,
+    shrink: crate::fast::buffer_shrink::Shrink,
     pub(crate) view: Option<ID3D11ShaderResourceView>,
     pub(crate) blend_state: ID3D11BlendState,
     _marker: std::marker::PhantomData<T>,
@@ -1208,6 +1210,8 @@ impl<T> PipelineState<T> {
             fragment,
             buffer,
             buffer_size,
+            initial_size: buffer_size,
+            shrink: Default::default(),
             view,
             blend_state,
             _marker: std::marker::PhantomData,
@@ -1220,6 +1224,23 @@ impl<T> PipelineState<T> {
         device_context: &ID3D11DeviceContext,
         data: &[T],
     ) -> Result<()> {
+        if let Some(size) = self
+            .shrink
+            .frame(data.len(), self.buffer_size, self.initial_size)
+            && data.len() <= size
+        {
+            log::debug!(
+                "Updating {} buffer size from {} to {}",
+                self.label,
+                self.buffer_size,
+                size
+            );
+            let buffer = create_buffer(device, std::mem::size_of::<T>(), size)?;
+            let view = create_buffer_view(device, &buffer)?;
+            self.buffer = buffer;
+            self.view = view;
+            self.buffer_size = size;
+        }
         if self.buffer_size < data.len() {
             let element_size = std::mem::size_of::<T>();
             let required_size = std::mem::size_of_val(data);

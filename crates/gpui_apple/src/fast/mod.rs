@@ -8,6 +8,8 @@
 //! call to it. The logic itself — data structures, algorithms, bookkeeping,
 //! tests — is written here, one file per topic.
 
+#[path = "../../../gpui/src/fast/buffer_shrink.rs"]
+pub(crate) mod buffer_shrink;
 pub(crate) mod composition;
 pub(crate) mod dynamic_textures;
 pub(crate) mod effects;

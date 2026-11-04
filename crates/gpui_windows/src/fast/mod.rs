@@ -7,6 +7,8 @@
 //! forwarding a call to it. The logic itself is written here, one file per
 //! topic.
 
+#[path = "../../../gpui/src/fast/buffer_shrink.rs"]
+pub(crate) mod buffer_shrink;
 pub(crate) mod class_names;
 pub(crate) mod composition;
 pub(crate) mod device_recovery;
