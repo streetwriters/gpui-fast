@@ -34,6 +34,53 @@ fn rounded_overflow_retained_child_follows_ancestor_clip(cx: &mut gpui::TestAppC
     rounded_clip_tests::retained_frames(cx, |scene, size| harness.render(scene, size));
 }
 
+#[gpui::test]
+fn rounded_overflow_paths_equal_full_viewport_path_textures(cx: &mut gpui::TestAppContext) {
+    use gpui::{ParentElement as _, Styled as _};
+
+    fn corner(bounds: Bounds<gpui::Pixels>, window: &mut gpui::Window) {
+        let mut path = gpui::Path::new(bounds.origin);
+        path.line_to(bounds.top_right());
+        path.line_to(bounds.bottom_right());
+        path.line_to(bounds.origin);
+        window.paint_path(path, gpui::black());
+    }
+    let mut harness = Harness::new().expect("path textures require a Metal device");
+    rounded_clip_tests::render_with(
+        cx,
+        || {
+            gpui::div()
+                .size(px(64.))
+                .bg(gpui::white())
+                .flex()
+                .child(
+                    gpui::div()
+                        .size(px(40.))
+                        .rounded(px(16.))
+                        .overflow_hidden()
+                        .child(
+                            gpui::canvas(
+                                |_, _, _| (),
+                                |bounds, (), window, _| corner(bounds, window),
+                            )
+                            .size(px(40.)),
+                        ),
+                )
+                .child(
+                    gpui::canvas(|_, _, _| (), |bounds, (), window, _| corner(bounds, window))
+                        .size(px(24.)),
+                )
+        },
+        |scene, size| {
+            let full = harness.render(scene, size);
+            let mut sized = MetalRenderer::new_headless(Default::default()).unwrap();
+            let sized = sized.render_offscreen(scene, size).unwrap().into_raw();
+            assert_same_pixels(&sized, &full, size.width.0 as usize);
+            sized
+        },
+    );
+}
+
 fn render_div_fixture(cx: &mut gpui::TestAppContext, build: fn() -> gpui::Div) -> (Vec<u8>, usize) {
     let mut harness = Harness::new().expect("rounded clipping regression requires a Metal device");
     rounded_clip_tests::render_with(cx, build, |scene, size| harness.render(scene, size))

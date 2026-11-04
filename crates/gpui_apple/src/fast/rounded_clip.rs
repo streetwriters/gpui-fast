@@ -168,9 +168,13 @@ pub(crate) fn draw_tile(
 ) -> Result<()> {
     let old_texture = renderer.path_intermediate_texture.take();
     let old_msaa = renderer.path_intermediate_msaa_texture.take();
-    let old_region = renderer.fast_path_textures.region();
+    let old_region = renderer.fast_path_textures.region;
     let result = (|| {
         renderer.update_path_intermediate_textures(viewport)?;
+        renderer.fast_path_textures.region = gpui::Bounds {
+            origin: gpui::point(gpui::DevicePixels(0), gpui::DevicePixels(0)),
+            size: viewport,
+        };
         let bindings = write_instances(scene, writer)?;
         let encoder =
             new_command_encoder_for_texture(commands, texture, viewport, Some(background))?;
@@ -191,7 +195,7 @@ pub(crate) fn draw_tile(
     })();
     renderer.path_intermediate_texture = old_texture;
     renderer.path_intermediate_msaa_texture = old_msaa;
-    renderer.fast_path_textures.set_region(old_region);
+    renderer.fast_path_textures.region = old_region;
     result
 }
 

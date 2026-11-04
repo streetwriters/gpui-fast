@@ -10,14 +10,14 @@
 //! subtracts its origin from the vertices, and compositing maps the screen
 //! position into the texture by it.
 
-use anyhow::{Context as _, Result};
-use gpui::{Bounds, DevicePixels, Path, ScaledPixels, Scene, Size, point, size};
-use objc2_metal::{
-    MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureType,
-    MTLTextureUsage,
-};
+use std::{mem, ptr};
 
-use crate::metal_renderer::{MetalRenderer, PathRasterizationVertex};
+use anyhow::Result;
+use gpui::{Bounds, DevicePixels, ScaledPixels, Scene, Size, point, size};
+use objc2::runtime::ProtocolObject;
+use objc2_metal::{MTLRenderCommandEncoder, MTLTexture};
+
+use crate::metal_renderer::{MetalRenderer, PathRasterizationVertex, SpriteInputIndex};
 
 /// The granularity, in device pixels, of the region's origin and size.
 const BUCKET: i32 = 256;
@@ -27,26 +27,8 @@ const IDLE_FRAMES: u32 = 120;
 
 #[derive(Default)]
 pub(crate) struct PathTextures {
-    region: Bounds<DevicePixels>,
+    pub(crate) region: Bounds<DevicePixels>,
     idle_frames: u32,
-}
-
-impl PathTextures {
-    pub(crate) fn region(&self) -> Bounds<DevicePixels> {
-        self.region
-    }
-
-    pub(crate) fn origin(&self) -> gpui::Point<f32> {
-        point(self.region.origin.x.0 as f32, self.region.origin.y.0 as f32)
-    }
-
-    pub(crate) fn extent(&self) -> Size<DevicePixels> {
-        self.region.size
-    }
-
-    pub(crate) fn set_region(&mut self, region: Bounds<DevicePixels>) {
-        self.region = region;
-    }
 }
 
 fn contains(outer: Bounds<DevicePixels>, inner: Bounds<DevicePixels>) -> bool {
@@ -129,13 +111,15 @@ impl MetalRenderer {
             return Ok(());
         };
         self.fast_path_textures.idle_frames = 0;
-        let held = self.path_intermediate_texture.is_some();
-        let region = self.fast_path_textures.region;
-        if held && contains(region, needed) {
+        let held = self.path_region();
+        if held.is_some_and(|held| contains(held, needed)) {
             return Ok(());
         }
-        let wanted = if held { union(region, needed) } else { needed };
-        self.allocate_path_textures(bucketed(wanted, viewport))
+        let wanted = held.map_or(needed, |held| union(held, needed));
+        let region = bucketed(wanted, viewport);
+        self.update_path_intermediate_textures(region.size)?;
+        self.fast_path_textures.region = region;
+        Ok(())
     }
 
     pub(crate) fn release_path_textures(&mut self) {
@@ -144,99 +128,76 @@ impl MetalRenderer {
         self.fast_path_textures.idle_frames = 0;
     }
 
-    /// Replaces the textures with ones covering `region`, unless these do.
-    pub(crate) fn allocate_path_textures(&mut self, region: Bounds<DevicePixels>) -> Result<()> {
-        if region.size.width.0 <= 0 || region.size.height.0 <= 0 {
-            self.release_path_textures();
-            return Ok(());
-        }
-        self.release_path_textures();
-        let texture_descriptor = MTLTextureDescriptor::new();
-        // SAFETY: The dimensions are positive and this descriptor creates a 2D texture.
-        unsafe {
-            texture_descriptor.setWidth(region.size.width.0 as usize);
-            texture_descriptor.setHeight(region.size.height.0 as usize);
-        }
-        texture_descriptor.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        texture_descriptor.setStorageMode(MTLStorageMode::Private);
-        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
-        let intermediate_texture = self
-            .device
-            .newTextureWithDescriptor(&texture_descriptor)
-            .context("allocating path intermediate texture")?;
-
-        let msaa_texture = if self.path_sample_count > 1 {
-            // https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus
-            // Rendering MSAA textures are done in a single pass, so we can use memory-less storage on Apple Silicon
-            let storage_mode = if self.is_apple_gpu {
-                MTLStorageMode::Memoryless
-            } else {
-                MTLStorageMode::Private
-            };
-
-            let msaa_descriptor = texture_descriptor;
-            msaa_descriptor.setTextureType(MTLTextureType::Type2DMultisample);
-            msaa_descriptor.setStorageMode(storage_mode);
-            // SAFETY: The multisample texture uses the same sample count as its render pipeline.
-            unsafe {
-                msaa_descriptor.setSampleCount(self.path_sample_count as _);
-            }
-            Some(
-                self.device
-                    .newTextureWithDescriptor(&msaa_descriptor)
-                    .context("allocating multisample path texture")?,
-            )
+    /// The pixels the held textures cover. Textures that upstream's
+    /// `update_path_intermediate_textures` allocated for a whole viewport
+    /// start at the origin.
+    pub(crate) fn path_region(&self) -> Option<Bounds<DevicePixels>> {
+        let texture = self.path_intermediate_texture.as_ref()?;
+        let held = size(
+            DevicePixels(texture.width() as i32),
+            DevicePixels(texture.height() as i32),
+        );
+        let region = self.fast_path_textures.region;
+        Some(if region.size == held {
+            region
         } else {
-            None
-        };
-        self.path_intermediate_texture = Some(intermediate_texture);
-        self.path_intermediate_msaa_texture = msaa_texture;
-        self.fast_path_textures.region = region;
-        Ok(())
-    }
-
-    /// Covers `size` from the origin, for passes with textures of their own.
-    pub(crate) fn update_path_intermediate_textures(
-        &mut self,
-        size: Size<DevicePixels>,
-    ) -> Result<()> {
-        let region = Bounds {
-            origin: point(DevicePixels(0), DevicePixels(0)),
-            size,
-        };
-        if self.path_intermediate_texture.is_some() && self.fast_path_textures.region == region {
-            return Ok(());
-        }
-        self.allocate_path_textures(region)
+            Bounds {
+                origin: point(DevicePixels(0), DevicePixels(0)),
+                size: held,
+            }
+        })
     }
 }
 
-/// The rasterization vertices of `path` with `origin` subtracted from every
-/// position. Colors depend on positions relative to the path's bounds only.
-pub(crate) fn rasterization_vertices(
-    path: &Path<ScaledPixels>,
-    origin: gpui::Point<f32>,
-) -> impl Iterator<Item = PathRasterizationVertex> + '_ {
-    let shift = move |bounds: Bounds<ScaledPixels>| Bounds {
-        origin: point(
-            ScaledPixels(bounds.origin.x.0 - origin.x),
-            ScaledPixels(bounds.origin.y.0 - origin.y),
-        ),
-        size: bounds.size,
+/// Moves `vertices` into the textures' region and returns the size to
+/// rasterize them at.
+pub(crate) fn to_region(
+    renderer: &MetalRenderer,
+    vertices: &mut [PathRasterizationVertex],
+    viewport: Size<DevicePixels>,
+) -> Size<DevicePixels> {
+    let Some(region) = renderer.path_region() else {
+        return viewport;
     };
-    let bounds = shift(path.bounds.intersect(&path.content_mask.bounds));
-    let rounded_bounds = shift(path.content_mask.rounded_bounds);
-    path.vertices.iter().map(move |v| PathRasterizationVertex {
-        xy_position: point(
-            ScaledPixels(v.xy_position.x.0 - origin.x),
-            ScaledPixels(v.xy_position.y.0 - origin.y),
-        ),
-        st_position: v.st_position,
-        color: path.color,
-        bounds,
-        rounded_bounds,
-        corner_radii: path.content_mask.corner_radii,
-    })
+    for vertex in vertices {
+        shift_vertex(vertex, region.origin);
+    }
+    region.size
+}
+
+pub(crate) fn shift_vertex(
+    vertex: &mut PathRasterizationVertex,
+    origin: gpui::Point<DevicePixels>,
+) {
+    let (dx, dy) = (origin.x.0 as f32, origin.y.0 as f32);
+    vertex.xy_position.x.0 -= dx;
+    vertex.xy_position.y.0 -= dy;
+    for bounds in [&mut vertex.bounds, &mut vertex.rounded_bounds] {
+        bounds.origin.x.0 -= dx;
+        bounds.origin.y.0 -= dy;
+    }
+}
+
+/// Gives the path sprite shader the region its texture covers.
+pub(crate) fn bind_region(
+    renderer: &MetalRenderer,
+    encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+) {
+    let region = renderer.path_region().unwrap_or_default();
+    let region = [
+        region.origin.x.0 as f32,
+        region.origin.y.0 as f32,
+        region.size.width.0 as f32,
+        region.size.height.0 as f32,
+    ];
+    // SAFETY: The bytes are copied from a live array into the shader's float4 slot.
+    unsafe {
+        encoder.setVertexBytes_length_atIndex(
+            ptr::NonNull::from(&region).cast(),
+            mem::size_of_val(&region),
+            SpriteInputIndex::PathRegion as usize,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -314,10 +275,10 @@ mod tests {
         let mut sized = renderer();
         let mut full = renderer();
         full.update_path_intermediate_textures(viewport()).unwrap();
-        let sized_image = sized.render_scene_to_image(&scene, viewport()).unwrap();
-        let full_image = full.render_scene_to_image(&scene, viewport()).unwrap();
+        let sized_image = sized.render_offscreen(&scene, viewport()).unwrap();
+        let full_image = full.render_offscreen(&scene, viewport()).unwrap();
         assert!(sized_image == full_image, "images differ");
-        sized.fast_path_textures.region()
+        sized.path_region().unwrap()
     }
 
     #[test]
@@ -344,11 +305,35 @@ mod tests {
     }
 
     #[test]
-    fn paths_outside_the_viewport_render() {
+    fn a_path_crossing_the_viewport_edge_renders_as_with_full_textures() {
         let mut scene = Scene::default();
         quad(&mut scene);
-        path_at(&mut scene, 2000., 2000., 40., false, false);
+        path_at(&mut scene, 1180., 880., 100., true, false);
         assert_matches_full_textures(scene);
+    }
+
+    #[test]
+    fn paths_in_effect_groups_render_as_with_full_textures() {
+        for effect in [None, Some(gpui::GroupEffect::Blur { sigma: 3.0 })] {
+            let mut scene = Scene::default();
+            quad(&mut scene);
+            path_at(&mut scene, 1100., 820., 70., true, false);
+            let scope = match effect {
+                Some(effect) => scene.begin_effect_group_with(0.7, effect),
+                None => scene.begin_effect_group(0.7),
+            };
+            path_at(&mut scene, 700., 480., 90., true, true);
+            quad(&mut scene);
+            scene.end_effect_group(
+                scope,
+                Bounds {
+                    origin: point(ScaledPixels(600.), ScaledPixels(400.)),
+                    size: size(ScaledPixels(400.), ScaledPixels(300.)),
+                },
+            );
+            path_at(&mut scene, 1000., 820., 50., false, false);
+            assert_matches_full_textures(scene);
+        }
     }
 
     #[test]
@@ -361,15 +346,15 @@ mod tests {
         path_at(&mut icon, 700., 520., 24., false, false);
         icon.finish();
 
-        renderer.render_scene(&without, viewport()).unwrap();
+        renderer.render_offscreen(&without, viewport()).unwrap();
         assert!(renderer.path_intermediate_texture.is_none());
 
-        renderer.render_scene(&icon, viewport()).unwrap();
+        renderer.render_offscreen(&icon, viewport()).unwrap();
         let texture = renderer.path_intermediate_texture.clone().unwrap();
         assert_eq!((texture.width(), texture.height()), (256, 256));
-        assert_eq!(renderer.fast_path_textures.region().origin.x.0, 512);
+        assert_eq!(renderer.path_region().unwrap().origin.x.0, 512);
 
-        renderer.render_scene(&icon, viewport()).unwrap();
+        renderer.render_offscreen(&icon, viewport()).unwrap();
         assert!(std::ptr::eq(
             &*texture,
             renderer.path_intermediate_texture.as_deref().unwrap()
@@ -378,15 +363,15 @@ mod tests {
         let mut corner = Scene::default();
         path_at(&mut corner, 20., 20., 24., false, false);
         corner.finish();
-        renderer.render_scene(&corner, viewport()).unwrap();
+        renderer.render_offscreen(&corner, viewport()).unwrap();
         let grown = renderer.path_intermediate_texture.clone().unwrap();
         assert!(grown.width() >= 768 && grown.height() >= 512);
 
         for _ in 0..IDLE_FRAMES - 1 {
-            renderer.render_scene(&without, viewport()).unwrap();
+            renderer.render_offscreen(&without, viewport()).unwrap();
         }
         assert!(renderer.path_intermediate_texture.is_some());
-        renderer.render_scene(&without, viewport()).unwrap();
+        renderer.render_offscreen(&without, viewport()).unwrap();
         assert!(renderer.path_intermediate_texture.is_none());
         assert!(renderer.path_intermediate_msaa_texture.is_none());
     }
