@@ -381,6 +381,7 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
+        crate::fast::instance_buffers::begin_frame(self)?;
         crate::fast::layers::raster::rasterize_tiles(self, scene)?;
         crate::fast::path_textures::prepare(self, scene)?;
         self.pre_draw(&match background_appearance {
@@ -1176,10 +1177,9 @@ pub(crate) struct PipelineState<T> {
     pub(crate) label: &'static str,
     pub(crate) vertex: ID3D11VertexShader,
     pub(crate) fragment: ID3D11PixelShader,
-    buffer: ID3D11Buffer,
+    pub(crate) buffer: ID3D11Buffer,
     pub(crate) buffer_size: usize,
-    initial_size: usize,
-    shrink: crate::fast::buffer_shrink::Shrink,
+    pub(crate) fast_use: crate::fast::buffer_shrink::Use,
     pub(crate) view: Option<ID3D11ShaderResourceView>,
     pub(crate) blend_state: ID3D11BlendState,
     _marker: std::marker::PhantomData<T>,
@@ -1210,8 +1210,7 @@ impl<T> PipelineState<T> {
             fragment,
             buffer,
             buffer_size,
-            initial_size: buffer_size,
-            shrink: Default::default(),
+            fast_use: crate::fast::buffer_shrink::Use::new(buffer_size),
             view,
             blend_state,
             _marker: std::marker::PhantomData,
@@ -1224,23 +1223,7 @@ impl<T> PipelineState<T> {
         device_context: &ID3D11DeviceContext,
         data: &[T],
     ) -> Result<()> {
-        if let Some(size) = self
-            .shrink
-            .frame(data.len(), self.buffer_size, self.initial_size)
-            && data.len() <= size
-        {
-            log::debug!(
-                "Updating {} buffer size from {} to {}",
-                self.label,
-                self.buffer_size,
-                size
-            );
-            let buffer = create_buffer(device, std::mem::size_of::<T>(), size)?;
-            let view = create_buffer_view(device, &buffer)?;
-            self.buffer = buffer;
-            self.view = view;
-            self.buffer_size = size;
-        }
+        self.fast_use.note(data.len());
         if self.buffer_size < data.len() {
             let element_size = std::mem::size_of::<T>();
             let required_size = std::mem::size_of_val(data);
@@ -1717,7 +1700,7 @@ fn create_constant_buffer<T>(device: &ID3D11Device) -> Result<Option<ID3D11Buffe
 }
 
 #[inline]
-fn create_buffer(
+pub(crate) fn create_buffer(
     device: &ID3D11Device,
     element_size: usize,
     buffer_size: usize,
@@ -1736,7 +1719,7 @@ fn create_buffer(
 }
 
 #[inline]
-fn create_buffer_view(
+pub(crate) fn create_buffer_view(
     device: &ID3D11Device,
     buffer: &ID3D11Buffer,
 ) -> Result<Option<ID3D11ShaderResourceView>> {

@@ -48,7 +48,6 @@ const SHADERS_SOURCE_FILE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitch
 const PATH_SAMPLE_COUNT: u32 = 4;
 /// Metal requires the offset a buffer is bound at to be 256-byte aligned.
 const INSTANCE_BUFFER_ALIGNMENT: usize = 256;
-const INITIAL_INSTANCE_BUFFER_SIZE: usize = 2 * 1024 * 1024;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 
 pub type Context = Arc<Mutex<InstanceBufferPool>>;
@@ -67,15 +66,15 @@ pub fn new_overlay_renderer(context: self::Context, base: &Renderer) -> Result<R
 }
 
 pub struct InstanceBufferPool {
-    buffer_size: usize,
+    pub(crate) buffer_size: usize,
     buffers: Vec<InstanceBuffer>,
-    shrink: crate::fast::buffer_shrink::Shrink,
+    pub(crate) shrink: crate::fast::buffer_shrink::Shrink,
 }
 
 impl Default for InstanceBufferPool {
     fn default() -> Self {
         Self {
-            buffer_size: INITIAL_INSTANCE_BUFFER_SIZE,
+            buffer_size: 2 * 1024 * 1024,
             buffers: Vec::new(),
             shrink: Default::default(),
         }
@@ -119,19 +118,6 @@ impl InstanceBufferPool {
             metal_buffer: buffer,
             size: self.buffer_size,
         })
-    }
-
-    /// Records the bytes a drawn frame wrote, and shrinks the buffers the pool
-    /// hands out when they have been mostly idle. Buffers still in flight are
-    /// dropped as they return.
-    fn note_frame(&mut self, used: usize) {
-        if let Some(size) = self
-            .shrink
-            .frame(used, self.buffer_size, INITIAL_INSTANCE_BUFFER_SIZE)
-        {
-            log::info!("decreased instance buffer size to {size}");
-            self.reset(size);
-        }
     }
 
     pub(crate) fn release(&mut self, buffer: InstanceBuffer) {
@@ -2146,7 +2132,7 @@ impl InstanceBufferWriter {
         }
 
         let used = filled.iter().map(|(_, written)| written).sum::<usize>() + offset;
-        pool.lock().note_frame(used);
+        crate::fast::instance_buffers::note_frame(&mut pool.lock(), used);
         // Metal retains encoded resources until the command buffer completes.
         // Only the final, largest buffer is worth keeping in the pool.
         drop(filled);
@@ -2502,85 +2488,6 @@ mod tests {
             corner_radii: gpui::Corners::default(),
             border_widths: gpui::Edges::default(),
         });
-    }
-
-    /// `cargo test -p gpui_apple instance_buffer_cost --release -- --ignored --nocapture`
-    #[test]
-    #[ignore = "a measurement, not a check"]
-    fn instance_buffer_cost() {
-        fn footprint_mb() -> String {
-            let out = std::process::Command::new("footprint")
-                .arg(std::process::id().to_string())
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-            out.lines()
-                .find(|l| l.contains("Footprint:"))
-                .unwrap_or("?")
-                .trim()
-                .to_string()
-        }
-        fn scene_of(quads: usize) -> Scene {
-            let mut scene = Scene::default();
-            for i in 0..quads {
-                let x = (i % 400) as f32 * 2.;
-                let y = (i / 400 % 300) as f32 * 2.;
-                colored_quad(&mut scene, scaled_bounds(x, y, 2., 2.), 0x3366ff);
-            }
-            scene.finish();
-            scene
-        }
-        let size = gpui::size(DevicePixels(1024), DevicePixels(768));
-        let normal = scene_of(2000);
-        let huge = scene_of(200_000);
-        let pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
-        let mut renderer = MetalRenderer::new_headless(pool.clone()).unwrap();
-        let allocated =
-            |renderer: &MetalRenderer| renderer.device.currentAllocatedSize() / (1 << 20);
-        let capacity = || pool.lock().buffer_size >> 20;
-        println!(
-            "start: allocated {} MB, pool {} MB, {}",
-            allocated(&renderer),
-            capacity(),
-            footprint_mb()
-        );
-        renderer.render_scene_to_image(&huge, size).unwrap();
-        println!(
-            "after one huge frame: allocated {} MB, pool {} MB, {}",
-            allocated(&renderer),
-            capacity(),
-            footprint_mb()
-        );
-        let start = std::time::Instant::now();
-        for _ in 0..300 {
-            renderer.render_scene_to_image(&normal, size).unwrap();
-        }
-        println!(
-            "after 300 normal frames: allocated {} MB, pool {} MB, {}, {:.2} ms/frame",
-            allocated(&renderer),
-            capacity(),
-            footprint_mb(),
-            start.elapsed().as_secs_f64() * 1000. / 300.
-        );
-        // Alternate 60 huge and 60 normal frames: count capacity changes.
-        let mut changes = 0;
-        let mut last = capacity();
-        let start = std::time::Instant::now();
-        for block in 0..10 {
-            let scene = if block % 2 == 0 { &huge } else { &normal };
-            for _ in 0..60 {
-                renderer.render_scene_to_image(scene, size).unwrap();
-                if capacity() != last {
-                    changes += 1;
-                    last = capacity();
-                }
-            }
-        }
-        println!(
-            "alternating 60/60 x10: {changes} capacity changes, {:.2} ms/frame, allocated {} MB",
-            start.elapsed().as_secs_f64() * 1000. / 600.,
-            allocated(&renderer)
-        );
     }
 
     #[test]

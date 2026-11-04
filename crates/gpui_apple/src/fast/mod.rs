@@ -13,6 +13,7 @@ pub(crate) mod buffer_shrink;
 pub(crate) mod composition;
 pub(crate) mod dynamic_textures;
 pub(crate) mod effects;
+pub(crate) mod instance_buffers;
 pub(crate) mod layers;
 pub(crate) mod path_textures;
 pub(crate) mod paths;

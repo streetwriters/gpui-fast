@@ -18,6 +18,7 @@ pub(crate) mod font_fallback;
 pub(crate) mod frame;
 pub(crate) mod frame_schedule;
 pub(crate) mod globals;
+pub(crate) mod instance_buffers;
 pub(crate) mod layers;
 #[cfg(test)]
 pub(crate) mod native_tests;

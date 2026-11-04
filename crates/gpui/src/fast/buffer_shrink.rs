@@ -36,9 +36,39 @@ impl Shrink {
     }
 }
 
+/// A buffer that is uploaded to any number of times in a frame, as one that
+/// holds a draw's batches is. Only the frame's biggest upload counts.
+pub(crate) struct Use {
+    shrink: Shrink,
+    peak: usize,
+    initial: usize,
+}
+
+impl Use {
+    pub(crate) fn new(initial: usize) -> Self {
+        Self {
+            shrink: Shrink::default(),
+            peak: 0,
+            initial,
+        }
+    }
+
+    /// Records an upload of `used` of the buffer's capacity.
+    pub(crate) fn note(&mut self, used: usize) {
+        self.peak = self.peak.max(used);
+    }
+
+    /// Ends a frame: the capacity to shrink to, if the buffer has been mostly
+    /// idle long enough. A frame that made no upload counts as idle.
+    pub(crate) fn end_frame(&mut self, capacity: usize) -> Option<usize> {
+        let used = std::mem::take(&mut self.peak);
+        self.shrink.frame(used, capacity, self.initial)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{QUIET_FRAMES, Shrink};
+    use super::{QUIET_FRAMES, Shrink, Use};
 
     const INITIAL: usize = 2 << 20;
     const HUGE: usize = 128 << 20;
@@ -77,5 +107,25 @@ mod tests {
             assert_eq!(quiet(&mut shrink, 1000, HUGE, 60), None);
             assert_eq!(shrink.frame(HUGE / 2, HUGE, INITIAL), None);
         }
+    }
+
+    #[test]
+    fn many_uploads_in_a_frame_count_as_one_frame_of_the_biggest() {
+        let mut buffer = Use::new(INITIAL);
+        for frame in 0..QUIET_FRAMES {
+            // A big batch among small ones: the frame is busy.
+            for batch in 0..20 {
+                buffer.note(if batch == 7 { HUGE / 2 } else { 100 });
+            }
+            assert_eq!(buffer.end_frame(HUGE), None, "frame {frame}");
+        }
+        for _ in 0..QUIET_FRAMES - 1 {
+            for _ in 0..20 {
+                buffer.note(100);
+            }
+            assert_eq!(buffer.end_frame(HUGE), None);
+        }
+        buffer.note(100);
+        assert_eq!(buffer.end_frame(HUGE), Some(INITIAL));
     }
 }

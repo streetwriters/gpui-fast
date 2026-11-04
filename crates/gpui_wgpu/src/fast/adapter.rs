@@ -117,7 +117,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CompositorGpuHint, named_first};
 
     const INTEL: (u32, u32) = (0x8086, 0x3e92);
     const NVIDIA: (u32, u32) = (0x10de, 0x2560);
