@@ -869,6 +869,15 @@ pub(crate) fn after_paint(window: &Window, cx: &mut App) {
     }
 }
 
+/// Carries into the frame being drawn the variants the rendered frame's paint
+/// of `range` showed, where drawing that paint again, or compositing the layer
+/// that holds it, does not paint them.
+pub(crate) fn carry(window: &mut Window, range: &std::ops::Range<crate::PaintIndex>) {
+    let shown =
+        window.rendered_frame.fast_images[range.start.fast.images..range.end.fast.images].to_vec();
+    window.next_frame.fast_images.extend(shown);
+}
+
 /// Forwarded to by `finish_retained_frame`: the variants the frame just
 /// drawn paints, which includes those of the views it drew again from the
 /// frame before without painting them.

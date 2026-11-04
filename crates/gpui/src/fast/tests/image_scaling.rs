@@ -245,3 +245,103 @@ fn a_variant_painted_by_a_reused_view_is_not_released_while_it_is_on_screen(
     std::fs::remove_file(photo_path).ok();
     std::fs::remove_file(other_path).ok();
 }
+
+struct Layered {
+    source: ImageSource,
+    scroll: crate::ScrollHandle,
+}
+
+impl Render for Layered {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use crate::{InteractiveElement as _, StatefulInteractiveElement as _};
+        let layered = div()
+            .id("layered")
+            .w(px(200.))
+            .h(px(150.))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(img(self.source.clone()).w(px(200.)).h(px(150.)))
+            .child(div().h(px(3000.)));
+        div().size_full().bg(crate::white()).child(layered)
+    }
+}
+
+#[gpui::test]
+fn a_variant_in_a_composited_layer_is_not_released_while_it_is_on_screen(cx: &mut TestAppContext) {
+    use crate::fast::layers::policy::Decision;
+    if !crate::fast::layers::COMPILED {
+        return;
+    }
+    let photo_path = big_image_on_disk("layered");
+    let other_path = big_image_on_disk("layered-other");
+    // A second window, not drawn until the first has gone idle.
+    let other = cx.add_window({
+        let source = ImageSource::from(other_path.clone());
+        move |_, _| Photo {
+            source,
+            cache: None,
+        }
+    });
+    let (view, window) = cx.add_window_view({
+        let source = ImageSource::from(photo_path.clone());
+        move |_, _| Layered {
+            source,
+            scroll: crate::ScrollHandle::new(),
+        }
+    });
+    // `update` draws the frame that follows it.
+    let decide = |window: &mut VisualTestContext, decision| {
+        window.update(|window, cx| {
+            window.fast_layers.forced_decision = Some(decision);
+            view.update(cx, |_, cx| cx.notify());
+        });
+    };
+    settle(window);
+    // The layer paints its content once, then only composites it.
+    decide(window, Decision::Repaint);
+    window.run_until_parked();
+    decide(window, Decision::Repaint);
+    let in_atlas = variants_in_atlas(window);
+    let shown: Vec<_> = crate::fast::image_scaling::on_screen_ids()
+        .into_iter()
+        .filter(|variant| in_atlas.contains(variant))
+        .collect();
+    assert!(!shown.is_empty(), "the layer's image is on screen");
+    decide(window, Decision::Composite);
+    decide(window, Decision::Composite);
+    let composited = window.update(|window, _| {
+        window
+            .layout_engine
+            .as_ref()
+            .unwrap()
+            .retention
+            .stats
+            .layer_frames_composited
+    });
+    assert!(composited >= 2, "the layer was composited, {composited}");
+
+    std::thread::sleep(crate::fast::image_scaling::IDLE + std::time::Duration::from_millis(200));
+    // Another window paints an image, which is when idle variants are looked
+    // for, while this one only composites the layer holding its own.
+    for _ in 0..5 {
+        window.update(|_, cx| {
+            cx.update_window(other.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .ok();
+        });
+        window.run_until_parked();
+    }
+    decide(window, Decision::Composite);
+
+    let still = variants_in_atlas(window);
+    for variant in &shown {
+        assert!(
+            still.contains(variant),
+            "the variant {variant:?} was released while a layer holds content that shows it"
+        );
+    }
+    std::fs::remove_file(photo_path).ok();
+    std::fs::remove_file(other_path).ok();
+}

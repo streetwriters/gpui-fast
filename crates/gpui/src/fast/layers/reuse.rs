@@ -212,6 +212,7 @@ pub(crate) fn carry_paint_records(
             [range.start.tab_handle_index..range.end.tab_handle_index],
     );
     crate::fast::a11y::reuse_paint(window, range);
+    crate::fast::image_scaling::carry(window, range);
     // The debug records only exist in test builds, so their carry takes its
     // borrows here rather than before the call above.
     #[cfg(any(test, feature = "test-support"))]
