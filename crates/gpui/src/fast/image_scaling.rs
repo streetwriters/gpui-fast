@@ -21,6 +21,7 @@ use std::{
     io::Cursor,
     path::Path,
     sync::{Arc, Mutex, OnceLock},
+    thread::ThreadId,
     time::{Duration, Instant},
 };
 
@@ -30,7 +31,7 @@ use smallvec::SmallVec;
 
 use crate::{
     App, Bounds, DefiniteLength, DevicePixels, EntityId, ImageCacheError, ImageId, Length,
-    ObjectFit, Pixels, RenderImage, Resource, Size, Window, size,
+    ObjectFit, Pixels, RenderImage, Resource, Size, Window, WindowId, size,
 };
 
 /// A source with more decoded pixels than this is loaded lazily: 4 MB of
@@ -53,7 +54,7 @@ const REUSE_RATIO: f32 = 1.5;
 const BUDGET: usize = 128 << 20;
 
 /// A variant not shown for this long is released.
-const IDLE: Duration = Duration::from_secs(2);
+pub(crate) const IDLE: Duration = Duration::from_secs(2);
 
 /// A variant shown this recently is in use and not released for the budget.
 const RECENT: Duration = Duration::from_millis(500);
@@ -349,6 +350,10 @@ pub(crate) struct Variants {
     missing: Vec<ImageId>,
     hints: HashMap<u64, Hint>,
     bytes: usize,
+    /// The variants each window's latest frame paints, drawn or drawn again
+    /// from the frame before, which are not released while they are on
+    /// screen however long ago they were selected.
+    on_screen: HashMap<(ThreadId, WindowId), HashSet<ImageId>>,
 }
 
 fn registry() -> &'static Mutex<Variants> {
@@ -518,6 +523,7 @@ impl Variants {
             .filter(|(_, entry)| {
                 !matches!(entry.state, State::Pending)
                     && now.saturating_duration_since(entry.last_used) > IDLE
+                    && !self.is_on_screen(entry.id)
             })
             .map(|(key, _)| *key)
             .collect();
@@ -532,6 +538,7 @@ impl Variants {
                     matches!(entry.state, State::Ready { .. })
                         && !doomed.contains(key)
                         && now.saturating_duration_since(entry.last_used) > RECENT
+                        && !self.is_on_screen(entry.id)
                 })
                 .map(|(key, entry)| (entry.last_used, *key))
                 .collect();
@@ -548,6 +555,12 @@ impl Variants {
             .into_iter()
             .filter_map(|key| self.remove(key))
             .collect()
+    }
+
+    fn is_on_screen(&self, variant: ImageId) -> bool {
+        self.on_screen
+            .values()
+            .any(|shown| shown.contains(&variant))
     }
 
     fn remove(&mut self, key: Key) -> Option<Arc<RenderImage>> {
@@ -775,8 +788,15 @@ pub(crate) fn display(
             window.rendered_entity_stack.last().copied(),
             now,
         );
+        let thread = std::thread::current().id();
+        registry
+            .on_screen
+            .retain(|(from, id), _| *from != thread || cx.windows.contains_key(*id));
         (shown, registry.evict(now))
     };
+    if let Some(shown) = &shown {
+        window.next_frame.fast_images.push(shown.id);
+    }
     for image in released {
         cx.drop_image(image, Some(window));
     }
@@ -849,6 +869,20 @@ pub(crate) fn after_paint(window: &Window, cx: &mut App) {
     }
 }
 
+/// Forwarded to by `finish_retained_frame`: the variants the frame just
+/// drawn paints, which includes those of the views it drew again from the
+/// frame before without painting them.
+pub(crate) fn finish_frame(window: &Window) {
+    let shown: HashSet<ImageId> = window.next_frame.fast_images.iter().copied().collect();
+    let key = (std::thread::current().id(), window.handle.window_id());
+    let mut registry = registry().lock().unwrap();
+    if shown.is_empty() {
+        registry.on_screen.remove(&key);
+    } else {
+        registry.on_screen.insert(key, shown);
+    }
+}
+
 /// Forwarded to by `Window::drop_image`: the ids of the variants to remove
 /// from the atlas along with the source.
 pub(crate) fn variant_ids(data: &RenderImage) -> Vec<ImageId> {
@@ -856,6 +890,20 @@ pub(crate) fn variant_ids(data: &RenderImage) -> Vec<ImageId> {
         Some(Lazy::Source { .. }) => registry().lock().unwrap().variant_ids(data.id),
         _ => Vec::new(),
     }
+}
+
+/// The variants the calling thread's windows paint, for tests.
+#[cfg(test)]
+pub(crate) fn on_screen_ids() -> Vec<ImageId> {
+    let thread = std::thread::current().id();
+    registry()
+        .lock()
+        .unwrap()
+        .on_screen
+        .iter()
+        .filter(|((from, _), _)| *from == thread)
+        .flat_map(|(_, shown)| shown.iter().copied())
+        .collect()
 }
 
 /// Every variant's id, for tests that clear an atlas.
@@ -1144,6 +1192,26 @@ mod tests {
             registry.evict(now + IDLE + Duration::from_millis(1)).len(),
             1
         );
+    }
+
+    #[test]
+    fn a_variant_on_screen_is_kept_until_the_frame_stops_painting_it() {
+        let view = Some(EntityId::from(1u64));
+        let start = Instant::now();
+        let mut registry = Variants::default();
+        let (id, src) = source();
+        let wanted = device(1000, 1000);
+        registry.select(id, &src, wanted, view, start);
+        ready(&mut registry, (id, wanted), 1000, start);
+        let variant = registry.entries[&(id, wanted)].id;
+        let window = (std::thread::current().id(), crate::WindowId::from(1u64));
+        registry.on_screen.insert(window, [variant].into());
+
+        let idle = start + IDLE * 3;
+        assert!(registry.evict(idle).is_empty());
+        // The window's next frame paints something else.
+        registry.on_screen.remove(&window);
+        assert_eq!(registry.evict(idle).len(), 1);
     }
 
     #[test]

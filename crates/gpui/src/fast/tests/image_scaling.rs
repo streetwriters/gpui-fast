@@ -3,9 +3,9 @@
 //! through an image cache, and comes back after the atlas loses it.
 
 use crate::{
-    Bounds, Context, DevicePixels, Entity, ImageSource, IntoElement, ParentElement as _, Render,
-    RenderImageParams, RetainAllImageCache, Styled as _, TestAppContext, VisualTestContext, Window,
-    div, img, px,
+    AppContext as _, Bounds, Context, DevicePixels, Entity, ImageSource, IntoElement,
+    ParentElement as _, Render, RenderImageParams, RetainAllImageCache, Styled as _,
+    TestAppContext, VisualTestContext, Window, div, img, px,
 };
 
 fn big_image_on_disk(name: &str) -> std::path::PathBuf {
@@ -33,6 +33,11 @@ impl Render for Photo {
         }
         div().w(px(200.)).h(px(150.)).child(photo)
     }
+}
+
+/// Draws what changed, as a frame that nothing refreshes does.
+fn draw_changes(window: &mut VisualTestContext) {
+    window.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn draw(window: &mut VisualTestContext) {
@@ -136,4 +141,107 @@ fn an_image_cache_loads_big_images_lazily_too(cx: &mut TestAppContext) {
     // Clearing the cache drops the source and, with it, its variants.
     window.update(|window, cx| cache.update(cx, |cache, cx| cache.clear(window, cx)));
     std::fs::remove_file(path).ok();
+}
+
+struct Gallery {
+    photo: Entity<Photo>,
+    other: Entity<Photo>,
+    show_other: bool,
+}
+
+impl Render for Gallery {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let gallery = div().child(self.photo.clone());
+        if self.show_other {
+            gallery.child(self.other.clone())
+        } else {
+            gallery
+        }
+    }
+}
+
+/// The ids of the variants the window's atlas holds a tile for.
+fn variants_in_atlas(window: &mut VisualTestContext) -> Vec<crate::ImageId> {
+    window.update(|window, _| {
+        crate::fast::image_scaling::all_variant_ids()
+            .into_iter()
+            .filter(|&image_id| {
+                window
+                    .sprite_atlas
+                    .get_or_insert_with(
+                        RenderImageParams {
+                            image_id,
+                            frame_index: 0,
+                        }
+                        .into(),
+                        &mut || Ok(None),
+                    )
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn a_variant_painted_by_a_reused_view_is_not_released_while_it_is_on_screen(
+    cx: &mut TestAppContext,
+) {
+    let photo_path = big_image_on_disk("on-screen");
+    let other_path = big_image_on_disk("on-screen-other");
+    let photo = cx.new(|_| Photo {
+        source: ImageSource::from(photo_path.clone()),
+        cache: None,
+    });
+    let other = cx.new(|_| Photo {
+        source: ImageSource::from(other_path.clone()),
+        cache: None,
+    });
+    let (gallery, window) = cx.add_window_view({
+        let (photo, other) = (photo.clone(), other.clone());
+        move |_, _| Gallery {
+            photo,
+            other,
+            show_other: false,
+        }
+    });
+    settle(window);
+    let shown = crate::fast::image_scaling::on_screen_ids();
+    assert!(!shown.is_empty(), "the photo's variant is on screen");
+    let tile = painted_tile(window).unwrap();
+
+    // The window sits idle past the time an unused variant is released.
+    std::thread::sleep(crate::fast::image_scaling::IDLE + std::time::Duration::from_millis(200));
+    // Something else changes: another image paints, which is when idle
+    // variants are looked for, while the photo's view is drawn from the last
+    // frame without painting.
+    window.update(|_, cx| {
+        gallery.update(cx, |gallery, cx| {
+            gallery.show_other = true;
+            cx.notify();
+        })
+    });
+    draw_changes(window);
+    window.run_until_parked();
+    draw_changes(window);
+
+    let still = variants_in_atlas(window);
+    for variant in &shown {
+        assert!(
+            still.contains(variant),
+            "the variant {variant:?} was released while a sprite of the last frame points at it"
+        );
+    }
+    assert_eq!(
+        window.update(|window, _| window
+            .painted_scene()
+            .polychrome_sprites
+            .iter()
+            .any(|sprite| sprite.tile.bounds == tile)),
+        true,
+        "the photo is still painted"
+    );
+    std::fs::remove_file(photo_path).ok();
+    std::fs::remove_file(other_path).ok();
 }

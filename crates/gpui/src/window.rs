@@ -1054,6 +1054,7 @@ pub(crate) struct Frame {
     pub(crate) scene: Scene,
     pub(crate) fast_composition_starts: crate::fast::composition::SurfaceStarts,
     pub(crate) fast_composition_input: crate::fast::composition::SurfaceInput,
+    pub(crate) fast_images: Vec<crate::ImageId>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -1115,6 +1116,7 @@ impl Frame {
             scene: Scene::default(),
             fast_composition_starts: crate::fast::composition::SurfaceStarts::default(),
             fast_composition_input: crate::fast::composition::SurfaceInput::default(),
+            fast_images: Vec::new(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -1144,6 +1146,7 @@ impl Frame {
         self.dispatch_tree.clear();
         self.scene.clear();
         crate::fast::composition::SurfaceStarts::clear(&mut self.fast_composition_starts);
+        self.fast_images.clear();
         self.input_handlers.clear();
         self.tooltip_requests.clear();
         self.cursor_styles.clear();

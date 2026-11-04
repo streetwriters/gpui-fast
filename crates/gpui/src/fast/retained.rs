@@ -413,6 +413,7 @@ impl PaintIndex {
                     + to.fast.window_control_hitboxes,
                 a11y_actions: self.fast.a11y_actions - from.fast.a11y_actions
                     + to.fast.a11y_actions,
+                images: self.fast.images - from.fast.images + to.fast.images,
             },
             mouse_listeners_index: self.mouse_listeners_index - from.mouse_listeners_index
                 + to.mouse_listeners_index,
@@ -1208,6 +1209,7 @@ impl Window {
 pub(crate) struct FastPaintIndex {
     pub(crate) window_control_hitboxes: usize,
     pub(crate) a11y_actions: usize,
+    pub(crate) images: usize,
 }
 
 impl FastPaintIndex {
@@ -1216,6 +1218,7 @@ impl FastPaintIndex {
         FastPaintIndex {
             window_control_hitboxes: window.next_frame.window_control_hitboxes.len(),
             a11y_actions: crate::fast::a11y::actions_index(window),
+            images: window.next_frame.fast_images.len(),
         }
     }
 }
@@ -1233,6 +1236,9 @@ pub(crate) fn reuse_paint_records(window: &mut Window, range: &Range<PaintIndex>
             .cloned(),
     );
     crate::fast::a11y::reuse_paint(window, range);
+    let images =
+        window.rendered_frame.fast_images[range.start.fast.images..range.end.fast.images].to_vec();
+    window.next_frame.fast_images.extend(images);
 }
 
 /// The retained subtrees around the element being painted, for a listener
@@ -1380,6 +1386,7 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.next_frame.retained.finish_frame();
     crate::fast::layers::paint::finish_frame(window);
     crate::fast::layers::finish_frame(window);
+    crate::fast::image_scaling::finish_frame(window);
 }
 
 // These reach into the window's layout state, for views drawn again at the
