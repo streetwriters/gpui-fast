@@ -168,6 +168,7 @@ pub(crate) fn draw_tile(
 ) -> Result<()> {
     let old_texture = renderer.path_intermediate_texture.take();
     let old_msaa = renderer.path_intermediate_msaa_texture.take();
+    let old_region = renderer.fast_path_textures.region();
     let result = (|| {
         renderer.update_path_intermediate_textures(viewport)?;
         let bindings = write_instances(scene, writer)?;
@@ -190,6 +191,7 @@ pub(crate) fn draw_tile(
     })();
     renderer.path_intermediate_texture = old_texture;
     renderer.path_intermediate_msaa_texture = old_msaa;
+    renderer.fast_path_textures.set_region(old_region);
     result
 }
 
@@ -280,6 +282,7 @@ fn encode(
             }
             PrimitiveBatch::Paths(range) => {
                 encoder.endEncoding();
+                renderer.prepare_path_textures(scene, viewport)?;
                 let paths = &scene.paths[range];
                 let drawn =
                     renderer.draw_paths_to_intermediate(paths, writer, viewport, commands)?;

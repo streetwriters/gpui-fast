@@ -26,7 +26,7 @@ use objc2_metal::{
     MTLGPUFamily, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType,
     MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
     MTLRenderPipelineState, MTLResourceOptions, MTLStorageMode, MTLStoreAction, MTLTexture,
-    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage, MTLViewport,
+    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
 use objc2_metal::{MTLBlitCommandEncoder, MTLOrigin, MTLSize};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
@@ -135,7 +135,7 @@ enum DisplayLinkMode {
 pub struct MetalRenderer {
     pub(crate) device: Retained<ProtocolObject<dyn MTLDevice>>,
     pub(crate) layer: Option<Retained<CAMetalLayer>>,
-    is_apple_gpu: bool,
+    pub(crate) is_apple_gpu: bool,
     pub(crate) is_unified_memory: bool,
     presents_with_transaction: bool,
     display_link_mode: DisplayLinkMode,
@@ -158,7 +158,8 @@ pub struct MetalRenderer {
     core_video_texture_cache: CFRetained<CVMetalTextureCache>,
     pub(crate) path_intermediate_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     pub(crate) path_intermediate_msaa_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
-    path_sample_count: u32,
+    pub(crate) path_sample_count: u32,
+    pub(crate) fast_path_textures: crate::fast::path_textures::PathTextures,
     /// Offscreen render target reused across `render_scene` calls when
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -471,6 +472,7 @@ impl MetalRenderer {
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
+            fast_path_textures: Default::default(),
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
             effect_group_textures: HashMap::new(),
@@ -549,79 +551,8 @@ impl MetalRenderer {
         if let Some(layer) = &self.layer {
             layer.setDrawableSize(CGSize::new(size.width.0 as f64, size.height.0 as f64));
         }
-        if let Err(error) = self.update_path_intermediate_textures(size) {
-            log::error!("failed to resize path textures: {error:#}");
-        }
+        self.release_path_textures();
         crate::fast::layers::TileCache::clear(&mut self.fast_layers);
-    }
-
-    pub(crate) fn update_path_intermediate_textures(
-        &mut self,
-        size: Size<DevicePixels>,
-    ) -> Result<()> {
-        // We are uncertain when this happens, but sometimes size can be 0 here. Most likely before
-        // the layout pass on window creation. Zero-sized texture creation causes SIGABRT.
-        // https://github.com/zed-industries/zed/issues/36229
-        if size.width.0 <= 0 || size.height.0 <= 0 {
-            self.path_intermediate_texture = None;
-            self.path_intermediate_msaa_texture = None;
-            return Ok(());
-        }
-
-        if self
-            .path_intermediate_texture
-            .as_ref()
-            .is_some_and(|texture| {
-                texture.width() == size.width.0 as usize
-                    && texture.height() == size.height.0 as usize
-            })
-        {
-            return Ok(());
-        }
-
-        self.path_intermediate_texture = None;
-        self.path_intermediate_msaa_texture = None;
-        let texture_descriptor = MTLTextureDescriptor::new();
-        // SAFETY: The dimensions are positive and this descriptor creates a 2D texture.
-        unsafe {
-            texture_descriptor.setWidth(size.width.0 as usize);
-            texture_descriptor.setHeight(size.height.0 as usize);
-        }
-        texture_descriptor.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
-        texture_descriptor.setStorageMode(MTLStorageMode::Private);
-        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
-        let intermediate_texture = self
-            .device
-            .newTextureWithDescriptor(&texture_descriptor)
-            .context("allocating path intermediate texture")?;
-
-        let msaa_texture = if self.path_sample_count > 1 {
-            // https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus
-            // Rendering MSAA textures are done in a single pass, so we can use memory-less storage on Apple Silicon
-            let storage_mode = if self.is_apple_gpu {
-                MTLStorageMode::Memoryless
-            } else {
-                MTLStorageMode::Private
-            };
-
-            let msaa_descriptor = texture_descriptor;
-            msaa_descriptor.setTextureType(MTLTextureType::Type2DMultisample);
-            msaa_descriptor.setStorageMode(storage_mode);
-            // SAFETY: The multisample texture uses the same sample count as its render pipeline.
-            unsafe {
-                msaa_descriptor.setSampleCount(self.path_sample_count as _);
-            }
-            Some(
-                self.device
-                    .newTextureWithDescriptor(&msaa_descriptor)
-                    .context("allocating multisample path texture")?,
-            )
-        } else {
-            None
-        };
-        self.path_intermediate_texture = Some(intermediate_texture);
-        self.path_intermediate_msaa_texture = msaa_texture;
-        Ok(())
     }
 
     pub fn update_transparency(&mut self, transparent: bool) {
@@ -806,9 +737,7 @@ impl MetalRenderer {
         texture: &ProtocolObject<dyn MTLTexture>,
         viewport_size: Size<DevicePixels>,
     ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>> {
-        if self.path_intermediate_texture.is_none() {
-            self.update_path_intermediate_textures(viewport_size)?;
-        }
+        self.prepare_path_textures(scene, viewport_size)?;
         // Tiles first: groups composite them too. A group's own pass has no
         // layers, and must not age the cache.
         if !crate::fast::effects::in_group_pass() {
@@ -897,10 +826,7 @@ impl MetalRenderer {
 
         // Headless callers do not have a Cocoa event-loop pool to release
         // autoreleased command buffers and render-pass descriptors.
-        objc2::rc::autoreleasepool(|_| {
-            self.update_path_intermediate_textures(size)?;
-            self.render_offscreen(scene, size)
-        })
+        objc2::rc::autoreleasepool(|_| self.render_offscreen(scene, size))
     }
 
     /// Renders a scene into a new offscreen texture of `size` and reads it
@@ -965,8 +891,6 @@ impl MetalRenderer {
         }
 
         objc2::rc::autoreleasepool(|_| {
-            self.update_path_intermediate_textures(size)?;
-
             let needs_new_target = self.headless_render_target.as_ref().is_none_or(|texture| {
                 texture.width() != size.width.0 as usize
                     || texture.height() != size.height.0 as usize
@@ -1144,7 +1068,7 @@ impl MetalRenderer {
         &self,
         paths: &[Path<ScaledPixels>],
         writer: &mut InstanceBufferWriter,
-        viewport_size: Size<DevicePixels>,
+        _viewport_size: Size<DevicePixels>,
         command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     ) -> Result<bool> {
         if paths.is_empty() {
@@ -1155,16 +1079,13 @@ impl MetalRenderer {
             .as_ref()
             .context("missing path intermediate texture")?;
 
+        let origin = crate::fast::path_textures::PathTextures::origin(&self.fast_path_textures);
+        let extent = crate::fast::path_textures::PathTextures::extent(&self.fast_path_textures);
         let mut vertices = Vec::new();
         for path in paths {
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds: path.bounds.intersect(&path.content_mask.bounds),
-                rounded_bounds: path.content_mask.rounded_bounds,
-                corner_radii: path.content_mask.corner_radii,
-            }));
+            vertices.extend(crate::fast::path_textures::rasterization_vertices(
+                path, origin,
+            ));
         }
         let vertex_instance_bindings = writer.write(&vertices)?;
 
@@ -1206,8 +1127,8 @@ impl MetalRenderer {
                 PathRasterizationInputIndex::Vertices as usize,
             );
             command_encoder.setVertexBytes_length_atIndex(
-                ptr::NonNull::from(&viewport_size).cast(),
-                mem::size_of_val(&viewport_size),
+                ptr::NonNull::from(&extent).cast(),
+                mem::size_of_val(&extent),
                 PathRasterizationInputIndex::ViewportSize as usize,
             );
             command_encoder.setFragmentBuffer_offset_atIndex(
@@ -1368,6 +1289,18 @@ impl MetalRenderer {
             command_encoder.setFragmentTexture_atIndex(
                 Some(intermediate_texture),
                 SpriteInputIndex::AtlasTexture as usize,
+            );
+            let region = crate::fast::path_textures::PathTextures::region(&self.fast_path_textures);
+            let region = [
+                region.origin.x.0 as f32,
+                region.origin.y.0 as f32,
+                region.size.width.0 as f32,
+                region.size.height.0 as f32,
+            ];
+            command_encoder.setVertexBytes_length_atIndex(
+                ptr::NonNull::from(&region).cast(),
+                mem::size_of_val(&region),
+                SpriteInputIndex::PathRegion as usize,
             );
         }
 
@@ -2160,6 +2093,7 @@ pub(crate) enum SpriteInputIndex {
     AtlasTextureSize = 3,
     AtlasTexture = 4,
     Backdrop = 5,
+    PathRegion = 6,
 }
 
 #[repr(C)]

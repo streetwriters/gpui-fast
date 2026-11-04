@@ -33,7 +33,7 @@ use objc2_metal::{
 
 use crate::metal_renderer::{
     InstanceBinding, InstanceBindings, InstanceBufferWriter, MetalRenderer,
-    PathRasterizationInputIndex, PathRasterizationVertex, new_command_encoder_for_texture,
+    PathRasterizationInputIndex, new_command_encoder_for_texture,
 };
 
 /// How far apart, in device pixels, path batches must be to share the
@@ -85,7 +85,8 @@ pub(crate) fn draw_primitives_to_texture(
         return Ok(None);
     }
     let path_batches = plan_paths(scene);
-    let vertices = write_vertices(scene, &path_batches, writer)?;
+    let origin = crate::fast::path_textures::PathTextures::origin(&renderer.fast_path_textures);
+    let vertices = write_vertices(scene, &path_batches, writer, origin)?;
 
     let command_queue = renderer.command_queue.clone();
     let command_buffer = command_queue
@@ -105,7 +106,6 @@ pub(crate) fn draw_primitives_to_texture(
             renderer,
             vertices.as_ref(),
             first.group.clone(),
-            viewport_size,
             &command_buffer,
         )?,
         None => false,
@@ -145,7 +145,6 @@ pub(crate) fn draw_primitives_to_texture(
                         renderer,
                         vertices.as_ref(),
                         path_batch.group.clone(),
-                        viewport_size,
                         &command_buffer,
                     )?;
                     command_encoder = new_command_encoder_for_texture(
@@ -286,6 +285,7 @@ fn write_vertices(
     scene: &Scene,
     path_batches: &[PathBatch],
     writer: &mut InstanceBufferWriter,
+    origin: gpui::Point<f32>,
 ) -> Result<Option<InstanceBinding>> {
     let count = path_batches.last().map_or(0, |last| last.vertices.end);
     if count == 0 {
@@ -294,17 +294,7 @@ fn write_vertices(
     let vertices = path_batches
         .iter()
         .flat_map(|batch| &scene.paths[batch.paths.clone()])
-        .flat_map(|path| {
-            let bounds = path.bounds.intersect(&path.content_mask.bounds);
-            path.vertices.iter().map(move |v| PathRasterizationVertex {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds,
-                rounded_bounds: path.content_mask.rounded_bounds,
-                corner_radii: path.content_mask.corner_radii,
-            })
-        });
+        .flat_map(|path| crate::fast::path_textures::rasterization_vertices(path, origin));
     // The plan counted these same vertices, so the iterator yields exactly
     // `count` of them and every reserved slot is written.
     let binding = writer.write_iter(Counted {
@@ -345,7 +335,6 @@ fn rasterize_group(
     renderer: &MetalRenderer,
     vertices: Option<&InstanceBinding>,
     group: Option<Range<usize>>,
-    viewport_size: Size<DevicePixels>,
     command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
 ) -> Result<bool> {
     let (Some(vertices), Some(group)) = (vertices, group.filter(|group| !group.is_empty())) else {
@@ -355,6 +344,8 @@ fn rasterize_group(
         .path_intermediate_texture
         .as_ref()
         .context("missing path intermediate texture")?;
+    let viewport_size =
+        crate::fast::path_textures::PathTextures::extent(&renderer.fast_path_textures);
 
     let render_pass_descriptor = MTLRenderPassDescriptor::new();
     // SAFETY: Index zero is within the render pass's color attachment array.
