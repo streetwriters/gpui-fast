@@ -382,6 +382,7 @@ impl DirectXRenderer {
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
         crate::fast::layers::raster::rasterize_tiles(self, scene)?;
+        crate::fast::path_textures::prepare(self, scene)?;
         self.pre_draw(&match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
@@ -692,6 +693,14 @@ impl DirectXRenderer {
             }));
         }
 
+        crate::fast::path_textures::shift_vertices(
+            &mut vertices,
+            Some(
+                self.fast_frame
+                    .path_textures
+                    .region_of(&resources.path_intermediate_texture),
+            ),
+        );
         self.pipelines.path_rasterization_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
@@ -735,11 +744,12 @@ impl DirectXRenderer {
         // disjoint, so we can copy each path's bounds individually. If this
         // batch combines different draw orders, we perform a single copy
         // for a minimal spanning rect.
-        let sprites = if paths.last().unwrap().order == first_path.order {
+        let mut sprites = if paths.last().unwrap().order == first_path.order {
             paths
                 .iter()
                 .map(|path| PathSprite {
                     bounds: path.clipped_bounds(),
+                    region: Default::default(),
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -747,11 +757,22 @@ impl DirectXRenderer {
             for path in paths.iter().skip(1) {
                 bounds = bounds.union(&path.clipped_bounds());
             }
-            vec![PathSprite { bounds }]
+            vec![PathSprite {
+                bounds,
+                region: Default::default(),
+            }]
         };
 
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
+        crate::fast::path_textures::set_regions(
+            &mut sprites,
+            Some(
+                self.fast_frame
+                    .path_textures
+                    .region_of(&resources.path_intermediate_texture),
+            ),
+        );
         self.pipelines.path_sprite_pipeline.update_buffer(
             &devices.device,
             &devices.device_context,
@@ -1361,6 +1382,7 @@ pub(crate) struct PathRasterizationSprite {
 #[repr(C)]
 pub(crate) struct PathSprite {
     pub(crate) bounds: Bounds<ScaledPixels>,
+    pub(crate) region: Bounds<ScaledPixels>,
 }
 
 impl Drop for DirectXRenderer {
@@ -1451,10 +1473,17 @@ fn create_resources(
 )> {
     let (render_target, render_target_view) =
         create_render_target_and_its_view(swap_chain, &devices.device)?;
-    let (path_intermediate_texture, path_intermediate_srv) =
-        create_path_intermediate_texture(&devices.device, width, height)?;
+    let (path_intermediate_texture, path_intermediate_srv) = create_path_intermediate_texture(
+        &devices.device,
+        crate::fast::path_textures::PLACEHOLDER,
+        crate::fast::path_textures::PLACEHOLDER,
+    )?;
     let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
-        create_path_intermediate_msaa_texture_and_view(&devices.device, width, height)?;
+        create_path_intermediate_msaa_texture_and_view(
+            &devices.device,
+            crate::fast::path_textures::PLACEHOLDER,
+            crate::fast::path_textures::PLACEHOLDER,
+        )?;
     let viewport = D3D11_VIEWPORT {
         TopLeftX: 0.0,
         TopLeftY: 0.0,

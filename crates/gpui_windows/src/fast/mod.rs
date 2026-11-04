@@ -19,4 +19,5 @@ pub(crate) mod globals;
 pub(crate) mod layers;
 #[cfg(test)]
 pub(crate) mod native_tests;
+pub(crate) mod path_textures;
 pub(crate) mod rounded_clip;

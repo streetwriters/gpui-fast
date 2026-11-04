@@ -866,7 +866,15 @@ impl Harness {
     /// renderer draws a frame (rasterizing the layer tiles it needs first),
     /// and returns its pixels as RGBA bytes, row by row.
     fn render(&mut self, scene: &Scene, size: Size<DevicePixels>, clear: Rgba) -> Vec<u8> {
-        self.draw(scene, size, clear, true).expect("frame drawn")
+        self.draw(scene, size, clear, true, None)
+            .expect("frame drawn")
+    }
+
+    /// [`Self::render`] with path textures that cover the scene's paths only.
+    fn render_sized(&mut self, scene: &Scene, size: Size<DevicePixels>, clear: Rgba) -> Vec<u8> {
+        let region = crate::fast::path_textures::region_for(scene, size);
+        self.draw(scene, size, clear, true, region)
+            .expect("frame drawn")
     }
 
     /// [`Self::render`] without rasterizing any layer tile.
@@ -876,7 +884,8 @@ impl Harness {
         size: Size<DevicePixels>,
         clear: Rgba,
     ) -> Vec<u8> {
-        self.draw(scene, size, clear, false).expect("frame drawn")
+        self.draw(scene, size, clear, false, None)
+            .expect("frame drawn")
     }
 
     fn draw(
@@ -885,6 +894,7 @@ impl Harness {
         size: Size<DevicePixels>,
         clear: Rgba,
         rasterize_tiles: bool,
+        region: Option<Bounds<DevicePixels>>,
     ) -> Result<Vec<u8>> {
         if rasterize_tiles {
             let tiles = Target {
@@ -911,10 +921,13 @@ impl Harness {
                 .CreateRenderTargetView(&texture, None, Some(&mut render_target))?
         };
         // The window's path textures, as `DirectXResources::new` makes them.
+        let (path_width, path_height) = region.map_or((width, height), |region| {
+            (region.size.width.0 as u32, region.size.height.0 as u32)
+        });
         let (intermediate_texture, intermediate_srv) =
-            create_path_intermediate_texture(&self.device, width, height)?;
+            create_path_intermediate_texture(&self.device, path_width, path_height)?;
         let (msaa_texture, msaa_view) =
-            create_path_intermediate_msaa_texture_and_view(&self.device, width, height)?;
+            create_path_intermediate_msaa_texture_and_view(&self.device, path_width, path_height)?;
         let target = Target {
             device: &self.device,
             device_context: &self.context,
@@ -926,6 +939,7 @@ impl Harness {
                 intermediate_srv: &intermediate_srv,
                 msaa_texture: &msaa_texture,
                 msaa_view: &msaa_view,
+                region,
             }),
         };
         let globals = create_globals(&self.device, width, height)?;
@@ -1430,4 +1444,104 @@ mod groups {
             );
         }
     }
+}
+
+const SIZED_VIEWPORT: (i32, i32) = (1200, 900);
+
+fn sized_mask(rounded: bool) -> ContentMask<gpui::Pixels> {
+    let bounds = Bounds {
+        origin: point(px(0.), px(0.)),
+        size: size(px(SIZED_VIEWPORT.0 as f32), px(SIZED_VIEWPORT.1 as f32)),
+    };
+    if rounded {
+        ContentMask {
+            bounds,
+            rounded_bounds: Bounds {
+                origin: point(px(20.), px(20.)),
+                size: size(
+                    px(SIZED_VIEWPORT.0 as f32 - 40.),
+                    px(SIZED_VIEWPORT.1 as f32 - 40.),
+                ),
+            },
+            corner_radii: Corners::all(px(60.)),
+        }
+    } else {
+        ContentMask::new(bounds)
+    }
+}
+
+fn add_sized_path(scene: &mut Scene, x: f32, y: f32, side: f32, gradient: bool, rounded: bool) {
+    let mut path = Path::new(point(px(x), px(y)));
+    path.line_to(point(px(x + side), px(y + side * 0.3)));
+    path.curve_to(
+        point(px(x + side * 0.2), px(y + side)),
+        point(px(x + side), px(y + side)),
+    );
+    path.line_to(point(px(x), px(y)));
+    path.content_mask = sized_mask(rounded);
+    path.color = if gradient {
+        linear_gradient(
+            35.,
+            linear_color_stop(Hsla::from(rgba(0xff0066ff)), 0.),
+            linear_color_stop(Hsla::from(rgba(0x0066ffcc)), 1.),
+        )
+    } else {
+        Hsla::from(rgba(0x8800ffcc)).into()
+    };
+    scene.insert_primitive(path.scale(1.));
+}
+
+fn add_sized_quad(scene: &mut Scene) {
+    scene.insert_primitive(quad(
+        sp(300., 300., 500., 200.),
+        Hsla::from(rgba(0x3366ccff)),
+    ));
+}
+
+/// The scene drawn with the path textures sized to its paths, which must be
+/// smaller than the viewport, equals the scene drawn with window-sized ones.
+fn assert_sized_equals_full(mut scene: Scene) {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    let view = device_size(SIZED_VIEWPORT.0, SIZED_VIEWPORT.1);
+    scene.finish();
+    let full = harness.render(&scene, view, background());
+    let region = crate::fast::path_textures::region_for(&scene, view).expect("the scene has paths");
+    assert!(region.size.width.0 < SIZED_VIEWPORT.0 || region.size.height.0 < SIZED_VIEWPORT.1);
+    let sized = harness.render_sized(&scene, view, background());
+    assert_same_pixels(&sized, &full, SIZED_VIEWPORT.0 as usize);
+}
+
+#[test]
+fn a_path_at_the_bottom_right_edge_equals_window_sized_path_textures() {
+    for (gradient, rounded) in [(false, false), (true, false), (true, true)] {
+        let mut scene = Scene::default();
+        add_sized_quad(&mut scene);
+        add_sized_path(&mut scene, 1150., 850., 44., gradient, rounded);
+        assert_sized_equals_full(scene);
+    }
+}
+
+#[test]
+fn far_apart_path_batches_equal_window_sized_path_textures() {
+    let mut scene = Scene::default();
+    add_sized_path(&mut scene, 700., 520., 60., true, false);
+    add_sized_quad(&mut scene);
+    add_sized_path(&mut scene, 1100., 800., 60., false, true);
+    add_sized_path(&mut scene, 850., 600., 90., true, true);
+    assert_sized_equals_full(scene);
+}
+
+#[test]
+fn paths_in_effect_groups_equal_window_sized_path_textures() {
+    let mut scene = Scene::default();
+    add_sized_quad(&mut scene);
+    add_sized_path(&mut scene, 1100., 820., 70., true, false);
+    let scope = scene.begin_effect_group(0.7);
+    add_sized_path(&mut scene, 700., 480., 90., true, true);
+    add_sized_quad(&mut scene);
+    scene.end_effect_group(scope, sp(600., 400., 400., 300.));
+    add_sized_path(&mut scene, 1000., 820., 50., false, false);
+    assert_sized_equals_full(scene);
 }

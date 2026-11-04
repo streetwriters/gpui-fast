@@ -14,7 +14,7 @@
 use std::slice;
 
 use anyhow::{Context as _, Result};
-use gpui::{Path, PrimitiveBatch, ScaledPixels, Scene};
+use gpui::{Bounds, DevicePixels, Path, PrimitiveBatch, ScaledPixels, Scene};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP},
     Direct3D11::{
@@ -43,6 +43,7 @@ pub(crate) struct FrameState {
     /// The scroll layer tiles the frames composite.
     pub(crate) layers: TileCache,
     pub(crate) rounded_masks: crate::fast::rounded_clip::Masks,
+    pub(crate) path_textures: crate::fast::path_textures::PathTextures,
 }
 
 /// The Direct3D objects a scene is drawn with.
@@ -66,16 +67,20 @@ pub(crate) struct PathTargets<'a> {
     pub(crate) intermediate_srv: &'a Option<ID3D11ShaderResourceView>,
     pub(crate) msaa_texture: &'a ID3D11Texture2D,
     pub(crate) msaa_view: &'a Option<ID3D11RenderTargetView>,
+    /// The part of the target the intermediate textures cover; none when they
+    /// cover all of it.
+    pub(crate) region: Option<Bounds<DevicePixels>>,
 }
 
 impl<'a> PathTargets<'a> {
-    pub(crate) fn of(resources: &'a DirectXResources) -> Self {
+    pub(crate) fn of(resources: &'a DirectXResources, region: Bounds<DevicePixels>) -> Self {
         PathTargets {
             render_target_view: &resources.render_target_view,
             intermediate_texture: &resources.path_intermediate_texture,
             intermediate_srv: &resources.path_intermediate_srv,
             msaa_texture: &resources.path_intermediate_msaa_texture,
             msaa_view: &resources.path_intermediate_msaa_view,
+            region: Some(region),
         }
     }
 }
@@ -95,12 +100,16 @@ pub(crate) fn draw_batches(renderer: &mut DirectXRenderer, scene: &Scene) -> Res
         return Ok(false);
     }
     let resources = renderer.resources.as_ref().context("resources missing")?;
+    let region = renderer
+        .fast_frame
+        .path_textures
+        .region_of(&resources.path_intermediate_texture);
     let target = Target {
         device: &devices.device,
         device_context: &devices.device_context,
         atlas: &renderer.atlas,
         globals: &renderer.globals,
-        paths: Some(PathTargets::of(resources)),
+        paths: Some(PathTargets::of(resources, region)),
     };
     draw_scene(
         &target,
@@ -415,6 +424,7 @@ fn rasterize_paths(
             corner_radii: path.content_mask.corner_radii,
         }));
     }
+    crate::fast::path_textures::shift_vertices(vertices, targets.region);
     pipeline.update_buffer(device, context, vertices)?;
     draw.state
         .set_pipeline(context, pipeline, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -453,14 +463,19 @@ fn composite_paths(
     if last_path.order == first_path.order {
         sprites.extend(paths.iter().map(|path| PathSprite {
             bounds: path.clipped_bounds(),
+            region: Default::default(),
         }));
     } else {
         let mut bounds = first_path.clipped_bounds();
         for path in &paths[1..] {
             bounds = bounds.union(&path.clipped_bounds());
         }
-        sprites.push(PathSprite { bounds });
+        sprites.push(PathSprite {
+            bounds,
+            region: Default::default(),
+        });
     }
+    crate::fast::path_textures::set_regions(sprites, targets.region);
 
     let context = draw.device_context;
     pipeline.update_buffer(device, context, sprites)?;

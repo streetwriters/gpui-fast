@@ -1153,6 +1153,8 @@ float4 path_rasterization_fragment(PathFragmentInput input): SV_Target {
 
 struct PathSprite {
     Bounds bounds;
+    // The part of the viewport the path texture covers; a zero size means all of it.
+    Bounds region;
 };
 
 struct PathSpriteVertexOutput {
@@ -1170,7 +1172,8 @@ PathSpriteVertexOutput path_sprite_vertex(uint vertex_id: SV_VertexID, uint spri
     float4 device_position = to_device_position(unit_vertex, sprite.bounds);
 
     float2 screen_position = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
-    float2 texture_coords = screen_position / global_viewport_size;
+    float2 region_size = sprite.region.size.x > 0.0 ? sprite.region.size : global_viewport_size;
+    float2 texture_coords = (screen_position - sprite.region.origin) / region_size;
 
     PathSpriteVertexOutput output;
     output.position = device_position;

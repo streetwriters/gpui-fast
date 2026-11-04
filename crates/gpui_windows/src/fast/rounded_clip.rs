@@ -249,6 +249,7 @@ pub(crate) fn draw_group(
                 intermediate_srv: &image.view,
                 msaa_texture: &image.msaa,
                 msaa_view: &image.msaa_target,
+                region: None,
             }
         });
         let content_target = Target {

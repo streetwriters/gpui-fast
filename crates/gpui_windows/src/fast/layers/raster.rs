@@ -127,6 +127,7 @@ pub(crate) fn rasterize_groups(
                 intermediate_srv: &intermediate_srv,
                 msaa_texture: &msaa_texture,
                 msaa_view: &msaa_view,
+                region: None,
             }),
         };
         draw_scene(&group_target, pipelines, frame, sub)
