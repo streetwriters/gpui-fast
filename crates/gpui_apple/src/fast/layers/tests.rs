@@ -967,6 +967,175 @@ fn pixel(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
     [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
 }
 
+/// Paints its child in an effect group.
+struct Grouped {
+    opacity: f32,
+    effect: gpui::GroupEffect,
+    child: gpui::AnyElement,
+}
+
+impl gpui::IntoElement for Grouped {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for Grouped {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<gpui::Pixels>,
+        _: &mut (),
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<gpui::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        let child = &mut self.child;
+        window.with_group_effect(self.opacity, self.effect, |window| child.paint(window, cx));
+    }
+}
+
+fn grouped(opacity: f32, effect: gpui::GroupEffect, child: impl gpui::IntoElement) -> Grouped {
+    Grouped {
+        opacity,
+        effect,
+        child: child.into_any_element(),
+    }
+}
+
+/// A 40px square with rounded corners that clips `child`.
+fn rounded_clip(child: impl gpui::IntoElement) -> gpui::Div {
+    use gpui::{ParentElement as _, Styled as _};
+    gpui::div()
+        .size(px(40.))
+        .rounded(px(16.))
+        .overflow_hidden()
+        .child(child)
+}
+
+fn black_square() -> gpui::Div {
+    use gpui::Styled as _;
+    gpui::div().size(px(64.)).bg(gpui::black())
+}
+
+fn white_window(child: impl gpui::IntoElement) -> gpui::Div {
+    use gpui::{ParentElement as _, Styled as _};
+    gpui::div()
+        .size(px(64.))
+        .pl(px(12.))
+        .pt(px(12.))
+        .bg(gpui::white())
+        .child(child)
+}
+
+/// Whether `pixel` is black faded to `alpha` over white, within `slack`.
+fn faded(pixel: [u8; 4], alpha: f32, slack: u8) -> bool {
+    let expected = (255. * (1. - alpha)) as u8;
+    pixel[..3].iter().all(|c| c.abs_diff(expected) <= slack)
+}
+
+#[gpui::test]
+fn a_group_inside_a_rounded_clip_is_clipped_with_it(cx: &mut gpui::TestAppContext) {
+    let (pixels, side) = render_div_fixture(cx, || {
+        white_window(rounded_clip(grouped(
+            0.5,
+            gpui::GroupEffect::None,
+            black_square(),
+        )))
+    });
+    let sample = |x, y| pixel(&pixels, side, x * side / 64, y * side / 64);
+    assert!(faded(sample(32, 32), 0.5, 4), "{:?}", sample(32, 32));
+    assert_eq!(sample(13, 13), [255, 255, 255, 255]);
+    assert_eq!(sample(58, 32), [255, 255, 255, 255]);
+    assert_eq!(sample(32, 58), [255, 255, 255, 255]);
+}
+
+#[gpui::test]
+fn a_rounded_clip_inside_a_group_clips_what_the_group_draws(cx: &mut gpui::TestAppContext) {
+    let (pixels, side) = render_div_fixture(cx, || {
+        white_window(grouped(
+            0.5,
+            gpui::GroupEffect::None,
+            rounded_clip(black_square()),
+        ))
+    });
+    let sample = |x, y| pixel(&pixels, side, x * side / 64, y * side / 64);
+    assert!(faded(sample(32, 32), 0.5, 4), "{:?}", sample(32, 32));
+    assert_eq!(sample(13, 13), [255, 255, 255, 255]);
+    assert_eq!(sample(58, 32), [255, 255, 255, 255]);
+    assert_eq!(sample(32, 58), [255, 255, 255, 255]);
+}
+
+#[gpui::test]
+fn a_blurred_group_inside_a_rounded_clip_matches_the_group_alone(cx: &mut gpui::TestAppContext) {
+    use gpui::{ParentElement as _, Styled as _};
+    fn blurred() -> Grouped {
+        grouped(
+            1.0,
+            gpui::GroupEffect::Blur { sigma: 6.0 },
+            gpui::div().size(px(64.)).child(
+                gpui::div()
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(10.))
+                    .size(px(20.))
+                    .bg(gpui::black()),
+            ),
+        )
+    }
+    let (clipped, side) = render_div_fixture(cx, || white_window(rounded_clip(blurred())));
+    let (alone, _) = render_div_fixture(cx, || white_window(blurred()));
+    for (x, y) in [(32, 32), (24, 32), (42, 32), (32, 44), (32, 26)] {
+        let (x, y) = (x * side / 64, y * side / 64);
+        let (a, b) = (pixel(&clipped, side, x, y), pixel(&alone, side, x, y));
+        assert!(
+            a[..3].iter().zip(&b).all(|(a, b)| a.abs_diff(*b) <= 2),
+            "({x}, {y}): {a:?} vs {b:?}"
+        );
+    }
+    assert!(pixel(&clipped, side, 32 * side / 64, 32 * side / 64)[0] < 100);
+    assert_eq!(
+        pixel(&clipped, side, 13 * side / 64, 13 * side / 64),
+        [255, 255, 255, 255]
+    );
+}
+
 /// Draws scenes with a headless renderer, as a window's frames are drawn.
 struct Harness {
     renderer: MetalRenderer,

@@ -82,6 +82,12 @@ pub(crate) fn split_groups(scene: &mut Scene) {
     for (sub, group) in subs.iter_mut().zip(&scene.groups) {
         let origin = group.bounds.origin;
         shift(sub, &mut table, -origin.x.0, -origin.y.0);
+        crate::fast::rounded_clip_scene::move_clips(
+            sub,
+            &scene.layers.frames,
+            -origin.x.0,
+            -origin.y.0,
+        );
     }
     for sub in &mut subs {
         sub.transforms = table.clone();
