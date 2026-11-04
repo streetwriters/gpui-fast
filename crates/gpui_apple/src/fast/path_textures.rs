@@ -202,8 +202,9 @@ pub(crate) fn bind_region(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use gpui::{ContentMask, Corners, Hsla, Pixels, Quad, point, px, rgba};
+    use super::{IDLE_FRAMES, MetalRenderer};
+    use gpui::{Bounds, DevicePixels, ScaledPixels, Scene, Size, point, size};
+    use gpui::{ContentMask, Corners, Hsla, Pixels, Quad, px, rgba};
     use objc2_metal::MTLTexture;
 
     const VIEWPORT: (i32, i32) = (1200, 900);
