@@ -826,6 +826,7 @@ pub(super) struct Harness {
     instance_capacity: u64,
     instance_alignment: u64,
     path_targets: Option<PathTargets>,
+    path_region: Option<Bounds<DevicePixels>>,
     state: FrameState,
     dual_source_blending: bool,
 }
@@ -937,6 +938,7 @@ impl Harness {
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             instance_alignment,
             path_targets: None,
+            path_region: None,
             state: FrameState::default(),
             dual_source_blending,
         })
@@ -966,9 +968,26 @@ impl Harness {
         size: Size<DevicePixels>,
         clear: Rgba,
     ) -> Vec<u8> {
+        self.path_region = None;
+        self.draw(scene, size, clear)
+    }
+
+    /// Like `render`, with path textures that cover the scene's paths only.
+    pub(super) fn render_sized(
+        &mut self,
+        scene: &Scene,
+        size: Size<DevicePixels>,
+        clear: Rgba,
+    ) -> Vec<u8> {
+        self.path_region = crate::fast::path_textures::region_for(scene, size);
+        self.draw(scene, size, clear)
+    }
+
+    fn draw(&mut self, scene: &Scene, size: Size<DevicePixels>, clear: Rgba) -> Vec<u8> {
         let (width, height) = (size.width.0 as u32, size.height.0 as u32);
+        let path_size = self.path_region.map_or(size, |region| region.size);
         self.write_globals(width, height);
-        self.ensure_path_targets(size);
+        self.ensure_path_targets(path_size);
         self.atlas.before_frame();
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1017,10 +1036,17 @@ impl Harness {
         };
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        let path_globals = match self.path_region {
+            Some(region) => GlobalParams {
+                viewport_size: [region.size.width.0 as f32, region.size.height.0 as f32],
+                ..globals
+            },
+            None => globals,
+        };
         self.queue.write_buffer(
             &self.globals_buffer,
             self.path_globals_offset,
-            bytemuck::bytes_of(&globals),
+            bytemuck::bytes_of(&path_globals),
         );
         self.queue.write_buffer(
             &self.globals_buffer,
@@ -1061,6 +1087,10 @@ impl Harness {
 impl FrameHost for Harness {
     fn frame_state(&mut self) -> &mut FrameState {
         &mut self.state
+    }
+
+    fn path_region(&self) -> Option<Bounds<DevicePixels>> {
+        self.path_region
     }
 
     fn instance_data_alignment(&self) -> u64 {
@@ -1816,4 +1846,151 @@ mod groups {
             );
         }
     }
+}
+
+const SIZED_VIEWPORT: (i32, i32) = (1200, 900);
+
+fn sized_mask(rounded: bool) -> ContentMask<gpui::Pixels> {
+    let bounds = Bounds {
+        origin: point(px(0.), px(0.)),
+        size: size(px(SIZED_VIEWPORT.0 as f32), px(SIZED_VIEWPORT.1 as f32)),
+    };
+    if rounded {
+        ContentMask {
+            bounds,
+            rounded_bounds: Bounds {
+                origin: point(px(20.), px(20.)),
+                size: size(
+                    px(SIZED_VIEWPORT.0 as f32 - 40.),
+                    px(SIZED_VIEWPORT.1 as f32 - 40.),
+                ),
+            },
+            corner_radii: Corners::all(px(60.)),
+        }
+    } else {
+        ContentMask::new(bounds)
+    }
+}
+
+fn add_sized_path(scene: &mut Scene, x: f32, y: f32, side: f32, gradient: bool, rounded: bool) {
+    let mut path = Path::new(point(px(x), px(y)));
+    path.line_to(point(px(x + side), px(y + side * 0.3)));
+    path.curve_to(
+        point(px(x + side * 0.2), px(y + side)),
+        point(px(x + side), px(y + side)),
+    );
+    path.line_to(point(px(x), px(y)));
+    path.content_mask = sized_mask(rounded);
+    path.color = if gradient {
+        linear_gradient(
+            35.,
+            linear_color_stop(Hsla::from(rgba(0xff0066ff)), 0.),
+            linear_color_stop(Hsla::from(rgba(0x0066ffcc)), 1.),
+        )
+    } else {
+        Hsla::from(rgba(0x8800ffcc)).into()
+    };
+    scene.insert_primitive(path.scale(1.));
+}
+
+fn add_sized_quad(scene: &mut Scene) {
+    scene.insert_primitive(quad(
+        sp(300., 300., 500., 200.),
+        Hsla::from(rgba(0x3366ccff)),
+    ));
+}
+
+/// The scene drawn with the path textures sized to its paths, which must be
+/// smaller than the viewport, equals the scene drawn with window-sized ones.
+fn assert_sized_equals_full(mut scene: Scene) {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    let view = device_size(SIZED_VIEWPORT.0, SIZED_VIEWPORT.1);
+    scene.finish();
+    let full = harness.render(&scene, view, background());
+    let region = crate::fast::path_textures::region_for(&scene, view).expect("the scene has paths");
+    assert!(region.size.width.0 < SIZED_VIEWPORT.0 || region.size.height.0 < SIZED_VIEWPORT.1);
+    let sized = harness.render_sized(&scene, view, background());
+    assert_same_pixels(&sized, &full, SIZED_VIEWPORT.0 as usize);
+}
+
+#[test]
+fn a_path_at_the_bottom_right_edge_equals_window_sized_path_textures() {
+    for (gradient, rounded) in [(false, false), (true, false), (true, true)] {
+        let mut scene = Scene::default();
+        add_sized_quad(&mut scene);
+        add_sized_path(&mut scene, 1150., 850., 44., gradient, rounded);
+        assert_sized_equals_full(scene);
+    }
+}
+
+#[test]
+fn far_apart_path_batches_equal_window_sized_path_textures() {
+    let mut scene = Scene::default();
+    add_sized_path(&mut scene, 700., 520., 60., true, false);
+    add_sized_quad(&mut scene);
+    add_sized_path(&mut scene, 1100., 800., 60., false, true);
+    add_sized_path(&mut scene, 850., 600., 90., true, true);
+    assert_sized_equals_full(scene);
+}
+
+#[test]
+fn paths_in_effect_groups_equal_window_sized_path_textures() {
+    let mut scene = Scene::default();
+    add_sized_quad(&mut scene);
+    add_sized_path(&mut scene, 1100., 820., 70., true, false);
+    let scope = scene.begin_effect_group(0.7);
+    add_sized_path(&mut scene, 700., 480., 90., true, true);
+    add_sized_quad(&mut scene);
+    scene.end_effect_group(scope, sp(600., 400., 400., 300.));
+    add_sized_path(&mut scene, 1000., 820., 50., false, false);
+    assert_sized_equals_full(scene);
+}
+
+#[cfg(feature = "test-support")]
+#[gpui::test]
+fn rounded_overflow_paths_equal_window_sized_path_textures(cx: &mut gpui::TestAppContext) {
+    use gpui::{ParentElement as _, Styled as _};
+
+    fn corner(bounds: Bounds<gpui::Pixels>, window: &mut gpui::Window) {
+        let mut path = Path::new(bounds.origin);
+        path.line_to(bounds.top_right());
+        path.line_to(bounds.bottom_right());
+        path.line_to(bounds.origin);
+        window.paint_path(path, gpui::black());
+    }
+    let mut harness = Harness::new().expect("path textures require a wgpu adapter");
+    rounded_clip_tests::render_with(
+        cx,
+        || {
+            gpui::div()
+                .size(px(64.))
+                .bg(gpui::white())
+                .flex()
+                .child(
+                    gpui::div()
+                        .size(px(40.))
+                        .rounded(px(16.))
+                        .overflow_hidden()
+                        .child(
+                            gpui::canvas(
+                                |_, _, _| (),
+                                |bounds, (), window, _| corner(bounds, window),
+                            )
+                            .size(px(40.)),
+                        ),
+                )
+                .child(
+                    gpui::canvas(|_, _, _| (), |bounds, (), window, _| corner(bounds, window))
+                        .size(px(24.)),
+                )
+        },
+        |scene, size| {
+            let full = harness.render(scene, size, rgba(0xffffffff));
+            let sized = harness.render_sized(scene, size, rgba(0xffffffff));
+            assert_same_pixels(&sized, &full, size.width.0 as usize);
+            sized
+        },
+    );
 }

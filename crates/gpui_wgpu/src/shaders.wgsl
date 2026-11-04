@@ -1228,6 +1228,8 @@ fn fs_path_rasterization(input: PathRasterizationVarying) -> @location(0) vec4<f
 
 struct PathSprite {
     bounds: Bounds,
+    // The part of the viewport the path texture covers; a zero size means all of it.
+    region: Bounds,
 }
 
 
@@ -1244,7 +1246,11 @@ fn vs_path(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     let device_position = to_device_position(unit_vertex, sprite.bounds);
     // For screen-space intermediate texture, convert screen position to texture coordinates
     let screen_position = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
-    let texture_coords = screen_position / globals.viewport_size;
+    var region_size = globals.viewport_size;
+    if sprite.region.size.x > 0.0 {
+        region_size = sprite.region.size;
+    }
+    let texture_coords = (screen_position - sprite.region.origin) / region_size;
 
     var out = PathVarying();
     out.position = device_position;

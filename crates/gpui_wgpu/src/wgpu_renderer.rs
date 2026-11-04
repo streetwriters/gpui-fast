@@ -153,6 +153,7 @@ pub(crate) struct GammaParams {
 #[repr(C)]
 pub(crate) struct PathSprite {
     pub(crate) bounds: Bounds<ScaledPixels>,
+    pub(crate) region: Bounds<ScaledPixels>,
 }
 
 #[derive(Clone, Debug)]
@@ -257,7 +258,7 @@ pub(crate) struct WgpuResources {
     pub(crate) globals_bind_group: wgpu::BindGroup,
     pub(crate) path_globals_bind_group: wgpu::BindGroup,
     pub(crate) instance_data: InstanceData,
-    path_intermediate_texture: Option<wgpu::Texture>,
+    pub(crate) path_intermediate_texture: Option<wgpu::Texture>,
     pub(crate) path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     pub(crate) path_msaa_view: Option<wgpu::TextureView>,
@@ -269,7 +270,7 @@ struct CachedTextureBindGroup {
 }
 
 impl WgpuResources {
-    fn invalidate_intermediate_textures(&mut self) {
+    pub(crate) fn invalidate_intermediate_textures(&mut self) {
         self.path_intermediate_texture = None;
         self.path_intermediate_view = None;
         self.path_msaa_texture = None;
@@ -293,6 +294,7 @@ pub(crate) struct WgpuRendererCore {
     pub(crate) target_format: wgpu::TextureFormat,
     max_texture_size: u32,
     pub(crate) fast_frame: crate::fast::frame::FrameState,
+    pub(crate) fast_path_textures: crate::fast::path_textures::PathTextures,
 }
 
 /// GPU resources of a windowed renderer. A surface is only ever configured against the
@@ -1158,7 +1160,8 @@ impl WgpuRendererCore {
             sample_count,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | crate::fast::path_textures::msaa_usage(),
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1601,10 +1604,15 @@ impl WgpuRendererCore {
             rendering_params,
             is_bgr: false,
             dual_source_blending,
-            adapter_info: context.adapter.get_info(),
+            adapter_info: {
+                let info = context.adapter.get_info();
+                crate::fast::path_textures::note_adapter(&info);
+                info
+            },
             target_format,
             max_texture_size,
             fast_frame: crate::fast::frame::FrameState::default(),
+            fast_path_textures: Default::default(),
         }
     }
 
@@ -1618,7 +1626,7 @@ impl WgpuRendererCore {
 
     /// Path rendering goes through an intermediate texture that must match the frame
     /// target's dimensions, so the textures are keyed by size and rebuilt on mismatch.
-    fn ensure_intermediate_textures(&mut self, size: Size<DevicePixels>) {
+    pub(crate) fn ensure_intermediate_textures(&mut self, size: Size<DevicePixels>) {
         let width = size.width.0 as u32;
         let height = size.height.0 as u32;
         if self
@@ -1672,7 +1680,7 @@ impl WgpuRendererCore {
         );
 
         self.atlas.before_frame();
-        self.ensure_intermediate_textures(size);
+        self.prepare_path_textures(scene, size);
 
         let gamma_params = GammaParams {
             gamma_ratios: self.rendering_params.gamma_ratios,
@@ -1686,10 +1694,13 @@ impl WgpuRendererCore {
             premultiplied_alpha: premultiplied_alpha as u32,
             pad: 0,
         };
-        let path_globals = GlobalParams {
-            premultiplied_alpha: 0,
-            ..globals
-        };
+        let path_globals = crate::fast::path_textures::path_globals(
+            self,
+            GlobalParams {
+                premultiplied_alpha: 0,
+                ..globals
+            },
+        );
         crate::fast::globals::write_globals(self, &globals, &path_globals, &gamma_params);
         if let Some(buffer) = &self.resources.transform_buffer {
             crate::fast::globals::write_transforms(
@@ -2065,6 +2076,7 @@ impl WgpuRendererCore {
                 .iter()
                 .map(|p| PathSprite {
                     bounds: p.clipped_bounds(),
+                    region: Default::default(),
                 })
                 .collect()
         } else {
@@ -2072,7 +2084,10 @@ impl WgpuRendererCore {
             for path in paths.iter().skip(1) {
                 bounds = bounds.union(&path.clipped_bounds());
             }
-            vec![PathSprite { bounds }]
+            vec![PathSprite {
+                bounds,
+                region: Default::default(),
+            }]
         };
 
         let Some(path_intermediate_view) = self.resources().path_intermediate_view.clone() else {
@@ -3165,7 +3180,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<Quad>(), 48 * 4);
         assert_eq!(std::mem::size_of::<Shadow>(), 36 * 4);
         assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 34 * 4);
-        assert_eq!(std::mem::size_of::<PathSprite>(), 4 * 4);
+        assert_eq!(std::mem::size_of::<PathSprite>(), 8 * 4);
         assert_eq!(std::mem::size_of::<Underline>(), 24 * 4);
         assert_eq!(std::mem::size_of::<MonochromeSprite>(), 30 * 4);
         assert_eq!(std::mem::size_of::<SubpixelSprite>(), 30 * 4);

@@ -35,7 +35,7 @@
 use std::ops::Range;
 
 use anyhow::{Context as _, Result};
-use gpui::{AtlasTextureId, Bounds, PrimitiveBatch, ScaledPixels, Scene};
+use gpui::{AtlasTextureId, Bounds, DevicePixels, PrimitiveBatch, ScaledPixels, Scene};
 
 use crate::WgpuAtlas;
 use crate::external_textures::ExternalTextures;
@@ -112,6 +112,10 @@ pub(crate) trait FrameHost {
     /// Makes the instance buffer hold at least `size` bytes.
     fn reserve_instance_data(&mut self, size: u64) -> Result<()>;
     fn target(&self) -> Result<FrameTarget<'_>>;
+    /// The part of the window the path textures cover, or none if they cover it all.
+    fn path_region(&self) -> Option<Bounds<DevicePixels>> {
+        None
+    }
     fn write_instance_texture(&self, _offset: u64, _data: &[u8]) {
         unreachable!("the storage-buffer host does not write an instance texture")
     }
@@ -124,6 +128,10 @@ impl FrameHost for WgpuRendererCore {
 
     fn frame_state(&mut self) -> &mut FrameState {
         &mut self.fast_frame
+    }
+
+    fn path_region(&self) -> Option<Bounds<DevicePixels>> {
+        WgpuRendererCore::path_region(self)
     }
 
     fn instance_data_alignment(&self) -> u64 {
@@ -222,6 +230,7 @@ fn plan_scene<'a>(
     vertices: &mut Vec<PathRasterizationVertex>,
     sprites: &mut Vec<PathSprite>,
     mut path_batches: Vec<PathBatch>,
+    region: Option<Bounds<DevicePixels>>,
 ) -> usize {
     let mut groups = Vec::new();
     for sprite in &scene.polychrome_sprites {
@@ -229,13 +238,13 @@ fn plan_scene<'a>(
             continue;
         };
         let child = frame.content.scene().expect("rounded clip content");
-        let content = plan_scene(child, scenes, vertices, sprites, Vec::new());
+        let content = plan_scene(child, scenes, vertices, sprites, Vec::new(), region);
         groups.push(GroupPlan {
             texture: sprite.tile.texture_id.index,
             content,
         });
     }
-    plan_paths(scene, vertices, sprites, &mut path_batches);
+    plan_paths(scene, vertices, sprites, &mut path_batches, region);
     let index = scenes.len();
     scenes.push(PlannedScene {
         scene,
@@ -302,6 +311,7 @@ fn record_with(
             &mut vertices,
             &mut sprites,
             Vec::new(),
+            None,
         ));
     }
     // Effect groups follow the tiles, innermost first: a group's sprite in
@@ -314,6 +324,7 @@ fn record_with(
             &mut vertices,
             &mut sprites,
             Vec::new(),
+            None,
         ));
     }
     let path_batches = std::mem::take(&mut state.path_batches);
@@ -323,6 +334,7 @@ fn record_with(
         &mut vertices,
         &mut sprites,
         path_batches,
+        host.path_region(),
     );
 
     let result = upload(host, &state.bind_groups, &scenes, &vertices, &sprites)
@@ -399,6 +411,7 @@ fn plan_paths(
     vertices: &mut Vec<PathRasterizationVertex>,
     sprites: &mut Vec<PathSprite>,
     path_batches: &mut Vec<PathBatch>,
+    region: Option<Bounds<DevicePixels>>,
 ) {
     if scene.paths.is_empty() {
         return;
@@ -432,10 +445,19 @@ fn plan_paths(
         if paths.last().map(|p| &p.order) == Some(&first_path.order) {
             sprites.extend(paths.iter().map(|p| PathSprite {
                 bounds: p.clipped_bounds(),
+                region: Default::default(),
             }));
         } else {
-            sprites.push(PathSprite { bounds: union });
+            sprites.push(PathSprite {
+                bounds: union,
+                region: Default::default(),
+            });
         }
+        crate::fast::path_textures::to_region(
+            &mut vertices[first_vertex as usize..],
+            &mut sprites[first_sprite as usize..],
+            region,
+        );
 
         let near = union.dilate(ScaledPixels(PATH_BATCH_MARGIN));
         let group = &path_batches[group_start..];
@@ -1207,7 +1229,7 @@ fn rasterize_group(
             resolve_target,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                store: wgpu::StoreOp::Store,
+                store: crate::fast::path_textures::store_op(resolve_target.is_some()),
             },
             depth_slice: None,
         })],
