@@ -12,8 +12,10 @@ use std::mem;
 
 use crate::fast::rounded_clip::{ClipOperation, Shape};
 use crate::{
-    AtlasTextureId, AtlasTextureKind, AtlasTile, ContentMask, LayerContent, LayerFrame, LayerKey,
-    PolychromeSprite, Rgba, Scene, TileId, scene::PaintOperation,
+    AtlasTextureId, AtlasTextureKind, AtlasTile, ColorFilter, ContentMask, LayerContent,
+    LayerFrame, LayerKey, PolychromeSprite, Rgba, Scene, TileId, TransformIndex,
+    TransformationMatrix,
+    scene::{PaintOperation, Primitive},
 };
 
 const CLIP_TEXTURE_BASE: u32 = 0xF100_0000;
@@ -33,12 +35,19 @@ pub(crate) fn compile(scene: &mut Scene) {
         .filter(|frame| frame.tile_size != 0)
         .cloned()
         .collect();
+    let transforms = scene.transforms.clone();
     let new_scene = || {
         let mut scene = Scene::default();
         scene.layers.frames = layers.clone();
+        scene.transforms = transforms.clone();
         scene
     };
-    let mut stack = vec![new_scene()];
+    // What an effect group draws is drawn into the group's texture, which the
+    // frame's scene holds, so it stays out of the clips' scenes. The sprite
+    // that composites the group is clipped as any other primitive.
+    let mut root = new_scene();
+    root.groups = scene.groups.clone();
+    let mut stack = vec![root];
     let mut shapes = Vec::new();
     let mut redundant = Vec::new();
     for operation in &operations {
@@ -91,10 +100,30 @@ pub(crate) fn compile(scene: &mut Scene) {
                     },
                 });
             }
-            PaintOperation::Primitive(primitive) => stack
-                .last_mut()
-                .unwrap()
-                .insert_primitive(primitive.clone()),
+            PaintOperation::Primitive(primitive) => {
+                let (group, index) = match primitive {
+                    Primitive::Path(path) => (path.group, TransformIndex::IDENTITY),
+                    primitive => {
+                        let index = primitive.transform_index();
+                        (scene.transforms.group(index), index)
+                    }
+                };
+                let target = if group == 0 {
+                    stack.last_mut().unwrap()
+                } else {
+                    &mut stack[0]
+                };
+                let index = if group != 0 && matches!(primitive, Primitive::Path(_)) {
+                    target.transforms.intern_in_group(
+                        TransformationMatrix::unit(),
+                        ColorFilter::IDENTITY,
+                        group,
+                    )
+                } else {
+                    index
+                };
+                target.insert_under(primitive.clone(), index, false);
+            }
             PaintOperation::StartLayer(bounds) => stack.last_mut().unwrap().push_layer(*bounds),
             PaintOperation::EndLayer => stack.last_mut().unwrap().pop_layer(),
         }
@@ -104,6 +133,7 @@ pub(crate) fn compile(scene: &mut Scene) {
         "balanced rounded clips"
     );
     let mut compiled = stack.pop().unwrap();
+    compiled.groups = mem::take(&mut scene.groups);
     compiled.paint_operations = operations;
     compiled.fast_rounded_clip = mem::take(&mut scene.fast_rounded_clip);
     compiled.fast_rounded_clip.compiled = true;

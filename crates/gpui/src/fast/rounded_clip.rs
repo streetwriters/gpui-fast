@@ -460,6 +460,24 @@ mod tests {
     }
 
     #[test]
+    fn finishing_a_scene_keeps_its_effect_groups_inside_a_rounded_clip() {
+        let mut scene = Scene::default();
+        record(&mut scene, ClipOperation::Begin(shape()));
+        let group = scene.begin_effect_group(0.5);
+        scene.insert_primitive(quad());
+        scene.end_effect_group(group, shape().bounds);
+        record(&mut scene, ClipOperation::End);
+        scene.finish();
+        assert_eq!(scene.groups.len(), 1);
+        assert_eq!(scene.group_scenes[0].quads.len(), 1);
+        assert!(scene.quads.is_empty());
+
+        let mut next = Scene::default();
+        next.replay(0..scene.len(), &scene);
+        assert_eq!(next.groups.len(), 1);
+    }
+
+    #[test]
     fn rectangular_replay_does_not_allocate_clip_state() {
         let mut source = Scene::default();
         source.insert_primitive(quad());

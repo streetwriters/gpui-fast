@@ -673,7 +673,7 @@ impl Scene {
     /// Inserts `primitive` under the transform at `transform`. A path is
     /// transformed on the CPU when `transform_paths` is set; one replayed from
     /// an earlier scene already is.
-    fn insert_under(
+    pub(crate) fn insert_under(
         &mut self,
         mut primitive: Primitive,
         transform: TransformIndex,
@@ -854,6 +854,7 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        crate::fast::rounded_clip_scene::compile(self);
         crate::fast::effects::split_groups(self);
         crate::fast::scene::sort_in_drawing_order(self);
         for sub in &mut self.group_scenes {
