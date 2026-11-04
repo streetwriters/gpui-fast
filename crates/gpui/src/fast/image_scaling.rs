@@ -88,6 +88,10 @@ pub(crate) fn lazy_size(lazy: &Option<Lazy>) -> Option<Size<DevicePixels>> {
     lazy.as_ref().map(Lazy::size)
 }
 
+pub(crate) fn is_lazy(lazy: &Option<Lazy>) -> bool {
+    lazy.is_some()
+}
+
 pub(crate) fn frame_count(lazy: &Option<Lazy>, frames: usize) -> usize {
     if lazy.is_some() { 1 } else { frames }
 }
@@ -556,22 +560,6 @@ impl Variants {
         }
     }
 
-    /// Forgets the variants of a source and returns what to remove from the atlases.
-    fn forget(&mut self, source_id: ImageId) -> Vec<Arc<RenderImage>> {
-        self.requested.remove(&source_id);
-        self.waiting.remove(&source_id);
-        self.queue.retain(|job| job.source_id != source_id);
-        let keys: Vec<Key> = self
-            .entries
-            .keys()
-            .filter(|key| key.0 == source_id)
-            .copied()
-            .collect();
-        keys.into_iter()
-            .filter_map(|key| self.remove(key))
-            .collect()
-    }
-
     fn variant_ids(&self, source_id: ImageId) -> Vec<ImageId> {
         self.entries
             .iter()
@@ -882,13 +870,6 @@ pub(crate) fn all_variant_ids() -> Vec<ImageId> {
         .collect()
 }
 
-/// Forwarded to by `App::drop_image`, once every window has dropped the source.
-pub(crate) fn forget(data: &RenderImage) {
-    if matches!(data.fast_lazy, Some(Lazy::Source { .. })) {
-        registry().lock().unwrap().forget(data.id);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1141,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_decode_is_reported_and_forgetting_a_source_drops_its_variants() {
+    fn a_failed_decode_is_reported() {
         let (id, src) = source();
         let view = Some(EntityId::from(1u64));
         let now = Instant::now();
@@ -1150,14 +1131,6 @@ mod tests {
         let job = registry.queue.pop_front().unwrap();
         registry.complete(&job, Err(anyhow::anyhow!("corrupt")), now);
         assert_eq!(registry.failure(id).as_deref(), Some("corrupt"));
-
-        let wanted = device(128, 128);
-        registry.select(id, &src, wanted, view, now);
-        ready(&mut registry, (id, wanted), 128 * 128 * 4, now);
-        assert_eq!(registry.variant_ids(id).len(), 2);
-        registry.forget(id);
-        assert!(registry.entries.is_empty());
-        assert_eq!(registry.bytes, 0);
     }
 
     #[test]

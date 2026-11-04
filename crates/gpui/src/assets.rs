@@ -72,7 +72,7 @@ impl RenderImage {
 
     /// Convert this image into a byte slice.
     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
-        if self.fast_lazy.is_some() {
+        if crate::fast::image_scaling::is_lazy(&self.fast_lazy) {
             return None;
         }
         self.data
