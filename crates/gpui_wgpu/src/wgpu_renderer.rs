@@ -260,7 +260,7 @@ pub(crate) struct WgpuResources {
     pub(crate) instance_data: InstanceData,
     pub(crate) path_intermediate_texture: Option<wgpu::Texture>,
     pub(crate) path_intermediate_view: Option<wgpu::TextureView>,
-    path_msaa_texture: Option<wgpu::Texture>,
+    pub(crate) path_msaa_texture: Option<wgpu::Texture>,
     pub(crate) path_msaa_view: Option<wgpu::TextureView>,
 }
 

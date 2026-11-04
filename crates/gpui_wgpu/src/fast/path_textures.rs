@@ -208,3 +208,24 @@ pub(crate) fn to_region(
         };
     }
 }
+
+#[cfg(all(not(target_family = "wasm"), any(test, feature = "test-support")))]
+impl crate::wgpu_renderer::WgpuHeadlessRenderer {
+    /// The bytes of the window path textures the renderer holds, the
+    /// multisample one counted in full.
+    pub fn path_texture_bytes(&self) -> u64 {
+        let resources = &self.core.resources;
+        [
+            &resources.path_intermediate_texture,
+            &resources.path_msaa_texture,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|texture| {
+            let texels = u64::from(texture.width()) * u64::from(texture.height());
+            let bytes = u64::from(texture.format().block_copy_size(None).unwrap_or(4));
+            texels * bytes * u64::from(texture.sample_count())
+        })
+        .sum()
+    }
+}
