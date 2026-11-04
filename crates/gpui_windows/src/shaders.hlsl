@@ -1275,10 +1275,10 @@ float4 underline_fragment(UnderlineFragmentInput input): SV_Target {
 struct MonochromeSprite {
     uint order;
     uint transform_index;
+    AtlasTile tile;
     Bounds bounds;
     ContentMask content_mask;
     Hsla color;
-    AtlasTile tile;
 };
 
 struct MonochromeSpriteVertexOutput {
@@ -1365,12 +1365,12 @@ SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentIn
 struct PolychromeSprite {
     uint order;
     uint transform_index;
+    AtlasTile tile;
     uint grayscale;
     float opacity;
     Bounds bounds;
     ContentMask content_mask;
     Corners corner_radii;
-    AtlasTile tile;
 };
 
 struct PolychromeSpriteVertexOutput {

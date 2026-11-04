@@ -178,12 +178,12 @@ impl TransformTable {
             .unwrap_or(ColorFilter::IDENTITY)
     }
 
-    /// The effect group `index` belongs to; 0 for none.
     /// Whether the entry at `index` moves nothing.
     pub(crate) fn is_unit(&self, index: TransformIndex) -> bool {
         self.entries[index.0 as usize] == TransformationMatrix::unit()
     }
 
+    /// The effect group `index` belongs to; 0 for none.
     pub fn group(&self, index: TransformIndex) -> u32 {
         self.groups.get(index.0 as usize).copied().unwrap_or(0)
     }
@@ -254,6 +254,7 @@ pub struct Scene {
     pub surfaces: Vec<PaintSurface>,
     pub external_textures: Vec<PaintExternalTexture>,
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
+    pub(crate) fast_rounded_clip: crate::fast::rounded_clip::SceneClips,
     pub layers: crate::fast::layers::scene::SceneLayers,
     pub transforms: TransformTable,
     current_transform: TransformIndex,
@@ -401,7 +402,7 @@ pub const GROUP_BLURRED: u8 = 1;
 /// The slot a blur's first pass draws into.
 pub const GROUP_SCRATCH: u8 = 2;
 
-/// The first texture index of effect groups; below the scroll layer tiles.
+/// The first texture index of effect groups; below the dynamic textures.
 pub const EFFECT_GROUP_TEXTURE_BASE: u32 = 0xE000_0000;
 
 /// The texture id of `slot` of effect group `group`'s textures.
@@ -415,7 +416,7 @@ pub fn effect_group_texture_id(group: u32, slot: u8) -> AtlasTextureId {
 /// The group and slot a sprite's texture stands for, if it is one.
 pub fn decode_effect_group(texture: AtlasTextureId) -> Option<(u32, u8)> {
     (texture.kind == AtlasTextureKind::Polychrome
-        && (EFFECT_GROUP_TEXTURE_BASE..crate::fast::layers::scene::LAYER_TILE_TEXTURE_BASE)
+        && (EFFECT_GROUP_TEXTURE_BASE..crate::fast::dynamic_textures::DYNAMIC_INDEX_BASE)
             .contains(&texture.index))
     .then(|| {
         let offset = texture.index - EFFECT_GROUP_TEXTURE_BASE;
@@ -439,6 +440,7 @@ pub const BLEND_SPRITE: u32 = 6;
 #[expect(missing_docs)]
 impl Scene {
     pub fn clear(&mut self) {
+        crate::fast::rounded_clip::clear(self);
         self.paint_operations.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
@@ -844,6 +846,9 @@ impl Scene {
                 }
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
+                PaintOperation::FastRoundedClip(fast_clip) => {
+                    crate::fast::rounded_clip::record(self, *fast_clip)
+                }
             }
         }
     }
@@ -912,6 +917,7 @@ pub(crate) enum PaintOperation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
+    FastRoundedClip(crate::fast::rounded_clip::ClipOperation),
 }
 
 #[derive(Clone)]
@@ -1414,7 +1420,7 @@ impl TransformationMatrix {
     }
 
     /// Move the origin by a given point
-    pub fn translate(mut self, point: Point<ScaledPixels>) -> Self {
+    pub fn translate(self, point: Point<ScaledPixels>) -> Self {
         self.compose(Self {
             rotation_scale: [[1.0, 0.0], [0.0, 1.0]],
             translation: [point.x.0, point.y.0],
@@ -1603,10 +1609,10 @@ impl Default for TransformationMatrix {
 pub struct MonochromeSprite {
     pub order: DrawOrder,
     pub transform_index: u32,
+    pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
-    pub tile: AtlasTile,
 }
 
 impl From<MonochromeSprite> for Primitive {
@@ -1621,10 +1627,10 @@ impl From<MonochromeSprite> for Primitive {
 pub struct SubpixelSprite {
     pub order: DrawOrder,
     pub transform_index: u32,
+    pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
-    pub tile: AtlasTile,
 }
 
 impl From<SubpixelSprite> for Primitive {
@@ -1639,12 +1645,12 @@ impl From<SubpixelSprite> for Primitive {
 pub struct PolychromeSprite {
     pub order: DrawOrder,
     pub transform_index: u32,
+    pub tile: AtlasTile,
     pub grayscale: PaddedBool32,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
-    pub tile: AtlasTile,
 }
 
 impl PolychromeSprite {

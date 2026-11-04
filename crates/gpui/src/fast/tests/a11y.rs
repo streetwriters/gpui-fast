@@ -11,8 +11,7 @@ use std::fmt::Write as _;
 use accesskit::{NodeId, Role};
 
 use crate::{
-    Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render, Styled as _,
-    TestAppContext, Window, div, prelude::*, px,
+    Context, Entity, FocusHandle, IntoElement, Render, TestAppContext, Window, div, prelude::*, px,
 };
 
 /// One node of a window's accessibility tree, named by where it is rather
@@ -427,11 +426,12 @@ fn scroll_page_frames(cx: &mut TestAppContext, placed: bool) -> u64 {
             cx.update_window(window.into(), |_, window, cx| {
                 let before = window.layout_stats();
                 window.dispatch_event(
-                    crate::PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
+                    crate::PlatformInput::Scroll(crate::ScrollEvent {
                         position: crate::point(px(20.), px(20.)),
                         delta: crate::ScrollDelta::Pixels(crate::point(px(0.), px(dy))),
                         modifiers: Default::default(),
                         touch_phase: crate::TouchPhase::Moved,
+                        ..Default::default()
                     }),
                     cx,
                 );

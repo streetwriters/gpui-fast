@@ -56,6 +56,7 @@ pub(crate) struct DirectXRenderer {
     pub(crate) skip_draws: bool,
     pub(crate) fast_frame: crate::fast::frame::FrameState,
     pub(crate) fast_composition: crate::fast::composition::DirectXComposition,
+    pub(crate) fast_recovery: crate::fast::device_recovery::RecoveryState,
 }
 
 /// Direct3D objects
@@ -216,6 +217,7 @@ impl DirectXRenderer {
             skip_draws: false,
             fast_frame: crate::fast::frame::FrameState::default(),
             fast_composition: crate::fast::composition::DirectXComposition::default(),
+            fast_recovery: crate::fast::device_recovery::RecoveryState::default(),
         })
     }
 
@@ -273,6 +275,8 @@ impl DirectXRenderer {
                 .swap_chain
                 .Present(0, DXGI_PRESENT(0))
         };
+        #[cfg(test)]
+        crate::fast::native_tests::present(self.hwnd, self.direct_composition.is_some(), result.0);
         result.ok().context("Presenting swap chain failed")
     }
 
@@ -358,7 +362,7 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
-        if self.skip_draws {
+        if self.skip_draws || !crate::fast::device_recovery::can_draw(self) {
             // skip drawing this frame, we just recovered from a device lost event
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
@@ -449,7 +453,7 @@ impl DirectXRenderer {
     /// goes through MetalRenderer; this is the Windows analogue). Draws into
     /// the existing render target, copies it into a `D3D11_USAGE_STAGING`
     /// texture, maps it, and converts BGRA to RGBA.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     pub(crate) fn render_to_image(
         &mut self,
         scene: &Scene,
@@ -1639,7 +1643,7 @@ fn create_blend_state_for_path_sprite(device: &ID3D11Device) -> Result<ID3D11Ble
     desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
     desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
     desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
     unsafe {
         let mut state = None;
@@ -1908,6 +1912,7 @@ pub(crate) mod shader_resources {
             let shader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(&format!("src/{}", shader_name))
                 .canonicalize()?;
+            let shader_path = crate::fast::rounded_clip::shader_path(shader_path, env!("OUT_DIR"));
 
             let entry_point = PCSTR::from_raw(entry.as_ptr());
             let target_cstr = PCSTR::from_raw(target.as_ptr());

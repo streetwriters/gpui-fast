@@ -6,6 +6,7 @@
 use std::cell::Cell;
 
 use anyhow::Result;
+use objc2_metal::MTLCommandBuffer;
 use gpui::{DevicePixels, GROUP_CONTENT, Scene, Size};
 
 use crate::metal_renderer::MetalRenderer;
@@ -44,7 +45,7 @@ pub(crate) fn render_groups(
             continue;
         }
         let size = gpui::size(DevicePixels(width), DevicePixels(height));
-        let content = renderer.group_texture(width as u64, height as u64);
+        let content = renderer.group_texture(width as usize, height as usize)?;
         renderer.effect_stats.passes_drawn += 1;
         GROUP_PASS.with(|pass| pass.set(true));
         let drawn = renderer.render_frame(sub, &content, size);
@@ -57,7 +58,7 @@ pub(crate) fn render_groups(
             let target = match renderer.effect_group_textures.get(&(group, pass.to)) {
                 Some(texture) => texture.clone(),
                 None => {
-                    let texture = renderer.group_texture(width as u64, height as u64);
+                    let texture = renderer.group_texture(width as usize, height as usize)?;
                     renderer
                         .effect_group_textures
                         .insert((group, pass.to), texture.clone());

@@ -16,14 +16,19 @@
 use std::cell::Cell;
 use std::ptr;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use block2::RcBlock;
-use foreign_types::ForeignTypeRef;
 use gpui::{
     DevicePixels, LayerKey, PrimitiveBatch, Rgba, Scene, TileCoord, decode_layer_tile, size,
 };
-
-use objc2::runtime::AnyObject;
+use objc2::{Message as _, runtime::ProtocolObject};
+use objc2_core_foundation::CFRetained;
+use objc2_core_video::CVMetalTexture;
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+    MTLPixelFormat, MTLRenderCommandEncoder,
+};
 
 use crate::metal_renderer::{
     InstanceBindings, InstanceBufferWriter, MetalRenderer, SurfaceBounds,
@@ -31,12 +36,13 @@ use crate::metal_renderer::{
 };
 
 /// The pixel format of tiles: the drawable's and every pipeline's.
-const TILE_FORMAT: metal::MTLPixelFormat = metal::MTLPixelFormat::BGRA8Unorm;
+const TILE_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm;
 
 /// Forwarded to by `MetalRenderer::render_frame` before it encodes `scene`:
 /// rasterizes the layer tiles `scene` needs that the cache lacks, and notes
 /// the tiles it composites for `composite::draw_tiles`.
 pub(crate) fn rasterize_tiles(renderer: &mut MetalRenderer, scene: &Scene) {
+    crate::fast::rounded_clip::raster_nested_tiles(renderer, scene);
     let cache = &mut renderer.fast_layers;
     if cache.take_failure() {
         cache.clear();
@@ -52,6 +58,7 @@ pub(crate) fn rasterize_tiles(renderer: &mut MetalRenderer, scene: &Scene) {
         // The tiles this frame was to rasterize were not.
         renderer.fast_layers.clear();
     }
+    renderer.fast_layers.note_composited(scene);
 }
 
 /// The layer tiles `scene` composites, in the order it lists them.
@@ -72,13 +79,13 @@ fn composited_tiles(scene: &Scene) -> impl Iterator<Item = (LayerKey, TileCoord)
 
 /// The clear colour a tile over `background` starts from: the bytes an
 /// opaque quad of that colour writes to the frame's non-sRGB texture.
-pub(crate) fn clear_color(background: Rgba) -> metal::MTLClearColor {
-    metal::MTLClearColor::new(
-        background.r as f64,
-        background.g as f64,
-        background.b as f64,
-        background.a as f64,
-    )
+pub(crate) fn clear_color(background: Rgba) -> MTLClearColor {
+    MTLClearColor {
+        red: background.r as f64,
+        green: background.g as f64,
+        blue: background.b as f64,
+        alpha: background.a as f64,
+    }
 }
 
 /// Encodes the passes that rasterize `planned` into their textures, in a
@@ -92,23 +99,43 @@ fn encode(
         &renderer.device,
         &renderer.instance_buffer_pool,
         renderer.is_unified_memory,
-    );
+    )?;
     let command_queue = renderer.command_queue.clone();
-    let command_buffer = command_queue.new_command_buffer();
-    command_buffer.set_label("scroll_layer_tiles");
+    let command_buffer = command_queue
+        .commandBuffer()
+        .context("creating command buffer")?;
+    crate::fast::dynamic_textures::encode_uploads(&command_buffer);
+    command_buffer.setLabel(Some(&NSString::from_str("scroll_layer_tiles")));
 
+    let mut surface_textures: Vec<CFRetained<CVMetalTexture>> = Vec::new();
     let mut result = Ok(());
     for &(index, tile) in planned {
         let layer = &scene.layers.frames[index];
         let Some(texture) = renderer
             .fast_layers
             .texture(layer.key, tile)
-            .map(|texture| texture.to_owned())
+            .map(|texture| texture.retain())
         else {
             debug_assert!(false, "a planned tile was not prepared");
             continue;
         };
         let tile_scene = layer.tile_scene(tile);
+        if crate::fast::rounded_clip::has_groups(&tile_scene) {
+            crate::fast::rounded_clip::draw_tile(
+                renderer,
+                &tile_scene,
+                &mut writer,
+                &texture,
+                size(
+                    DevicePixels(layer.tile_size as i32),
+                    DevicePixels(layer.tile_size as i32),
+                ),
+                &command_buffer,
+                clear_color(layer.background),
+                &mut surface_textures,
+            )?;
+            continue;
+        }
         let bindings = match write_instances(&tile_scene, &mut writer) {
             Ok(bindings) => bindings,
             Err(error) => {
@@ -120,20 +147,31 @@ fn encode(
             DevicePixels(layer.tile_size as i32),
             DevicePixels(layer.tile_size as i32),
         );
-        let command_encoder = new_command_encoder_for_texture(
-            command_buffer,
+        let command_encoder = match new_command_encoder_for_texture(
+            &command_buffer,
             &texture,
             viewport_size,
             Some(clear_color(layer.background)),
-        );
-        draw_tile_scene(
+        ) {
+            Ok(command_encoder) => command_encoder,
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        };
+        let drawn = draw_tile_scene(
             renderer,
             &tile_scene,
             &bindings,
             viewport_size,
-            command_encoder,
+            &command_encoder,
+            &mut surface_textures,
         );
-        command_encoder.end_encoding();
+        command_encoder.endEncoding();
+        if let Err(error) = drawn {
+            result = Err(error);
+            break;
+        }
         #[cfg(test)]
         {
             renderer.fast_layers.rasterized += 1;
@@ -151,22 +189,24 @@ fn encode(
 
     let instance_buffer_pool = renderer.instance_buffer_pool.clone();
     let failed = renderer.fast_layers.failure_flag();
-    let instance_buffer = Cell::new(Some(instance_buffer));
-    let block = RcBlock::new(move |command_buffer: ptr::NonNull<AnyObject>| {
-        // SAFETY: Metal hands its completion handlers the command buffer that completed.
-        let command_buffer =
-            unsafe { metal::CommandBufferRef::from_ptr(command_buffer.as_ptr().cast()) };
-        if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
-            failed.store(true, std::sync::atomic::Ordering::Release);
-        }
-        if let Some(instance_buffer) = instance_buffer.take() {
-            instance_buffer_pool.lock().release(instance_buffer);
-        }
-    });
-    // SAFETY: Both pointee types are opaque views of the same Objective-C block
-    // pointer ABI, as upstream's `draw_primitives_to_texture` relies on too.
+    let frame_resources = Cell::new(Some((instance_buffer, surface_textures)));
+    let block = RcBlock::new(
+        move |command_buffer: ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+            // SAFETY: Metal hands its completion handlers the command buffer that completed.
+            let command_buffer = unsafe { command_buffer.as_ref() };
+            if command_buffer.status() == MTLCommandBufferStatus::Error {
+                failed.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if let Some((instance_buffer, _surface_textures)) = frame_resources.take() {
+                instance_buffer_pool.lock().release(instance_buffer);
+            }
+        },
+    );
+    // SAFETY: Metal copies the live block and invokes it once after these tiles
+    // complete. Its captures own the tiles' resources and use the pool mutex
+    // when returning the buffer, as upstream's `render_frame` does.
     unsafe {
-        command_buffer.add_completed_handler(&*RcBlock::as_ptr(&block).cast());
+        command_buffer.addCompletedHandler(RcBlock::as_ptr(&block));
     }
     command_buffer.commit();
     Ok(())
@@ -197,8 +237,9 @@ fn draw_tile_scene(
     scene: &Scene,
     bindings: &InstanceBindings,
     viewport_size: gpui::Size<DevicePixels>,
-    command_encoder: &metal::RenderCommandEncoderRef,
-) {
+    command_encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
+    surface_textures: &mut Vec<CFRetained<CVMetalTexture>>,
+) -> Result<()> {
     for batch in scene.batches() {
         match batch {
             PrimitiveBatch::Shadows(range) => {
@@ -232,7 +273,8 @@ fn draw_tile_scene(
                 bindings,
                 viewport_size,
                 command_encoder,
-            ),
+                surface_textures,
+            )?,
             // The core keeps paths out of layers: a path rasterized into a
             // tile and moved by an odd number of pixels antialiases
             // differently. External textures stay out too, their pixels
@@ -247,4 +289,5 @@ fn draw_tile_scene(
             }
         }
     }
+    Ok(())
 }

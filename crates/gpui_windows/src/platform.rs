@@ -28,7 +28,7 @@ use windows::{
             Ole::*,
             Power::*,
             SystemInformation::*,
-            SystemServices::POWER_REQUEST_CONTEXT_VERSION,
+            SystemServices::{GUID_POWER_SAVING_STATUS, POWER_REQUEST_CONTEXT_VERSION},
             Threading::{POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT, REASON_CONTEXT_0},
         },
         UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
@@ -42,6 +42,7 @@ use gpui::*;
 struct TrackedWindow {
     handle: SafeHwnd,
     frame_signal: Arc<PlatformFrameSignal>,
+    fast_frame_request: Arc<crate::fast::frame_schedule::FrameRequest>,
 }
 
 impl TrackedWindow {
@@ -71,6 +72,7 @@ pub struct WindowsPlatform {
     invalidate_devices: Arc<AtomicBool>,
     handle: HWND,
     suspend_resume_notification: RefCell<Option<HPOWERNOTIFY>>,
+    power_saving_notification: RefCell<Option<HPOWERNOTIFY>>,
     disable_direct_composition: bool,
     has_package_identity: bool,
     app_identity: RefCell<Option<(String, String)>>,
@@ -98,6 +100,7 @@ pub(crate) struct WindowsPlatformState {
     /// thread; see [`DrawCoordinator`].
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
     directx_devices: RefCell<Option<DirectXDevices>>,
+    low_power_mode_enabled: Cell<bool>,
 }
 
 #[derive(Default)]
@@ -111,6 +114,7 @@ struct PlatformCallbacks {
     keyboard_layout_change: Cell<Option<Box<dyn FnMut()>>>,
     system_sleep: Cell<Option<Box<dyn FnMut()>>>,
     system_wake: Cell<Option<Box<dyn FnMut()>>>,
+    low_power_mode_change: Cell<Option<Box<dyn FnMut()>>>,
     displays_changed: Cell<Option<Box<dyn FnMut()>>>,
 }
 
@@ -127,6 +131,7 @@ impl WindowsPlatformState {
             cursor_visible: Arc::new(AtomicBool::new(true)),
             draw_coordinator: Rc::new(DrawCoordinator::new()),
             directx_devices: RefCell::new(directx_devices),
+            low_power_mode_enabled: Cell::new(false),
             menus: RefCell::new(Vec::new()),
         }
     }
@@ -240,6 +245,14 @@ impl WindowsPlatform {
             .inner
             .take()
             .context("CreateWindowExW did not run correctly")??;
+        let mut power_status = SYSTEM_POWER_STATUS::default();
+        match unsafe { GetSystemPowerStatus(&mut power_status) } {
+            Ok(()) => inner
+                .state
+                .low_power_mode_enabled
+                .set(power_status.SystemStatusFlag == 1),
+            Err(error) => log::warn!("Failed to query Windows battery saver status: {error}"),
+        }
         let dispatcher = context
             .dispatcher
             .take()
@@ -278,6 +291,7 @@ impl WindowsPlatform {
             text_system,
             direct_write_text_system,
             suspend_resume_notification: RefCell::new(None),
+            power_saving_notification: RefCell::new(None),
             disable_direct_composition,
             has_package_identity: has_package_identity(),
             drop_target_helper,
@@ -288,11 +302,7 @@ impl WindowsPlatform {
     }
 
     pub(crate) fn window_from_hwnd(&self, hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {
-        self.raw_window_handles
-            .read()
-            .iter()
-            .find(|entry| entry.as_raw() == hwnd)
-            .and_then(|hwnd| window_from_hwnd(hwnd.as_raw()))
+        self.inner.window_from_hwnd(hwnd)
     }
 
     #[inline]
@@ -430,9 +440,7 @@ impl WindowsPlatform {
     /// Stops vsync and releases the DirectX devices. No window may be open.
     fn detach_gpu(&self) {
         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
-            // Not joined: the thread can be sending this thread a message. It exits after its
-            // next vsync, and drops its reference to the devices then.
-            stop.store(true, Ordering::Release);
+            crate::fast::frame_schedule::stop_vsync(stop, &self.inner.state.draw_coordinator);
         }
         if let Some(text_system) = &self.direct_write_text_system {
             text_system.release_gpu();
@@ -455,12 +463,18 @@ impl WindowsPlatform {
         let all_windows = Arc::downgrade(&self.raw_window_handles);
         let text_system = Arc::downgrade(direct_write_text_system);
         let invalidate_devices = self.invalidate_devices.clone();
+        let fast_frame_wake =
+            crate::fast::frame_schedule::frame_wake(&self.inner.state.draw_coordinator);
 
         std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
-                loop {
+                let mut fast_worker = crate::fast::frame_schedule::Worker::new(
+                    fast_frame_wake,
+                    &directx_device.device,
+                );
+                while crate::fast::frame_schedule::Worker::wait(&fast_worker, &stop) {
                     let signal_source = vsync_provider.wait_for_vsync();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
                     if stop.load(Ordering::Acquire) {
@@ -476,13 +490,23 @@ impl WindowsPlatform {
                             &all_windows,
                             &text_system,
                         ) {
-                            panic!("Device lost: {err}");
+                            crate::fast::device_recovery::recovery_failed(err);
                         }
+                        crate::fast::frame_schedule::Worker::watch(
+                            &mut fast_worker,
+                            &directx_device.device,
+                        );
                     }
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
                     };
                     for hwnd in all_windows.read().iter() {
+                        if !crate::fast::frame_schedule::take_request(
+                            hwnd.as_raw(),
+                            &hwnd.fast_frame_request,
+                        ) {
+                            continue;
+                        }
                         unsafe {
                             // A window that has been destroyed but whose
                             // `WM_GPUI_CLOSE_ONE_WINDOW` has not been processed
@@ -505,29 +529,14 @@ impl WindowsPlatform {
                             RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
                                 .ok()
                                 .log_err();
+                            #[cfg(test)]
+                            crate::fast::native_tests::paint_invalidated(hwnd.as_raw());
                         }
                     }
                 }
             })
             .unwrap();
     }
-}
-
-fn translate_accelerator(msg: &MSG) -> Option<()> {
-    if msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN {
-        return None;
-    }
-    crate::fast::composition::is_gpui_window(msg.hwnd)?;
-
-    let result = unsafe {
-        SendMessageW(
-            msg.hwnd,
-            WM_GPUI_KEYDOWN,
-            Some(msg.wParam),
-            Some(msg.lParam),
-        )
-    };
-    (result.0 == 0).then_some(())
 }
 
 fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
@@ -564,6 +573,13 @@ fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
 }
 
 impl Platform for WindowsPlatform {
+    fn platform_info(&self) -> gpui::PlatformInfo {
+        gpui::PlatformInfo {
+            os: gpui::OperatingSystem::Windows,
+            target: gpui::PlatformTarget::Native,
+        }
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.background_executor.clone()
     }
@@ -618,7 +634,7 @@ impl Platform for WindowsPlatform {
         let mut msg = MSG::default();
         unsafe {
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                if translate_accelerator(&msg).is_none() {
+                if !self.inner.translate_accelerator(&msg) {
                     _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
@@ -789,7 +805,9 @@ impl Platform for WindowsPlatform {
         self.raw_window_handles.write().push(TrackedWindow {
             handle: handle.into(),
             frame_signal: window.state.frame_signal.clone(),
+            fast_frame_request: Arc::clone(&window.state.fast_frame_request),
         });
+        crate::fast::frame_schedule::schedule_frame(&window);
 
         Ok(Box::new(window))
     }
@@ -905,6 +923,33 @@ impl Platform for WindowsPlatform {
         }
     }
 
+    fn power_mode(&self) -> PowerMode {
+        if self.inner.state.low_power_mode_enabled.get() {
+            PowerMode::LowPower
+        } else {
+            PowerMode::HighPower
+        }
+    }
+
+    fn on_power_mode_change(&self, callback: Box<dyn FnMut()>) {
+        self.inner
+            .state
+            .callbacks
+            .low_power_mode_change
+            .set(Some(callback));
+        let mut notification = self.power_saving_notification.borrow_mut();
+        if notification.is_none() {
+            *notification = unsafe {
+                RegisterPowerSettingNotification(
+                    HANDLE(self.handle.0),
+                    &GUID_POWER_SAVING_STATUS,
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
+                .log_err()
+            };
+        }
+    }
+
     fn set_app_identity(&self, identifier: &str, name: &str) {
         // If the process has package identity, it's automatally granted an AUMID by the system.
         if self.has_package_identity {
@@ -1000,7 +1045,7 @@ impl Platform for WindowsPlatform {
         if self.inner.state.current_cursor.get().map(|c| c.0) != hcursor.map(|c| c.0) {
             self.post_message(
                 WM_GPUI_CURSOR_STYLE_CHANGED,
-                WPARAM(0),
+                WPARAM(self.inner.validation_number),
                 LPARAM(hcursor.map_or(0, |c| c.0 as isize)),
             );
             self.inner.state.current_cursor.set(hcursor);
@@ -1181,6 +1226,24 @@ impl WindowsPlatformInner {
         }))
     }
 
+    fn window_from_hwnd(&self, hwnd: HWND) -> Option<Rc<WindowsWindowInner>> {
+        self.raw_window_handles
+            .upgrade()?
+            .read()
+            .iter()
+            .find(|window| window.as_raw() == hwnd)
+            .and_then(|window| window_from_hwnd(window.as_raw()))
+    }
+
+    fn translate_accelerator(&self, msg: &MSG) -> bool {
+        if msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN {
+            return false;
+        }
+
+        self.window_from_hwnd(msg.hwnd)
+            .is_some_and(|window| window.handle_keydown_msg(msg.wParam, msg.lParam) == Some(0))
+    }
+
     /// Calls `project` to project to the corresponding callback field, removes it from callbacks, calls `f` with the callback and then puts the callback back.
     fn with_callback<T>(
         &self,
@@ -1208,7 +1271,7 @@ impl WindowsPlatformInner {
             | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
             | WM_GPUI_DISPLAYS_CHANGED
             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(msg, wparam, lparam),
-            WM_POWERBROADCAST => self.handle_power_broadcast(wparam),
+            WM_POWERBROADCAST => self.handle_power_broadcast(wparam, lparam),
             WM_DISPLAYCHANGE => self.handle_display_change(handle),
             WM_QUERYENDSESSION => Some(1),
             WM_ENDSESSION if wparam.0 != 0 => self.handle_end_session(),
@@ -1316,7 +1379,7 @@ impl WindowsPlatformInner {
                     // if we don't we might not for example process window quit events
                     let mut msg = MSG::default();
                     let process_message = |msg: &_| {
-                        if translate_accelerator(msg).is_none() {
+                        if !self.translate_accelerator(msg) {
                             _ = unsafe { TranslateMessage(msg) };
                             unsafe { DispatchMessageW(msg) };
                         }
@@ -1396,13 +1459,23 @@ impl WindowsPlatformInner {
         Some(0)
     }
 
-    fn handle_power_broadcast(&self, wparam: WPARAM) -> Option<isize> {
+    fn handle_power_broadcast(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
         match wparam.0 as u32 {
             PBT_APMSUSPEND => {
                 self.with_callback(|callbacks| &callbacks.system_sleep, |callback| callback());
             }
             PBT_APMRESUMEAUTOMATIC => {
                 self.with_callback(|callbacks| &callbacks.system_wake, |callback| callback());
+            }
+            PBT_POWERSETTINGCHANGE => {
+                if let Some(enabled) = unsafe { power_saving_status(lparam) } {
+                    if self.state.low_power_mode_enabled.replace(enabled) != enabled {
+                        self.with_callback(
+                            |callbacks| &callbacks.low_power_mode_change,
+                            |callback| callback(),
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -1422,15 +1495,35 @@ impl WindowsPlatformInner {
     }
 }
 
+unsafe fn power_saving_status(lparam: LPARAM) -> Option<bool> {
+    let setting = unsafe { (lparam.0 as *const POWERBROADCAST_SETTING).as_ref()? };
+    if setting.PowerSetting != GUID_POWER_SAVING_STATUS || setting.DataLength != 4 {
+        return None;
+    }
+    let data = unsafe {
+        std::ptr::addr_of!(setting.Data)
+            .cast::<u32>()
+            .read_unaligned()
+    };
+    match data {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
 impl Drop for WindowsPlatform {
     fn drop(&mut self) {
         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
-            stop.store(true, Ordering::Release);
+            crate::fast::frame_schedule::stop_vsync(stop, &self.inner.state.draw_coordinator);
         }
         unsafe {
             if let Some(notification) = self.suspend_resume_notification.borrow_mut().take() {
                 // SAFETY: notification was returned by RegisterSuspendResumeNotification.
                 UnregisterSuspendResumeNotification(notification).log_err();
+            }
+            if let Some(notification) = self.power_saving_notification.borrow_mut().take() {
+                UnregisterPowerSettingNotification(notification).log_err();
             }
             DestroyWindow(self.handle)
                 .context("Destroying platform window")
@@ -1678,6 +1771,8 @@ fn check_device_lost(device: &ID3D11Device) -> bool {
     match device_state {
         Ok(_) => false,
         Err(err) => {
+            #[cfg(test)]
+            crate::fast::native_tests::device_removed(err.code().0);
             log::error!("DirectX device lost detected: {:?}", err);
             true
         }
@@ -1734,6 +1829,8 @@ fn handle_gpu_device_lost(
     all_windows: &std::sync::Weak<RwLock<SmallVec<[TrackedWindow; 4]>>>,
     text_system: &std::sync::Weak<DirectWriteTextSystem>,
 ) -> Result<()> {
+    #[cfg(test)]
+    crate::fast::native_tests::recovery_started();
     // Here we wait a bit to ensure the system has time to recover from the device lost state.
     // If we don't wait, the final drawing result will be blank.
     std::thread::sleep(std::time::Duration::from_millis(350));
@@ -1758,6 +1855,8 @@ fn handle_gpu_device_lost(
     }
     if let Some(all_windows) = all_windows.upgrade() {
         for window in all_windows.read().iter() {
+            #[cfg(test)]
+            crate::fast::native_tests::recovery_locked();
             unsafe {
                 SendMessageW(
                     window.as_raw(),
@@ -1779,6 +1878,8 @@ fn handle_gpu_device_lost(
             }
         }
     }
+    #[cfg(test)]
+    crate::fast::native_tests::recovery_finished();
     Ok(())
 }
 

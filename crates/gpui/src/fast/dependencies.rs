@@ -465,7 +465,8 @@ impl App {
             offset_reads: 0..0,
         };
         self.entities.mark_access_boundary();
-        self.entities.extend_accessed(dependencies.entities.iter());
+        self.entities
+            .extend_accessed_recorded(dependencies.entities.iter());
         self.entities.mark_access_boundary();
         if self.entities.is_recording() {
             self.dependencies
@@ -623,6 +624,10 @@ pub(crate) struct EntityAccessLog {
 }
 
 impl EntityAccessLog {
+    pub(crate) fn update_generation(&self) -> u64 {
+        self.update_generation
+    }
+
     /// How many accesses the log holds.
     fn len(&self) -> usize {
         self.access_log.borrow().len()
@@ -678,15 +683,21 @@ impl EntityMap {
         self.access_log.write_generation.get()
     }
 
-    pub fn extend_accessed<'a>(&mut self, entities: impl IntoIterator<Item = &'a EntityId>) {
-        let accessed_entities = self.accessed_entities.get_mut();
-        let recording = self.access_log.recordings.get() > 0;
-        for entity_id in entities {
-            accessed_entities.insert(*entity_id);
-            if recording {
-                self.access_log.access_log.borrow_mut().push(*entity_id);
-            }
+    /// Records entities accessed by a reused draw, as upstream's
+    /// [`EntityMap::extend_accessed`] does, and adds them to the access log
+    /// when a recording is open.
+    pub(crate) fn extend_accessed_recorded<'a>(
+        &mut self,
+        entities: impl IntoIterator<Item = &'a EntityId>,
+    ) {
+        let entities = entities.into_iter().copied();
+        if !self.is_recording() {
+            self.extend_accessed(entities);
+            return;
         }
+        let entities: SmallVec<[EntityId; 16]> = entities.collect();
+        self.extend_accessed(entities.iter().copied());
+        self.access_log.access_log.borrow_mut().extend(entities);
     }
 
     /// Whether any recording is open.
@@ -1055,6 +1066,15 @@ impl StateVersion {
 }
 
 impl crate::StateInner {
+    /// Whether the list waits to settle where it is scrolled to: a scroll
+    /// adjustment for a remeasured item, or a position held while items are
+    /// provisionally measured.
+    pub(crate) fn scroll_pending(&self) -> bool {
+        self.scroll_anchor.is_some_and(|anchor| {
+            anchor.pending.is_some() || anchor.provisional || anchor.pending_end
+        })
+    }
+
     /// Marks the list's state changed if pausing it stops it following its
     /// tail. See [`crate::ListState::pause_following_tail`].
     pub(crate) fn note_following_paused(&self) {
@@ -1072,7 +1092,8 @@ impl crate::StateInner {
         follow_state: crate::FollowState,
         pending: bool,
     ) {
-        let moved = scroll_top.moves_from(self.logical_scroll_top, pending);
+        let moved =
+            scroll_top.moves_from(self.scroll_anchor.map(|anchor| anchor.position), pending);
         self.version
             .bump_if(moved || self.follow_state != follow_state);
     }
@@ -1106,7 +1127,7 @@ impl ListScrollStart {
     /// waiting to be applied read from `state`.
     #[inline(always)]
     pub(crate) fn note_scrolled(self, state: &crate::StateInner, scroll_top: &ListOffset) {
-        state.note_scrolled_to(scroll_top, self.0, state.pending_scroll.is_some());
+        state.note_scrolled_to(scroll_top, self.0, state.scroll_pending());
     }
 }
 

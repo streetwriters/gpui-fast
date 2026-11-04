@@ -94,6 +94,9 @@ fn expand_layer(
                 size: bounds.size,
             }),
             PaintOperation::EndLayer => scratch.pop_layer(),
+            PaintOperation::FastRoundedClip(clip) => {
+                crate::fast::rounded_clip::record(&mut scratch, clip.translated(translation))
+            }
         }
     }
     scratch.finish();

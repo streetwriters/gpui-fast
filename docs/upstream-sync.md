@@ -55,6 +55,17 @@ only hold the hooks that call into it.
    switch retained mode is compiled only under `test-support`, and exported
    from `gpui.rs` one item at a time:
    `#[cfg(any(test, feature = "test-support"))] pub use fast::stats::LayoutStats;`.
+
+   The one deliberate exception is `fast::dynamic_textures` (longbridge/gpui-fast#86):
+   content that changes every frame — video, remote desktop — needs an app-visible
+   mutable texture, and upstream offers nothing of the kind; without one, each
+   frame reallocates atlas tiles and invalidates the glyphs sharing them. The
+   surface stays at the minimum that makes the feature usable: the opaque
+   `DynamicTexture` handle and `DynamicTextureId`, the `DynamicTexturePlatform`
+   trait and its installer (the seam the platform crates implement), and four
+   `Window` methods. Everything else in the module is `pub(crate)`, and the
+   module adds no rendering behavior an app could observe without calling the
+   new methods.
 6. **New files only inside `fast/`, or in our own crates** such as
    `crates/gpui_perf` (benchmarks, examples and the frame-measuring app) and
    `compat/` (the `gpui-pre-*` stand-ins GPUI Kit applications patch in).
@@ -135,17 +146,13 @@ unchanged, and a new entry needs as good a reason.
   list), `LAYER_TILE_TEXTURE_BASE`, `layer_tile_texture_id`, `layer_tile_id` and
   `decode_layer_tile`, because renderers live in other crates and read scroll
   layers from the scene. Polychrome sprites whose texture index is at or
-  above `LAYER_TILE_TEXTURE_BASE` are scroll layer tiles, not atlas textures.
+  above `LAYER_TILE_TEXTURE_BASE` are renderer layer references, not atlas
+  textures. Reserved ids from `0xF100_0000` identify rounded overflow groups
+  with `tile_size = 0`; their drawable scene carries padding-edge geometry
+  in a non-composited frame keyed by `u32::MAX`. The private wire format lives
+  in `fast::rounded_clip_scene`; Metal, WGPU and Direct3D evaluate the clip
+  stack directly without intermediate render targets.
 - `crates/gpui/Cargo.toml` names this repository and sets `publish = false`.
-- The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
-  one cached size per kind of constraint, so a node measured under two widths
-  in one layout evicts one with the other, and the clean subtrees around a
-  single dirty node are laid out again on every frame; 0.14 keeps nine sizes
-  per node whatever their kind. 0.14 hands a leaf's measure function its whole
-  layout, so `taffy.rs` lays the tree out through
-  `fast::layout::MeasuredTaffy`, which lays each leaf out around GPUI's
-  measurement as 0.13 did. When upstream moves to 0.14 or later, the sync
-  takes its version and drops `MeasuredTaffy`.
 - Window composition, the API of
   [zed#62379](https://github.com/zed-industries/zed/pull/62379), which
   upstream has not merged yet: native views drawn between a window's GPUI
@@ -166,7 +173,11 @@ for `gpui_macos`, `WgpuRenderer` gains `new_sharing_atlas` and
   upstream merges its version, the sync replaces ours with it. Two things
   behave differently from the pull request: a retained view drawn again from
   last frame keeps the surface switches it made, and `with_composition_surface`
-  inside a scroll layer paints where the layer does. On X11, when a
+  inside a scroll layer paints where the layer does. A window that composes
+  but holds no surface beyond the base and overlay surfaces presents with
+  `PlatformWindow::draw` and gives the platform only its base surface, so the
+  overlay's view, layer and textures are released until a surface is added.
+  On X11, when a
   compositing manager blends ARGB windows, the GPUI content above native
   surfaces is drawn into a transparent override-redirect window over the
   window instead of being cut out of them, so shadows and translucent
@@ -177,6 +188,32 @@ for `gpui_macos`, `WgpuRenderer` gains `new_sharing_atlas` and
   pinned windows above all others). The `native_webview` example in
   `gpui_perf` shows composition on macOS, Windows and Linux, and
   `linux_webview` shows a WebKitGTK page under overlays on X11.
+
+Composition input extends that existing exception: `ComposedScene::layer_hitboxes`
+lets the separate platform crates use prepared GPUI hitboxes instead of inferring
+input from graphics. `WindowComposition::on_input` registers a cooperating
+windowless producer; the defaulted `PlatformSurfaceAttachment::input_forwarding`
+reader carries that choice through the existing platform-order update. Existing
+attachment implementations and platform surface struct initializers stay valid. OS-managed child views keep
+their platform event loop. Capture runs first, press ownership survives through
+release, and leave is sent when the pointer changes recipients. Prepaint scopes
+and retained context keep input ownership with the same surface as its paint.
+No application-specific timeline policy belongs here.
+
+- Dynamic textures (longbridge/gpui-fast#86), ours to change until upstream
+  takes them:
+  `gpui` exports `DynamicTexture`, `DynamicTextureId`,
+  `DynamicTexturePlatform`, `set_dynamic_texture_platform` and `Window`
+  gains `create_dynamic_texture`, `update_dynamic_texture`,
+  `paint_dynamic_texture` and `remove_dynamic_texture`. Streaming content —
+  video, remote desktop — changes every frame, and upstream's only path for
+  pixels is the atlas, where each frame's upload reallocates tiles and
+  invalidates the glyphs sharing them. The handle keeps its fields private and
+  the id only exposes the atlas-index mapping the renderer crates need to
+  resolve a sprite; the trait and its installer exist so the platform crates
+  can register their backends, and everything else in
+  `fast::dynamic_textures` is `pub(crate)`; without calling the new methods,
+  an app observes no difference in what GPUI draws.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
@@ -210,8 +247,19 @@ commit our copy was taken from is `zed_commit` in `UPSTREAM`, and
 4. Update `zed_commit` and `import_commit` in `UPSTREAM` to the new zed commit
    and the new vendor commit, and add or remove entries under `tracked` if zed
    added or removed crates we use.
-5. Run `script/check-upstream`, the tests and clippy.
-6. Check that `window/a11y.rs` still keeps the tree it last sent in
+5. Look at whether upstream changed how an index under the pointer is found:
+   `TextLayout::index_for_position`'s steps from line to line (with
+   `WrappedLineLayout::size` and `WrappedLine::len`),
+   `WrappedLineLayout::_index_for_position` and `LineLayout::index_for_x`
+   (`git diff <old vendor commit> <new vendor commit> --
+   crates/gpui/src/elements/text.rs crates/gpui/src/text_system/line.rs
+   crates/gpui/src/text_system/line_layout.rs`). `fast/interactive_text.rs`
+   follows those steps to lay hitboxes over where an `InteractiveText` shows
+   the hand, while its clicks still go through upstream's code; port the
+   change into it, or the hand and the clicks part. Nothing conflicts there
+   either.
+6. Run `script/check-upstream`, the tests and clippy.
+7. Check that `window/a11y.rs` still keeps the tree it last sent in
    `A11yDebug::last_tree_update` in every build: `fast/a11y.rs` reads the
    nodes it draws again from there
    (`a11y_frame_keeps_the_tree_it_sent` fails if it stops).

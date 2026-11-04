@@ -270,7 +270,7 @@ impl Element for &'static str {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut state = TextLayout::default();
+        let state = TextLayout::default();
         let layout_id = state.layout(SharedString::from(*self), None, window, cx);
         (layout_id, state)
     }
@@ -284,7 +284,7 @@ impl Element for &'static str {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self)
+        crate::fast::text::prepaint_text(text_layout, bounds, self, _window, _cx)
     }
 
     fn paint(
@@ -344,7 +344,7 @@ impl Element for SharedString {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut state = TextLayout::default();
+        let state = TextLayout::default();
         let layout_id = state.layout(self.clone(), None, window, cx);
         (layout_id, state)
     }
@@ -358,7 +358,7 @@ impl Element for SharedString {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self.as_ref())
+        crate::fast::text::prepaint_text(text_layout, bounds, self.as_ref(), _window, _cx)
     }
 
     fn paint(
@@ -416,7 +416,7 @@ impl StyledText {
     /// Set the styling attributes for the given text, as well as
     /// as any ranges of text that have had their style customized.
     pub fn with_default_highlights(
-        mut self,
+        self,
         default_style: &TextStyle,
         highlights: impl IntoIterator<Item = (Range<usize>, HighlightStyle)>,
     ) -> Self {
@@ -584,7 +584,7 @@ impl Element for StyledText {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        self.layout.prepaint(bounds, &self.text)
+        crate::fast::text::prepaint_text(&self.layout, bounds, &self.text, _window, _cx)
     }
 
     fn paint(
@@ -641,16 +641,10 @@ impl TextLayout {
         crate::fast::text::layout_text(self, text, runs, window, fast_cx)
     }
 
-    fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
-        let mut element_state = self.0.borrow_mut();
-        let element_state = element_state
-            .as_mut()
-            .with_context(|| format!("measurement has not been performed on {text}"))
-            .unwrap();
-        element_state.bounds = Some(bounds);
-    }
-
     fn paint(&self, text: &str, window: &mut Window, cx: &mut App) {
+        if !crate::fast::text::paintable(self, text) {
+            return;
+        }
         self.paint_lines(TextPaintPass::All, window, cx)
             .with_context(|| format!("failed to paint {text}"))
             .unwrap();
@@ -714,7 +708,7 @@ impl TextLayout {
     }
 
     /// Get the byte index into the input of the pixel position.
-    pub fn index_for_position(&self, mut position: Point<Pixels>) -> Result<usize, usize> {
+    pub fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
         let element_state = self.0.borrow();
         let element_state = element_state
             .as_ref()
@@ -874,6 +868,7 @@ pub struct InteractiveText {
     tooltip_builder: Option<Rc<dyn Fn(usize, &mut Window, &mut App) -> Option<AnyView>>>,
     tooltip_id: Option<TooltipId>,
     clickable_ranges: Vec<Range<usize>>,
+    fast_clickable_hitboxes: crate::fast::interactive_text::ClickableHitboxes,
 }
 
 struct InteractiveTextClickEvent {
@@ -902,6 +897,7 @@ impl InteractiveText {
             tooltip_builder: None,
             tooltip_id: None,
             clickable_ranges: Vec::new(),
+            fast_clickable_hitboxes: crate::fast::interactive_text::ClickableHitboxes::default(),
         }
     }
 
@@ -1003,6 +999,12 @@ impl Element for InteractiveText {
                 self.text
                     .prepaint(None, inspector_id, bounds, state, window, cx);
                 let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                crate::fast::interactive_text::insert_clickable_hitboxes(
+                    &mut self.fast_clickable_hitboxes,
+                    self.text.layout(),
+                    &self.clickable_ranges,
+                    window,
+                );
                 (hitbox, interactive_state)
             },
         )
@@ -1023,17 +1025,12 @@ impl Element for InteractiveText {
         window.with_element_state::<InteractiveTextState, _>(
             global_id.unwrap(),
             |interactive_state, window| {
-                let mut interactive_state = interactive_state.unwrap_or_default();
+                let interactive_state = interactive_state.unwrap_or_default();
                 if let Some(click_listener) = self.click_listener.take() {
-                    let mouse_position = window.mouse_position();
-                    if let Ok(ix) = text_layout.index_for_position(mouse_position)
-                        && self
-                            .clickable_ranges
-                            .iter()
-                            .any(|range| range.contains(&ix))
-                    {
-                        window.set_cursor_style(crate::CursorStyle::PointingHand, hitbox)
-                    }
+                    crate::fast::interactive_text::set_clickable_cursor(
+                        &self.fast_clickable_hitboxes,
+                        window,
+                    );
 
                     let text_layout = text_layout.clone();
                     let mouse_down = interactive_state.mouse_down_index.clone();
@@ -1078,7 +1075,7 @@ impl Element for InteractiveText {
                 }
 
                 window.on_mouse_event({
-                    let mut hover_listener = self.hover_listener.take();
+                    let hover_listener = self.hover_listener.take();
                     let hitbox = hitbox.clone();
                     let text_layout = text_layout.clone();
                     let hovered_index = interactive_state.hovered_index.clone();
@@ -1091,7 +1088,11 @@ impl Element for InteractiveText {
                                 if let Some(hover_listener) = hover_listener.as_ref() {
                                     hover_listener(updated, event.clone(), window, cx);
                                 }
-                                cx.notify(current_view);
+                                crate::fast::interactive_text::notify_hovered_index(
+                                    hover_listener.is_some(),
+                                    current_view,
+                                    cx,
+                                );
                             }
                         }
                     }
