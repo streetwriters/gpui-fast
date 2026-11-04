@@ -30,6 +30,10 @@ name = "wgpu_path_textures"
 required-features = ["fast"]
 
 [[example]]
+name = "image_grid"
+required-features = ["fast"]
+
+[[example]]
 name = "content_mask"
 required-features = ["fast"]
 
@@ -79,6 +83,7 @@ smol.workspace = true
 anyhow.workspace = true
 log.workspace = true
 raw-window-handle.workspace = true
+image.workspace = true
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 cocoa.workspace = true

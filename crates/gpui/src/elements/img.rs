@@ -304,13 +304,21 @@ impl Element for Img {
                 cx,
                 |mut style, window, cx| {
                     let mut replacement_id = None;
-
-                    match self.source.use_data(
-                        self.image_cache
-                            .clone()
-                            .or_else(|| window.image_cache_stack.last().cloned()),
+                    crate::fast::image_scaling::hint(
+                        &self.source,
+                        &style.size,
+                        &self.style.object_fit,
                         window,
-                        cx,
+                    );
+
+                    match crate::fast::image_scaling::gate(
+                        self.source.use_data(
+                            self.image_cache
+                                .clone()
+                                .or_else(|| window.image_cache_stack.last().cloned()),
+                            window,
+                            cx,
+                        ),
                     ) {
                         Some(Ok(data)) => {
                             let frame_count = data.frame_count();
@@ -492,16 +500,21 @@ impl Element for Img {
                         .object_fit
                         .get_bounds(bounds, data.size(layout_state.frame_index));
                     let corner_radii = style.corner_radii.to_pixels(window.rem_size());
-                    window
-                        .paint_image(
-                            bounds,
-                            new_bounds,
-                            corner_radii,
-                            data,
-                            layout_state.frame_index,
-                            self.style.grayscale,
-                        )
-                        .log_err();
+                    if let Some(data) =
+                        crate::fast::image_scaling::display(data, new_bounds, window, cx)
+                    {
+                        window
+                            .paint_image(
+                                bounds,
+                                new_bounds,
+                                corner_radii,
+                                data,
+                                layout_state.frame_index,
+                                self.style.grayscale,
+                            )
+                            .log_err();
+                    }
+                    crate::fast::image_scaling::after_paint(window, cx);
                 } else if let Some(replacement) = &mut layout_state.replacement {
                     replacement.paint(window, cx);
                 }
@@ -666,6 +679,13 @@ impl Asset for ImageAssetLoader {
                 }
             };
 
+            let path = match &source {
+                Resource::Path(path) => Some(path.as_ref()),
+                _ => None,
+            };
+            if let Some(image) = crate::fast::image_scaling::lazy_image(&bytes, path, &source) {
+                return Ok(image);
+            }
             if let Ok(format) = image::guess_format(&bytes) {
                 let data = match format {
                     ImageFormat::Gif => {

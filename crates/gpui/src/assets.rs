@@ -46,6 +46,7 @@ pub struct RenderImage {
     /// The scale factor of this image on render.
     pub(crate) scale_factor: f32,
     data: SmallVec<[Frame; 1]>,
+    pub(crate) fast_lazy: Option<crate::fast::image_scaling::Lazy>,
 }
 
 impl PartialEq for RenderImage {
@@ -65,11 +66,15 @@ impl RenderImage {
             id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
             scale_factor: 1.0,
             data: data.into(),
+            fast_lazy: None,
         }
     }
 
     /// Convert this image into a byte slice.
     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
+        if self.fast_lazy.is_some() {
+            return None;
+        }
         self.data
             .get(frame_index)
             .map(|frame| frame.buffer().as_raw().as_slice())
@@ -77,6 +82,9 @@ impl RenderImage {
 
     /// Get the size of this image, in pixels.
     pub fn size(&self, frame_index: usize) -> Size<DevicePixels> {
+        if let Some(size) = crate::fast::image_scaling::lazy_size(&self.fast_lazy) {
+            return size;
+        }
         self.data
             .get(frame_index)
             .map(|frame| {
@@ -102,7 +110,7 @@ impl RenderImage {
 
     /// Get the number of frames for this image.
     pub fn frame_count(&self) -> usize {
-        self.data.len()
+        crate::fast::image_scaling::frame_count(&self.fast_lazy, self.data.len())
     }
 }
 

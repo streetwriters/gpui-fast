@@ -5536,15 +5536,15 @@ impl Window {
         let tile = self
             .sprite_atlas
             .get_or_insert_with(params.into(), &mut || {
-                Ok(Some((
-                    data.size(frame_index),
-                    Cow::Borrowed(
-                        data.as_bytes(frame_index)
-                            .expect("It's the caller's job to pass a valid frame index"),
-                    ),
-                )))
-            })?
-            .expect("Callback above only returns Some");
+                let Some(bytes) = data.as_bytes(frame_index) else {
+                    return Ok(None);
+                };
+                Ok(Some((data.size(frame_index), Cow::Borrowed(bytes))))
+            })?;
+        let Some(tile) = tile else {
+            crate::fast::image_scaling::missing(&data);
+            return Ok(());
+        };
 
         let visible_bounds_snapped = self.snap_bounds(visible_bounds);
 
@@ -5692,6 +5692,15 @@ impl Window {
             };
 
             self.sprite_atlas.remove(&params.clone().into());
+        }
+        for image_id in crate::fast::image_scaling::variant_ids(&data) {
+            self.sprite_atlas.remove(
+                &RenderImageParams {
+                    image_id,
+                    frame_index: 0,
+                }
+                .into(),
+            );
         }
 
         Ok(())

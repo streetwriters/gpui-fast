@@ -3232,8 +3232,9 @@ impl App {
 
         // remove the texture from the current window
         if let Some(window) = current_window {
-            _ = window.drop_image(image);
+            _ = window.drop_image(image.clone());
         }
+        crate::fast::image_scaling::forget(&image);
     }
 
     /// Sets the renderer for the inspector.
