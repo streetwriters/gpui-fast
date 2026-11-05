@@ -34,52 +34,6 @@ fn named(
         .map(|_| Named::ByCompositor)
 }
 
-/// The ICD manifests of a PCI vendor, as a pattern for the loader's
-/// `VK_LOADER_DRIVERS_SELECT`.
-fn driver_manifests(vendor: u32) -> Option<&'static str> {
-    match vendor {
-        0x8086 => Some("intel_*"),
-        0x1002 => Some("radeon_*,amd_*"),
-        0x10de => Some("nvidia_icd*,nouveau_*"),
-        _ => None,
-    }
-}
-
-/// Restricts the Vulkan loader to one vendor's drivers while alive, so that
-/// the other installed drivers are not loaded by an instance created in the
-/// meantime.
-struct DriversSelected {
-    previous: Option<std::ffi::OsString>,
-}
-
-const DRIVERS_SELECT: &str = "VK_LOADER_DRIVERS_SELECT";
-
-impl DriversSelected {
-    fn new(vendor: u32) -> Option<Self> {
-        let manifests = driver_manifests(vendor)?;
-        let previous = std::env::var_os(DRIVERS_SELECT);
-        if previous.is_some() {
-            return None;
-        }
-        // SAFETY: called while the window is created, before any other thread
-        // of this process reads the environment concurrently.
-        unsafe { std::env::set_var(DRIVERS_SELECT, manifests) };
-        Some(Self { previous })
-    }
-}
-
-impl Drop for DriversSelected {
-    fn drop(&mut self) {
-        // SAFETY: as in `new`.
-        unsafe {
-            match &self.previous {
-                Some(value) => std::env::set_var(DRIVERS_SELECT, value),
-                None => std::env::remove_var(DRIVERS_SELECT),
-            }
-        }
-    }
-}
-
 /// Tries the adapters named by `filter` and `hint`, the user's first, with
 /// `try_one`, and returns the first result. The others are never touched.
 pub(crate) fn named_first<A, R>(
@@ -115,17 +69,10 @@ where
     if filter.is_none() && hint.is_none() {
         return None;
     }
-    let (instance, adapters) = {
-        let _drivers = hint
-            .as_ref()
-            .filter(|_| filter.is_none())
-            .and_then(|hint| DriversSelected::new(hint.vendor_id));
-        let instance =
-            WgpuContext::instance_for(wgpu::Backends::VULKAN, Some(Box::new(window.clone())));
-        let adapters = gpui::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
-        (instance, adapters)
-    };
+    let instance =
+        WgpuContext::instance_for(wgpu::Backends::VULKAN, Some(Box::new(window.clone())));
     let surface = crate::wgpu_renderer::create_surface(&instance, raw_window_handle).ok()?;
+    let adapters = gpui::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
     let selected = named_first(
         adapters,
         |adapter| {
@@ -170,7 +117,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CompositorGpuHint, driver_manifests, named_first};
+    use super::{CompositorGpuHint, named_first};
 
     const INTEL: (u32, u32) = (0x8086, 0x3e92);
     const NVIDIA: (u32, u32) = (0x10de, 0x2560);
@@ -251,11 +198,5 @@ mod tests {
         );
         assert_eq!(selected, None);
         assert!(tried.is_empty());
-    }
-
-    #[test]
-    fn only_known_vendors_restrict_the_drivers() {
-        assert_eq!(driver_manifests(0x8086), Some("intel_*"));
-        assert_eq!(driver_manifests(0x1234), None);
     }
 }
