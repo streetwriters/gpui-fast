@@ -17,7 +17,7 @@
 use crate::{
     App, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, GlobalElementId, Overflow, Pixels,
     Point, PolychromeSprite, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, Style, TileCoord,
-    Window,
+    Window, WindowBackgroundAppearance,
     fast::{
         dependencies::{DependencyRecording, RenderDependencies},
         layers::{
@@ -321,8 +321,14 @@ pub(crate) fn replays(window: &Window, id: &GlobalElementId) -> bool {
 }
 
 pub(crate) fn bake_background(window: &Window) -> Option<Rgba> {
+    let window_opaque =
+        window.platform_window.background_appearance() == WindowBackgroundAppearance::Opaque;
     let viewport = window.snapped_content_mask().bounds;
-    background::bake(&window.next_frame.scene, viewport)
+    background::bake(
+        &window.next_frame.scene,
+        viewport,
+        background::window_allows_bake(window_opaque),
+    )
 }
 
 /// Paints content prepainted for a layer straight into the frame, as

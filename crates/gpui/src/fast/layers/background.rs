@@ -15,11 +15,25 @@ use crate::{
 /// The colour of what `scene`, as painted so far, shows under `viewport`,
 /// if a tile can be cleared with it: the topmost primitive visible in the
 /// viewport is a quad with a solid, opaque background, no visible border or
-/// rounded corner inside the viewport, covering all of it. The window may be
-/// transparent, as a client-decorated one is for its shadow: what the quad
-/// covers is opaque all the same.
-pub(crate) fn bake(scene: &Scene, viewport: Bounds<ScaledPixels>) -> Option<Rgba> {
+/// rounded corner inside the viewport, covering all of it, and the window is
+/// opaque.
+pub(crate) fn bake(
+    scene: &Scene,
+    viewport: Bounds<ScaledPixels>,
+    window_opaque: bool,
+) -> Option<Rgba> {
+    if !window_opaque {
+        return None;
+    }
     bake_operations(&scene.paint_operations, viewport)
+}
+
+/// Whether a window of this opacity may have its layers' backgrounds baked. An
+/// opaque panel covering the viewport is opaque whatever the window is, and a
+/// client-decorated window on Linux is transparent for its shadow; Metal keeps
+/// the path it had, where a transparent window is not baked.
+pub(crate) fn window_allows_bake(window_opaque: bool) -> bool {
+    window_opaque || cfg!(not(any(target_os = "macos", target_os = "ios")))
 }
 
 /// [`bake`] over `operations`, the ones painted under the viewport.

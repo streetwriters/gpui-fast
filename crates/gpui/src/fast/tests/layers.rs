@@ -1094,25 +1094,40 @@ mod paint {
         assert_eq!(snap(whole, 1.25, true), whole, "whole device pixels stay");
     }
 
-    fn bake(quads: &[Quad]) -> Option<crate::Rgba> {
-        crate::fast::layers::background::bake(&scene(quads), sp(100., 100., 200., 300.))
+    fn bake(quads: &[Quad], window_opaque: bool) -> Option<crate::Rgba> {
+        crate::fast::layers::background::bake(
+            &scene(quads),
+            sp(100., 100., 200., 300.),
+            window_opaque,
+        )
     }
 
     #[test]
     fn an_opaque_panel_under_the_viewport_is_baked() {
         let panel = quad(sp(0., 0., 1000., 1000.), Hsla::blue());
-        assert_eq!(bake(&[panel]), Some(Hsla::blue().into()));
+        assert_eq!(bake(&[panel], true), Some(Hsla::blue().into()));
         // Something painted later away from the viewport changes nothing.
         let elsewhere = quad(sp(500., 500., 10., 10.), Hsla::red());
-        assert_eq!(bake(&[panel, elsewhere]), Some(Hsla::blue().into()));
+        assert_eq!(bake(&[panel, elsewhere], true), Some(Hsla::blue().into()));
         // The topmost panel is the one baked.
         let above = quad(sp(50., 50., 400., 400.), Hsla::green());
-        assert_eq!(bake(&[panel, above]), Some(Hsla::green().into()));
+        assert_eq!(bake(&[panel, above], true), Some(Hsla::green().into()));
+    }
+
+    #[test]
+    fn a_transparent_window_is_baked_where_it_is_not_metal() {
+        assert!(crate::fast::layers::background::window_allows_bake(true));
+        assert_eq!(
+            crate::fast::layers::background::window_allows_bake(false),
+            cfg!(not(any(target_os = "macos", target_os = "ios")))
+        );
     }
 
     #[test]
     fn only_a_solid_opaque_panel_covering_the_viewport_is_baked() {
         let panel = quad(sp(0., 0., 1000., 1000.), Hsla::blue());
+        assert_eq!(bake(&[panel], false), None, "transparent window");
+
         let gradient = Quad {
             background: crate::linear_gradient(
                 0.,
@@ -1121,23 +1136,23 @@ mod paint {
             ),
             ..panel
         };
-        assert_eq!(bake(&[gradient]), None, "gradient");
+        assert_eq!(bake(&[gradient], true), None, "gradient");
 
         let translucent = quad(sp(0., 0., 1000., 1000.), Hsla::blue().opacity(0.5));
-        assert_eq!(bake(&[translucent]), None, "translucent");
+        assert_eq!(bake(&[translucent], true), None, "translucent");
 
         let partly_inside = quad(sp(250., 250., 100., 100.), Hsla::red());
-        assert_eq!(bake(&[panel, partly_inside]), None, "partly covered");
+        assert_eq!(bake(&[panel, partly_inside], true), None, "partly covered");
 
         let short = quad(sp(0., 0., 1000., 350.), Hsla::blue());
-        assert_eq!(bake(&[short]), None, "does not cover the viewport");
+        assert_eq!(bake(&[short], true), None, "does not cover the viewport");
 
         let clipped = Quad {
             content_mask: ContentMask::new(sp(0., 0., 1000., 200.)),
             ..panel
         };
         assert_eq!(
-            bake(&[clipped]),
+            bake(&[clipped], true),
             None,
             "clipped short of the viewport"
         );
@@ -1147,14 +1162,14 @@ mod paint {
             corner_radii: crate::Corners::all(ScaledPixels(20.)),
             ..panel
         };
-        assert_eq!(bake(&[rounded_inside]), None, "corner inside");
+        assert_eq!(bake(&[rounded_inside], true), None, "corner inside");
         let rounded_outside = Quad {
             bounds: sp(0., 0., 1000., 1000.),
             corner_radii: crate::Corners::all(ScaledPixels(20.)),
             ..panel
         };
         assert_eq!(
-            bake(&[rounded_outside]),
+            bake(&[rounded_outside], true),
             Some(Hsla::blue().into()),
             "corners away from the viewport"
         );
@@ -1165,13 +1180,13 @@ mod paint {
             border_color: Hsla::red(),
             ..panel
         };
-        assert_eq!(bake(&[bordered]), None, "border inside");
+        assert_eq!(bake(&[bordered], true), None, "border inside");
         let transparent_border = Quad {
             border_color: Hsla::transparent_black(),
             ..bordered
         };
         assert_eq!(
-            bake(&[transparent_border]),
+            bake(&[transparent_border], true),
             Some(Hsla::blue().into()),
             "an invisible border"
         );
