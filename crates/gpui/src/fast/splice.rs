@@ -395,6 +395,14 @@ impl Window {
                     .as_slice()
             }),
         );
+        // A gap is built without the transforms of the views around it, so a
+        // view drawn under one is built with the view around it instead.
+        if gaps.iter().any(|&gap| {
+            self.rendered_frame.retained.records[gap].context.transformation
+                != crate::TransformationMatrix::unit()
+        }) {
+            return None;
+        }
         // Capture before rebuilding gaps; changes made while they render must
         // still invalidate the ancestor's aggregate on the next frame.
         let entity_updates = cx.entities.access_log.update_generation();
