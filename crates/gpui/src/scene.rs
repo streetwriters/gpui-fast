@@ -655,7 +655,15 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
-        let order = self.primitive_bounds.insert(bounds);
+        // Ordered by where the layer lands on screen, as its primitives are.
+        let screen_bounds = if self.current_transform.is_identity() {
+            bounds
+        } else {
+            self.transforms
+                .get(self.current_transform)
+                .transform_bounds(&bounds)
+        };
+        let order = self.primitive_bounds.insert(screen_bounds);
         self.layer_stack.push(order);
         self.paint_operations
             .push(PaintOperation::StartLayer(bounds));
