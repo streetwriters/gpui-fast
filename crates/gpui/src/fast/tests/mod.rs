@@ -25,4 +25,5 @@ mod splice_late_layout;
 mod support;
 mod text;
 mod text_shaping;
+mod transform;
 mod wheel_notifies;

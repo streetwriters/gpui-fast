@@ -356,46 +356,6 @@ fn draw_in_progress() -> bool {
     CURRENT_ELEMENT_ARENA.with(|current| current.get().is_some())
 }
 
-/// `mask` mapped by `matrix`. Exact for translation and scale; under a rotation
-/// the mask is the box around the mapped one and loses its rounded corners.
-fn transform_content_mask(
-    mask: &ContentMask<Pixels>,
-    matrix: &TransformationMatrix,
-) -> ContentMask<Pixels> {
-    let map = |bounds: &Bounds<Pixels>| {
-        let corners = [
-            bounds.origin,
-            bounds.top_right(),
-            bounds.bottom_right(),
-            bounds.bottom_left(),
-        ]
-        .map(|corner| matrix.transform_logical_point(corner));
-        let (mut min, mut max) = (corners[0], corners[0]);
-        for corner in &corners[1..] {
-            min = point(min.x.min(corner.x), min.y.min(corner.y));
-            max = point(max.x.max(corner.x), max.y.max(corner.y));
-        }
-        Bounds::from_corners(min, max)
-    };
-    let [[a, b], [c, d]] = matrix.rotation_scale;
-    let axis_aligned = b == 0.0 && c == 0.0;
-    if !mask.is_rounded() || !axis_aligned {
-        return ContentMask::new(map(&mask.bounds));
-    }
-    let scale = (a.abs() + d.abs()) / 2.0;
-    let radii = &mask.corner_radii;
-    ContentMask {
-        bounds: map(&mask.bounds),
-        rounded_bounds: map(&mask.rounded_bounds),
-        corner_radii: Corners {
-            top_left: radii.top_left * scale,
-            top_right: radii.top_right * scale,
-            bottom_right: radii.bottom_right * scale,
-            bottom_left: radii.bottom_left * scale,
-        },
-    }
-}
-
 /// Allocates an element in the current arena. Uses the app-specific arena if one
 /// is active (during draw), otherwise falls back to the thread-local ELEMENT_ARENA.
 #[inline(always)]
@@ -4583,22 +4543,12 @@ impl Window {
             rotation_scale: matrix.rotation_scale,
             translation: [matrix.translation[0] * scale, matrix.translation[1] * scale],
         };
-        // Masks are in the space they were pushed in, and primitives and
-        // hitboxes are clipped in their own space, so the mask in force is
-        // carried into the transformed space.
-        let mask = matrix
-            .inverse()
-            .map(|inverse| transform_content_mask(&self.content_mask(), &inverse));
+        let fast_mask = crate::fast::transform::push_content_mask(self, &matrix);
         let previous = self.transformation;
         self.transformation = previous.compose(matrix);
         let scene_previous = self.next_frame.scene.push_transform(scaled);
-        if let Some(mask) = mask.clone() {
-            self.content_mask_stack.push(mask);
-        }
         let result = f(self);
-        if mask.is_some() {
-            self.content_mask_stack.pop();
-        }
+        crate::fast::transform::pop_content_mask(self, fast_mask);
         self.next_frame.scene.pop_transform(scene_previous);
         self.transformation = previous;
         result

@@ -8,6 +8,7 @@
 //! Renderers evaluate the independent padding edges in colour fragments;
 //! rounded groups do not allocate intermediate render targets.
 
+use crate::fast::transform::push_rebuilt_layer;
 use std::mem;
 
 use crate::fast::rounded_clip::{ClipOperation, Shape};
@@ -68,7 +69,7 @@ pub(crate) fn compile(scene: &mut Scene) {
             None => (true, root),
         }
     }
-    for operation in &operations {
+    for (position, operation) in operations.iter().enumerate() {
         match operation {
             PaintOperation::FastRoundedClip(ClipOperation::Begin(shape)) => {
                 let already_active = shapes.contains(shape);
@@ -157,10 +158,16 @@ pub(crate) fn compile(scene: &mut Scene) {
                 };
                 target.insert_under(primitive.clone(), index, false);
             }
-            PaintOperation::StartLayer(bounds) => match open.last_mut() {
-                Some((_, scope)) => scope.push_layer(*bounds),
-                None => root.push_layer(*bounds),
-            },
+            // Its primitives keep their transforms, and the scope scenes have
+            // none current.
+            PaintOperation::StartLayer(bounds) => {
+                let rest = &operations[position + 1..];
+                let scene = match open.last_mut() {
+                    Some((_, scope)) => scope,
+                    None => &mut root,
+                };
+                push_rebuilt_layer(scene, *bounds, rest, &transforms);
+            }
             PaintOperation::EndLayer => match open.last_mut() {
                 Some((_, scope)) => scope.pop_layer(),
                 None => root.pop_layer(),

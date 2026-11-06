@@ -243,7 +243,7 @@ impl TransformTable {
 pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     pub(crate) primitive_bounds: BoundsTree<ScaledPixels>,
-    layer_stack: Vec<DrawOrder>,
+    pub(crate) layer_stack: Vec<DrawOrder>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub paths: Vec<Path<ScaledPixels>>,
@@ -257,7 +257,7 @@ pub struct Scene {
     pub(crate) fast_rounded_clip: crate::fast::rounded_clip::SceneClips,
     pub layers: crate::fast::layers::scene::SceneLayers,
     pub transforms: TransformTable,
-    current_transform: TransformIndex,
+    pub(crate) current_transform: TransformIndex,
     /// The effect groups of the frame, by id - 1. See [`Scene::begin_effect_group`].
     pub groups: Vec<EffectGroup>,
     /// What each group draws, split out of the scene by [`Scene::finish`]:
@@ -655,15 +655,9 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
-        // Ordered by where the layer lands on screen, as its primitives are.
-        let screen_bounds = if self.current_transform.is_identity() {
-            bounds
-        } else {
-            self.transforms
-                .get(self.current_transform)
-                .transform_bounds(&bounds)
-        };
-        let order = self.primitive_bounds.insert(screen_bounds);
+        let order = self
+            .primitive_bounds
+            .insert(crate::fast::transform::layer_screen_bounds(self, bounds));
         self.layer_stack.push(order);
         self.paint_operations
             .push(PaintOperation::StartLayer(bounds));
@@ -799,7 +793,10 @@ impl Scene {
             });
             regrouped.insert(old_id, self.groups.len() as u32);
         }
-        for operation in &prev_scene.paint_operations[range] {
+        for (fast_position, operation) in prev_scene.paint_operations[range.clone()]
+            .iter()
+            .enumerate()
+        {
             match operation {
                 PaintOperation::Primitive(primitive) => {
                     // The previous scene's table holds absolute transforms and
@@ -852,7 +849,12 @@ impl Scene {
                     }
                     self.insert_under(primitive, carried.1, false);
                 }
-                PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
+                PaintOperation::StartLayer(bounds) => crate::fast::transform::push_rebuilt_layer(
+                    self,
+                    *bounds,
+                    &prev_scene.paint_operations[range.start + fast_position + 1..range.end],
+                    &prev_scene.transforms,
+                ),
                 PaintOperation::EndLayer => self.pop_layer(),
                 PaintOperation::FastRoundedClip(fast_clip) => {
                     crate::fast::rounded_clip::record(self, *fast_clip)

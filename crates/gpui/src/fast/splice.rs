@@ -398,7 +398,9 @@ impl Window {
         // A gap is built without the transforms of the views around it, so a
         // view drawn under one is built with the view around it instead.
         if gaps.iter().any(|&gap| {
-            self.rendered_frame.retained.records[gap].context.transformation
+            self.rendered_frame.retained.records[gap]
+                .context
+                .transformation
                 != crate::TransformationMatrix::unit()
         }) {
             return None;
