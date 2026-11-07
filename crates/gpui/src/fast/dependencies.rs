@@ -1012,7 +1012,7 @@ fn outside<'a, T: Clone>(
 /// What a retained subtree read while it was built: the entities it accessed
 /// and the globals it read, as of a global generation. While none of them has
 /// changed, building the subtree again would build the same thing.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct RenderDependencies {
     pub(crate) entities: Rc<[EntityId]>,
     pub(crate) globals: Rc<[TypeId]>,
@@ -1028,6 +1028,26 @@ pub(crate) struct RenderDependencies {
     pub(crate) updates: u64,
     /// Where in the write generation it was built. See [`Writes`].
     pub(crate) writes: Writes,
+}
+
+impl Default for RenderDependencies {
+    /// Nothing read. The empty lists are shared: every retained subtree
+    /// starts out with these, and `Rc<[T]>::default` allocates.
+    fn default() -> Self {
+        thread_local! {
+            static EMPTY: (Rc<[EntityId]>, Rc<[TypeId]>, Rc<[(StateVersion, u64)]>) =
+                (Rc::from([]), Rc::from([]), Rc::from([]));
+        }
+        EMPTY.with(|(entities, globals, states)| Self {
+            entities: entities.clone(),
+            globals: globals.clone(),
+            states: states.clone(),
+            offset_reads: Default::default(),
+            generation: 0,
+            updates: 0,
+            writes: Writes::default(),
+        })
+    }
 }
 
 /// A counter that state shared outside of entities — a scroll handle, a list

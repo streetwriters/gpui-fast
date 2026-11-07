@@ -1180,7 +1180,7 @@ fn carry_prepaint_rows(window: &mut Window, id: &GlobalElementId) {
     // Keeping the rows' layout nodes logged their keys: they are not the
     // next row's.
     let log_end = window.record_claimed_layout_keys();
-    window.finish_recording_claimed_layout_keys(log_end);
+    window.end_recording_claimed_layout_keys();
     if let Some(layer) = window.fast_layers.layers.get_mut(id) {
         layer.rows.rows = rows;
         if let Some((_, mark)) = layer
@@ -1577,8 +1577,8 @@ fn finish_prepaint(window: &mut Window, cx: &mut App, id: &GlobalElementId) {
         return;
     };
     frame.prepaint_range = frame.prepaint_start.clone()..end;
-    if let Some((start, _)) = frame.layout_keys.take() {
-        window.finish_recording_claimed_layout_keys(start);
+    if frame.layout_keys.take().is_some() {
+        window.end_recording_claimed_layout_keys();
     }
     let Some(frame) = frame_mut(window, id) else {
         return;

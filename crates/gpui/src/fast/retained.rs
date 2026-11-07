@@ -144,6 +144,34 @@ pub(crate) enum PaintStatus {
     Pending { anchor: usize },
 }
 
+/// What a record holds until the subtree it stands for is built, shared by
+/// every record being built, which would otherwise allocate each of them.
+struct Unbuilt {
+    context: Rc<RetainedContext>,
+    hovers: Rc<[(HitboxId, bool)]>,
+    keys: Rc<[u64]>,
+}
+
+impl Unbuilt {
+    fn with<R>(f: impl FnOnce(&Unbuilt) -> R) -> R {
+        thread_local! {
+            static UNBUILT: Unbuilt = Unbuilt {
+                context: Rc::new(RetainedContext {
+                    composition_surface: None,
+                    bounds: Bounds::default(),
+                    content_mask: ContentMask::default(),
+                    text_style: TextStyle::default(),
+                    opacity: 1.,
+                    transformation: crate::TransformationMatrix::unit(),
+                }),
+                hovers: Rc::from([]),
+                keys: Rc::from([]),
+            };
+        }
+        UNBUILT.with(f)
+    }
+}
+
 /// What a subtree's prepaint and paint depended on besides what it read: the
 /// place it was drawn in and what it inherited there.
 #[derive(Clone, PartialEq)]
@@ -915,21 +943,14 @@ impl Window {
                 paint_range: PaintIndex::default()..PaintIndex::default(),
                 paint: PaintStatus::Unpainted,
                 nested: 0,
-                context: Rc::new(RetainedContext {
-                    composition_surface: None,
-                    bounds: Bounds::default(),
-                    content_mask: ContentMask::default(),
-                    text_style: TextStyle::default(),
-                    opacity: 1.,
-                    transformation: crate::TransformationMatrix::unit(),
-                }),
+                context: Unbuilt::with(|unbuilt| unbuilt.context.clone()),
                 dependencies: RenderDependencies::default(),
                 own_dependencies: RenderDependencies::default(),
                 render_offset_reads: None,
                 render_dependencies: None,
-                hover_dependencies: Rc::new([]),
-                own_hovers: Rc::new([]),
-                layout_keys: Rc::new([]),
+                hover_dependencies: Unbuilt::with(|unbuilt| unbuilt.hovers.clone()),
+                own_hovers: Unbuilt::with(|unbuilt| unbuilt.hovers.clone()),
+                layout_keys: Unbuilt::with(|unbuilt| unbuilt.keys.clone()),
                 layout: None,
                 rebuild: None,
             });
@@ -958,7 +979,12 @@ impl Window {
         rebuild: Option<Rebuild>,
         cx: &mut App,
     ) -> Option<usize> {
-        let layout_keys = self.finish_recording_claimed_layout_keys(recording.layout_keys);
+        let layout_keys: Rc<[u64]> = if self.claimed_layout_keys_since(recording.layout_keys) {
+            self.finish_recording_claimed_layout_keys(recording.layout_keys)
+        } else {
+            self.end_recording_claimed_layout_keys();
+            Unbuilt::with(|unbuilt| unbuilt.keys.clone())
+        };
         let mut dependencies = cx.finish_recording_dependencies(recording.dependencies);
         let id = self.retained_state.subtree_stack.pop();
         let Some(index) = recording.index else {
@@ -1007,7 +1033,7 @@ impl Window {
         record.own_dependencies = dependencies.own;
         record.render_offset_reads = render_offset_reads;
         record.render_dependencies = dependencies.render;
-        record.layout_keys = layout_keys.into();
+        record.layout_keys = layout_keys;
         record.layout = layout;
         record.rebuild = rebuild.map(Rc::new);
         Some(index)
@@ -1061,18 +1087,33 @@ impl Window {
         };
         let end = self.paint_index();
         let all = &self.retained_state.hover_dependencies[recording.hovers_start..hovers_end];
-        let mut own = Vec::new();
-        let mut cursor = recording.hovers_start;
-        for range in &nested {
-            if range.start > cursor {
-                own.extend_from_slice(&self.retained_state.hover_dependencies[cursor..range.start]);
+        let hovers: Rc<[(HitboxId, bool)]> = if all.is_empty() {
+            Unbuilt::with(|unbuilt| unbuilt.hovers.clone())
+        } else {
+            all.into()
+        };
+        let own_hovers = if nested.iter().all(|range| range.is_empty()) {
+            hovers.clone()
+        } else {
+            let mut own = Vec::new();
+            let mut cursor = recording.hovers_start;
+            for range in &nested {
+                if range.start > cursor {
+                    own.extend_from_slice(
+                        &self.retained_state.hover_dependencies[cursor..range.start],
+                    );
+                }
+                cursor = cursor.max(range.end);
             }
-            cursor = cursor.max(range.end);
-        }
-        if hovers_end > cursor {
-            own.extend_from_slice(&self.retained_state.hover_dependencies[cursor..hovers_end]);
-        }
-        let hovers: Rc<[(HitboxId, bool)]> = all.into();
+            if hovers_end > cursor {
+                own.extend_from_slice(&self.retained_state.hover_dependencies[cursor..hovers_end]);
+            }
+            if own.len() == hovers.len() {
+                hovers.clone()
+            } else {
+                own.into()
+            }
+        };
         let record = &mut self.next_frame.retained.records[index];
         record.paint_range = recording.start..end;
         record.paint = PaintStatus::Painted { source: None };
@@ -1085,7 +1126,7 @@ impl Window {
             Rc::make_mut(&mut record.context).opacity = opacity;
         }
         record.hover_dependencies = hovers;
-        record.own_hovers = own.into();
+        record.own_hovers = own_hovers;
         record.dependencies = record.dependencies.union(&dependencies.all);
         record.own_dependencies = record.own_dependencies.union(&dependencies.own);
     }
@@ -1106,11 +1147,32 @@ impl Window {
     }
 
     /// See [`crate::taffy::TaffyLayoutEngine::finish_recording_claimed_keys`].
-    pub(crate) fn finish_recording_claimed_layout_keys(&mut self, start: usize) -> Vec<u64> {
+    pub(crate) fn finish_recording_claimed_layout_keys<K: for<'a> From<&'a [u64]>>(
+        &mut self,
+        start: usize,
+    ) -> K {
         self.layout_engine
             .as_mut()
             .unwrap()
             .finish_recording_claimed_keys(start)
+    }
+
+    /// See [`crate::taffy::TaffyLayoutEngine::end_recording_claimed_keys`].
+    pub(crate) fn end_recording_claimed_layout_keys(&mut self) {
+        self.layout_engine
+            .as_mut()
+            .unwrap()
+            .end_recording_claimed_keys();
+    }
+
+    /// Whether the recording started at `start` saw any keys.
+    fn claimed_layout_keys_since(&self, start: usize) -> bool {
+        !self
+            .layout_engine
+            .as_ref()
+            .unwrap()
+            .claimed_keys_since(start)
+            .is_empty()
     }
 
     /// See [`crate::taffy::TaffyLayoutEngine::keep_retained`].
