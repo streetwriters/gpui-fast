@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-use ::sum_tree::SumTree;
 use collections::FxHashMap;
 use sum_tree::Bias;
 
@@ -12,7 +11,7 @@ pub(crate) struct TabStopMap {
     current_path: TabStopPath,
     pub(crate) insertion_history: Vec<TabStopOperation>,
     by_id: FxHashMap<FocusId, TabStopNode>,
-    order: SumTree<TabStopNode>,
+    order: crate::fast::tab_stops::LazyOrder<TabStopNode>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +68,7 @@ impl Default for TabStopMap {
             current_path: TabStopPath::default(),
             insertion_history: Vec::new(),
             by_id: FxHashMap::default(),
-            order: SumTree::new(()),
+            order: crate::fast::tab_stops::LazyOrder::default(),
         }
     }
 }
@@ -101,11 +100,10 @@ impl TabStopMap {
     }
 
     pub fn clear(&mut self) {
-        *self = Self::default();
         self.current_path.0.clear();
         self.insertion_history.clear();
         self.by_id.clear();
-        self.order = SumTree::new(());
+        crate::fast::tab_stops::LazyOrder::clear(&mut self.order);
     }
 
     pub fn next(&self, focused_id: Option<&FocusId>) -> Option<FocusHandle> {
