@@ -18,6 +18,7 @@ use crate::{
     App, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, GlobalElementId, Overflow, Pixels,
     Point, PolychromeSprite, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, Style, TileCoord,
     Window, WindowBackgroundAppearance,
+    fast::transform::first_transform_in_layer,
     fast::{
         dependencies::{DependencyRecording, RenderDependencies},
         layers::{
@@ -32,7 +33,7 @@ use crate::{
         },
     },
     point,
-    scene::{PaintOperation, Primitive},
+    scene::{PaintOperation, Primitive, TransformIndex},
     size as size2,
 };
 use collections::FxHashMap;
@@ -755,7 +756,7 @@ fn repaint(
         ScaledPixels(-translation.x.0),
         ScaledPixels(-translation.y.0),
     );
-    let content = translated_scene(&painting.scene, to_content);
+    let (content, tileable) = translated_scene(&painting.scene, to_content);
     let region = painting.painted_region.scale(scale_factor);
     let region = Bounds {
         origin: region.origin + to_content,
@@ -823,6 +824,9 @@ fn repaint(
         .stats
         .layer_frames_repainted += 1;
     insert_layer(window, &painting.id, translation, dirtied);
+    if !tileable {
+        policy::defer_unbaked(window, &painting.id);
+    }
 }
 
 /// Ends the layers' part of the frame being drawn, before it becomes the
@@ -919,18 +923,46 @@ pub(crate) fn translation(window: &Window, scroll_offset: Point<Pixels>) -> Poin
     )
 }
 
-/// `scene` moved by `delta`, finished.
-fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
+/// `scene` moved by `delta`, finished, and whether its tiles can hold it.
+///
+/// Tiles are hashed, placed and rasterized in untransformed space, so content
+/// a translation moves is moved there instead, to where it lands. Content
+/// under any other transform keeps it, but cannot be held in tiles.
+pub(crate) fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> (Scene, bool) {
     let mut translated = Scene::default();
-    for operation in &scene.paint_operations {
+    let mut tileable = true;
+    let operations = &scene.paint_operations;
+    for (position, operation) in operations.iter().enumerate() {
         match operation {
             PaintOperation::Primitive(primitive) => {
-                translated.insert_primitive(translate_primitive(primitive, delta))
+                let index = primitive.transform_index();
+                // A path is transformed on the CPU when it is painted.
+                if index.is_identity() || matches!(primitive, Primitive::Path(_)) {
+                    translated.insert_primitive(translate_primitive(primitive, delta));
+                } else if let Some(moved) = translation_of(scene, index) {
+                    translated.insert_primitive(translate_primitive(primitive, delta + moved));
+                } else {
+                    tileable = false;
+                    let mut matrix = scene.transforms.get(index);
+                    matrix.translation[0] += delta.x.0;
+                    matrix.translation[1] += delta.y.0;
+                    let index = translated.transforms.intern_in_group(
+                        matrix,
+                        scene.transforms.filter(index),
+                        0,
+                    );
+                    translated.insert_under(primitive.clone(), index, false);
+                }
             }
-            PaintOperation::StartLayer(bounds) => translated.push_layer(Bounds {
-                origin: bounds.origin + delta,
-                size: bounds.size,
-            }),
+            PaintOperation::StartLayer(bounds) => {
+                let moved = first_transform_in_layer(&operations[position + 1..])
+                    .and_then(|index| translation_of(scene, index))
+                    .unwrap_or_default();
+                translated.push_layer(Bounds {
+                    origin: bounds.origin + delta + moved,
+                    size: bounds.size,
+                })
+            }
             PaintOperation::EndLayer => translated.pop_layer(),
             PaintOperation::FastRoundedClip(clip) => {
                 crate::fast::rounded_clip::record(&mut translated, clip.translated(delta))
@@ -938,7 +970,22 @@ fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
         }
     }
     translated.finish();
-    translated
+    (translated, tileable)
+}
+
+/// What the transform at `index` of `scene` moves content by, if it only
+/// moves it: no scale, rotation, colour filter or effect group.
+fn translation_of(scene: &Scene, index: TransformIndex) -> Option<Point<ScaledPixels>> {
+    let matrix = scene.transforms.get(index);
+    (matrix.rotation_scale == [[1., 0.], [0., 1.]]
+        && scene.transforms.filter(index).is_identity()
+        && scene.transforms.group(index) == 0)
+        .then(|| {
+            point(
+                ScaledPixels(matrix.translation[0]),
+                ScaledPixels(matrix.translation[1]),
+            )
+        })
 }
 
 /// `offset`, a scroll offset about to be applied, moved to whole device

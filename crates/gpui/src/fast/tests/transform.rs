@@ -93,3 +93,63 @@ fn a_layer_rebuilt_around_a_rounded_clip_is_drawn_over_its_background() {
     let (background, layer) = orders(&scene);
     assert!(layer > background, "layer {layer}, background {background}");
 }
+
+fn moved_by(x: f32, y: f32) -> TransformationMatrix {
+    TransformationMatrix {
+        rotation_scale: [[1., 0.], [0., 1.]],
+        translation: [x, y],
+    }
+}
+
+/// A row 1000 px down its list, as a recycling list places it: laid out at
+/// the top and moved by a transform, with a text layer.
+fn moved_row(matrix: TransformationMatrix) -> Scene {
+    let mut scene = Scene::default();
+    let previous = scene.push_transform(matrix);
+    scene.insert_primitive(quad(bounds(0., 0., 100., 40.)));
+    scene.push_layer(bounds(10., 10., 50., 20.));
+    scene.insert_primitive(quad(bounds(10., 10., 50., 20.)));
+    scene.pop_layer();
+    scene.pop_transform(previous);
+    scene
+}
+
+#[test]
+fn layer_content_moved_by_a_translation_lands_where_it_moves_to() {
+    let (content, tileable) = crate::fast::layers::paint::translated_scene(
+        &moved_row(moved_by(0., 1000.)),
+        point(ScaledPixels(0.), ScaledPixels(-100.)),
+    );
+    assert!(tileable);
+    let row = content
+        .quads
+        .iter()
+        .find(|quad| quad.bounds.size.width == ScaledPixels(100.))
+        .expect("row");
+    assert_eq!(row.bounds, bounds(0., 900., 100., 40.));
+    assert_eq!(row.transform_index().0, 0);
+    let layer = content
+        .paint_operations
+        .iter()
+        .find_map(|operation| match operation {
+            crate::PaintOperation::StartLayer(bounds) => Some(*bounds),
+            _ => None,
+        });
+    assert_eq!(layer, Some(bounds(10., 910., 50., 20.)));
+}
+
+#[test]
+fn layer_content_under_a_scale_keeps_it_and_cannot_be_tiled() {
+    let (content, tileable) = crate::fast::layers::paint::translated_scene(
+        &moved_row(TransformationMatrix {
+            rotation_scale: [[2., 0.], [0., 2.]],
+            translation: [0., 1000.],
+        }),
+        point(ScaledPixels(0.), ScaledPixels(-100.)),
+    );
+    assert!(!tileable);
+    let row = &content.quads[0];
+    let matrix = content.transforms.get(row.transform_index());
+    assert_eq!(matrix.rotation_scale, [[2., 0.], [0., 2.]]);
+    assert_eq!(matrix.translation, [0., 900.]);
+}

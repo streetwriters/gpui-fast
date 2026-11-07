@@ -107,7 +107,7 @@ pub(crate) fn push_rebuilt_layer(
 
 /// The transform of the first primitive in the layer `operations` begin inside
 /// of, or `None` for a layer with none.
-fn first_transform_in_layer(operations: &[PaintOperation]) -> Option<TransformIndex> {
+pub(crate) fn first_transform_in_layer(operations: &[PaintOperation]) -> Option<TransformIndex> {
     let mut depth = 0usize;
     for operation in operations {
         match operation {
