@@ -102,6 +102,62 @@ impl Shape {
         })
     }
 
+    /// The shape where the transformation in force puts it on the window. A scale
+    /// and a translation map it exactly; under a rotation or a skew the shape
+    /// becomes the box around the mapped one, without rounded corners.
+    fn transformed(self, matrix: &crate::TransformationMatrix, scale: f32) -> Self {
+        let [[a, b], [c, d]] = matrix.rotation_scale;
+        if matrix == &crate::TransformationMatrix::unit() {
+            return self;
+        }
+        let map = |position: crate::Point<ScaledPixels>| {
+            point(
+                ScaledPixels(a * position.x.0 + b * position.y.0 + matrix.translation[0] * scale),
+                ScaledPixels(c * position.x.0 + d * position.y.0 + matrix.translation[1] * scale),
+            )
+        };
+        let corners = [
+            self.bounds.origin,
+            self.bounds.top_right(),
+            self.bounds.bottom_right(),
+            self.bounds.bottom_left(),
+        ]
+        .map(map);
+        let (mut min, mut max) = (corners[0], corners[0]);
+        for corner in &corners[1..] {
+            min = point(
+                ScaledPixels(min.x.0.min(corner.x.0)),
+                ScaledPixels(min.y.0.min(corner.y.0)),
+            );
+            max = point(
+                ScaledPixels(max.x.0.max(corner.x.0)),
+                ScaledPixels(max.y.0.max(corner.y.0)),
+            );
+        }
+        let bounds = Bounds::from_corners(min, max);
+        if b != 0.0 || c != 0.0 {
+            return Self {
+                bounds,
+                radii: Corners::default(),
+            };
+        }
+        let radius = |radius: Size<ScaledPixels>| {
+            size(
+                ScaledPixels(radius.width.0 * a.abs()),
+                ScaledPixels(radius.height.0 * d.abs()),
+            )
+        };
+        Self {
+            bounds,
+            radii: Corners {
+                top_left: radius(self.radii.top_left),
+                top_right: radius(self.radii.top_right),
+                bottom_right: radius(self.radii.bottom_right),
+                bottom_left: radius(self.radii.bottom_left),
+            },
+        }
+    }
+
     /// CPU reference for testing the geometric intersection independently of
     /// antialiasing. Check every corner: an unusually thick opposite border
     /// can cut through a corner's quarter ellipse.
@@ -181,10 +237,11 @@ pub(crate) fn paint_children(
     cx: &mut App,
     paint: impl FnOnce(&mut Window, &mut App),
 ) {
-    let Some(shape) = Shape::for_style(style, bounds, window.rem_size(), window.scale_factor())
-    else {
+    let scale = window.scale_factor();
+    let Some(shape) = Shape::for_style(style, bounds, window.rem_size(), scale) else {
         return paint(window, cx);
     };
+    let shape = shape.transformed(&window.transformation(), scale);
     record(&mut window.next_frame.scene, ClipOperation::Begin(shape));
     paint(window, cx);
     record(&mut window.next_frame.scene, ClipOperation::End);
@@ -272,6 +329,45 @@ mod tests {
             content_mask: crate::ContentMask::new(bounds),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn rounded_clip_follows_a_scale_about_the_center() {
+        let about = crate::TransformationMatrix::about(
+            32.,
+            32.,
+            crate::TransformationMatrix {
+                rotation_scale: [[1.5, 0.], [0., 1.5]],
+                translation: [0., 0.],
+            },
+        );
+        let mapped = shape().transformed(&about, 1.);
+        assert_eq!(
+            mapped.bounds.size,
+            size(ScaledPixels(96.), ScaledPixels(96.))
+        );
+        assert_eq!(mapped.bounds.origin, at(-16., -16.));
+        assert_eq!(mapped.radii.top_left.width, ScaledPixels(36.));
+    }
+
+    #[test]
+    fn rounded_clip_follows_a_translation_and_drops_its_corners_under_a_rotation() {
+        let moved = shape().transformed(
+            &crate::TransformationMatrix {
+                rotation_scale: [[1., 0.], [0., 1.]],
+                translation: [10., 5.],
+            },
+            2.,
+        );
+        assert_eq!(moved.bounds.origin, at(20., 10.));
+        let turned = shape().transformed(
+            &crate::TransformationMatrix {
+                rotation_scale: [[0., -1.], [1., 0.]],
+                translation: [0., 0.],
+            },
+            1.,
+        );
+        assert_eq!(turned.radii.top_left.width, ScaledPixels(0.));
     }
 
     #[test]
