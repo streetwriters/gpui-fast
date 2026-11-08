@@ -2515,7 +2515,7 @@ fn get_scale_factor(native_window: *mut AnyObject) -> f32 {
     // (if it is off-screen), though we'd expect to see viewDidChangeBackingProperties before
     // it was rendered for real.
     // Regardless, attempt to avoid the issue here.
-    if factor == 0.0 { 2. } else { factor }
+    crate::fast::scale_override::apply(if factor == 0.0 { 2. } else { factor })
 }
 
 /// Returns whether `window` is one of GPUI's managed windows.
