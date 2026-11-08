@@ -48,11 +48,7 @@ use smallvec::SmallVec;
 use std::{borrow::Cow, char, convert::TryFrom, sync::Arc};
 
 #[cfg(target_os = "macos")]
-use {
-    core_foundation::base::CFType,
-    gpui::{Hsla, Rgba},
-    std::sync::OnceLock,
-};
+use {core_foundation::base::CFType, gpui::Hsla, std::sync::OnceLock};
 
 use crate::open_type::apply_features_and_fallbacks;
 
@@ -225,16 +221,7 @@ impl PlatformTextSystem for AppleTextSystem {
 
     #[cfg(target_os = "macos")]
     fn glyph_dilation_for_color(&self, color: Hsla) -> u8 {
-        // When font smoothing is enabled, CoreGraphics thickens glyph strokes by an amount that
-        // depends on the foreground color's luminance. We replicate the logic used by CoreGraphics
-        // to select between the different levels of dilation.
-        if !font_smoothing_allowed_by_user() {
-            return 0;
-        }
-        let rgba: Rgba = color.into();
-        let luminance = 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
-        let level = ((4.0 * luminance) + 0.5).floor() as i32;
-        level.clamp(0, 4) as u8
+        crate::fast::glyph_coverage::level_for_color(color, font_smoothing_allowed_by_user())
     }
 }
 
@@ -509,13 +496,7 @@ impl AppleTextSystemState {
             cx.set_allows_font_subpixel_quantization(false);
             cx.set_should_subpixel_quantize_fonts(false);
 
-            if cfg!(target_os = "macos") && params.dilation > 0 {
-                let luminance = params.dilation as f64 * 0.25;
-                cx.set_should_smooth_fonts(true);
-                cx.set_gray_fill_color(luminance, 1.0);
-            } else {
-                cx.set_gray_fill_color(0.0, 1.0);
-            }
+            crate::fast::glyph_coverage::begin_unsmoothed(&cx);
             self.fonts[params.font_id.0]
                 .native_font()
                 .clone_with_font_size(f32::from(params.font_size) as CGFloat)
@@ -533,6 +514,8 @@ impl AppleTextSystemState {
                 for pixel in bytes.chunks_exact_mut(4) {
                     swap_rgba_pa_to_bgra(pixel);
                 }
+            } else {
+                crate::fast::glyph_coverage::apply(params.dilation, &mut bytes);
             }
 
             Ok((bitmap_size, bytes))

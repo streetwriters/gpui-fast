@@ -13,6 +13,8 @@ pub(crate) mod buffer_shrink;
 pub(crate) mod composition;
 pub(crate) mod dynamic_textures;
 pub(crate) mod effects;
+#[cfg(feature = "font-kit")]
+pub(crate) mod glyph_coverage;
 pub(crate) mod instance_buffers;
 #[path = "../../../gpui/src/fast/layer_budget.rs"]
 pub(crate) mod layer_budget;
