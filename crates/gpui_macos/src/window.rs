@@ -1853,7 +1853,7 @@ impl PlatformWindow for MacWindow {
     }
 
     fn is_active(&self) -> bool {
-        self.0.lock().native_window().isKeyWindow()
+        crate::fast::test_active::apply(self.0.lock().native_window().isKeyWindow())
     }
 
     fn visibility(&self) -> WindowVisibility {

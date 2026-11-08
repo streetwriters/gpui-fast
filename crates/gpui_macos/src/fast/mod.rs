@@ -9,3 +9,4 @@
 
 pub(crate) mod composition;
 pub(crate) mod scale_override;
+pub(crate) mod test_active;
