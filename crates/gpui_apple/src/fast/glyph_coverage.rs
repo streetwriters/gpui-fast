@@ -71,7 +71,7 @@ fn table(level: u32) -> [u8; 256] {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Hsla, LEVELS, Rgba, UNADJUSTED, apply, level_for_color, tables};
 
     #[test]
     fn full_and_no_coverage_are_unchanged() {
