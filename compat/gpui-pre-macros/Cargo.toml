@@ -1,6 +1,6 @@
 [package]
 name = "gpui-pre-macros"
-version = "0.3.9"
+version = "0.3.12"
 description = "gpui-fast's `gpui_macros`, under the name and version of the gpui-pre snapshot GPUI Kit pins."
 license = "Apache-2.0"
 edition.workspace = true
@@ -15,4 +15,4 @@ doctest = false
 inspector = ["gpui_fast/inspector"]
 
 [dependencies]
-gpui_fast = { package = "gpui_macros", path = "../../crates/gpui_macros", default-features = false }
+gpui_fast = { package = "gpui_macros", path = "../../crates/gpui_macros", default-features = false, features = ["gpui-pre-facade"] }
