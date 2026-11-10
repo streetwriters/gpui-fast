@@ -16,6 +16,9 @@
 //! reaches its handler. When the wheel stops the window is drawn again, and
 //! hover follows the pointer as before. A pointer that moves ends the freeze
 //! at once.
+//!
+//! The window is drawn again without refreshing it, so the views the pointer is
+//! over are built again for their hover and the others are not.
 
 use scheduler::Instant;
 use std::time::Duration;
@@ -57,12 +60,23 @@ pub(crate) fn note_wheel(window: &mut Window, cx: &mut App) {
                 .await;
             cx.update(|window, _| {
                 if !frozen(window) {
-                    window.refresh();
+                    thaw(window);
                 }
             })
             .ok();
         })
         .detach();
+}
+
+/// Draws the window again once hover is no longer held still. Not a refresh:
+/// a view that was drawn with hover held still recorded the hover it saw, and is
+/// built again if the hovered state of a hitbox it was painted by now differs,
+/// so only the views under the pointer are, and the others are drawn again from
+/// last frame.
+fn thaw(window: &mut Window) {
+    if window.invalidator.not_drawing() {
+        window.invalidator.set_dirty(true);
+    }
 }
 
 /// Whether hover is held still: a wheel event came less than

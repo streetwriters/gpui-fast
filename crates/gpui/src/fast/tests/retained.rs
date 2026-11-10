@@ -2676,3 +2676,76 @@ fn an_element_no_longer_drawn_leaves_the_debug_bounds_of_a_retained_frame() {
     );
     assert_eq!(bounds(&mut cx, "kept"), Some(kept));
 }
+
+/// The end of a hover freeze draws the window again for the hover that was held
+/// still: only the row under the pointer is built again, not every row.
+#[test]
+fn the_end_of_a_hover_freeze_builds_only_the_row_whose_hover_it_held_still() {
+    struct Column {
+        rows: Vec<Entity<Row>>,
+    }
+
+    impl Render for Column {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .relative()
+                .size(px(300.))
+                .children(self.rows.iter().enumerate().map(|(index, row)| {
+                    div().absolute().left_0().top(px(index as f32 * 20.)).child(
+                        row.clone()
+                            .cached(StyleRefinement::default().w(px(100.)).h(px(20.))),
+                    )
+                }))
+        }
+    }
+
+    let mut cx = TestAppContext::single();
+    let counts: Vec<Rc<Cell<usize>>> = (0..10).map(|_| Rc::new(Cell::new(0))).collect();
+    let window = cx.add_window({
+        let counts = counts.clone();
+        move |_, cx| Column {
+            rows: counts
+                .iter()
+                .enumerate()
+                .map(|(label, builds)| {
+                    let builds = builds.clone();
+                    cx.new(|_| Row {
+                        label: label as u32,
+                        builds,
+                    })
+                })
+                .collect(),
+        }
+    });
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    cx.update_window(window.into(), |_, window, _| window.set_hover_freeze(true))
+        .unwrap();
+    cx.update_window(window.into(), |_, window, cx| {
+        window.simulate_mouse_move(crate::point(px(10.), px(50.)), cx);
+    })
+    .unwrap();
+    draw(&mut cx);
+    draw(&mut cx);
+    cx.update_window(window.into(), |_, window, cx| {
+        crate::fast::layers::hover_freeze::note_wheel(window, cx);
+    })
+    .unwrap();
+    draw(&mut cx);
+    let before: Vec<usize> = counts.iter().map(|builds| builds.get()).collect();
+
+    cx.executor()
+        .advance_clock(crate::fast::layers::hover_freeze::HOVER_FREEZE * 2);
+    cx.run_until_parked();
+    std::thread::sleep(crate::fast::layers::hover_freeze::HOVER_FREEZE * 2);
+    draw(&mut cx);
+    let built: Vec<usize> = counts
+        .iter()
+        .zip(&before)
+        .map(|(builds, before)| builds.get() - before)
+        .collect();
+    assert_eq!(built.iter().sum::<usize>(), 1, "built per row: {built:?}");
+    assert_eq!(built[2], 1, "the row under the pointer is built again");
+}
