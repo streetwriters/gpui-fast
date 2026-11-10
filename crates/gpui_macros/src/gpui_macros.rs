@@ -12,13 +12,16 @@ mod test;
 #[cfg(any(feature = "inspector", debug_assertions))]
 mod derive_inspector_reflection;
 
+mod facade_paths;
 use proc_macro::TokenStream;
 use syn::{DeriveInput, Ident};
 
 /// `Action` derive macro - see the trait documentation for details.
 #[proc_macro_derive(Action, attributes(action))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     derive_action::derive_action(input)
+    })())
 }
 
 /// This can be used to register an action with the GPUI runtime when you want to manually implement
@@ -26,20 +29,26 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 /// instead.
 #[proc_macro]
 pub fn register_action(ident: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     register_action::register_action(ident)
+    })())
 }
 
 /// #[derive(IntoElement)] generates an `IntoElement` impl for any `RenderOnce`
 /// type, wrapping it in a `ViewElement` so it can be used as a child.
 #[proc_macro_derive(IntoElement)]
 pub fn derive_into_element(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     derive_into_element::derive_into_element(input)
+    })())
 }
 
 #[proc_macro_derive(Render)]
 #[doc(hidden)]
 pub fn derive_render(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     derive_render::derive_render(input)
+    })())
 }
 
 /// #[derive(AppContext)] is used to create a context out of anything that holds a `&mut App`
@@ -57,7 +66,9 @@ pub fn derive_render(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(AppContext, attributes(app))]
 pub fn derive_app_context(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     derive_app_context::derive_app_context(input)
+    })())
 }
 
 /// #[derive(VisualContext)] is used to create a visual context out of anything that holds a `&mut Window` and
@@ -90,62 +101,82 @@ pub fn derive_app_context(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(VisualContext, attributes(window, app))]
 pub fn derive_visual_context(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     derive_visual_context::derive_visual_context(input)
+    })())
 }
 
 /// Used by GPUI to generate the style helpers.
 #[proc_macro]
 #[doc(hidden)]
 pub fn style_helpers(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::style_helpers(input)
+    })())
 }
 
 /// Generates methods for visibility styles.
 #[proc_macro]
 pub fn visibility_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::visibility_style_methods(input)
+    })())
 }
 
 /// Generates methods for margin styles.
 #[proc_macro]
 pub fn margin_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::margin_style_methods(input)
+    })())
 }
 
 /// Generates methods for padding styles.
 #[proc_macro]
 pub fn padding_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::padding_style_methods(input)
+    })())
 }
 
 /// Generates methods for position styles.
 #[proc_macro]
 pub fn position_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::position_style_methods(input)
+    })())
 }
 
 /// Generates methods for overflow styles.
 #[proc_macro]
 pub fn overflow_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::overflow_style_methods(input)
+    })())
 }
 
 /// Generates methods for cursor styles.
 #[proc_macro]
 pub fn cursor_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::cursor_style_methods(input)
+    })())
 }
 
 /// Generates methods for border styles.
 #[proc_macro]
 pub fn border_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::border_style_methods(input)
+    })())
 }
 
 /// Generates methods for box shadow styles.
 #[proc_macro]
 pub fn box_shadow_style_methods(input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     styles::box_shadow_style_methods(input)
+    })())
 }
 
 /// `#[gpui::test]` can be used to annotate test functions that run with GPUI support.
@@ -187,7 +218,9 @@ pub fn box_shadow_style_methods(input: TokenStream) -> TokenStream {
 /// - `ITERATIONS`: forces the value of the `iterations` argument
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, function: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     test::test(args, function)
+    })())
 }
 
 /// `#[gpui::bench]` annotates a Criterion benchmark that runs with GPUI support.
@@ -220,7 +253,9 @@ pub fn test(args: TokenStream, function: TokenStream) -> TokenStream {
 /// feature, since the generated code references all three.
 #[proc_macro_attribute]
 pub fn bench(args: TokenStream, function: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     bench::bench(args, function)
+    })())
 }
 
 /// A variant of `#[gpui::test]` that supports property-based testing.
@@ -293,7 +328,9 @@ pub fn bench(args: TokenStream, function: TokenStream) -> TokenStream {
 /// [`Strategy`]: https://docs.rs/proptest/latest/proptest/strategy/trait.Strategy.html
 #[proc_macro_attribute]
 pub fn property_test(args: TokenStream, function: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     property_test::test(args.into(), function.into()).into()
+    })())
 }
 
 /// When added to a trait, `#[derive_inspector_reflection]` generates a module which provides
@@ -315,7 +352,9 @@ pub fn property_test(args: TokenStream, function: TokenStream) -> TokenStream {
 #[cfg(any(feature = "inspector", debug_assertions))]
 #[proc_macro_attribute]
 pub fn derive_inspector_reflection(_args: TokenStream, input: TokenStream) -> TokenStream {
+    facade_paths::rewrite((move || -> TokenStream {
     derive_inspector_reflection::derive_inspector_reflection(_args, input)
+    })())
 }
 
 pub(crate) fn get_simple_attribute_field(ast: &DeriveInput, name: &'static str) -> Option<Ident> {
