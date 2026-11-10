@@ -2078,7 +2078,7 @@ impl From<TileId> for etagere::AllocId {
 #[expect(missing_docs)]
 pub struct PlatformInputHandler {
     cx: AsyncWindowContext,
-    handler: Box<dyn InputHandler>,
+    pub(crate) handler: Box<dyn InputHandler>,
     focus_id: Option<crate::FocusId>,
 }
 

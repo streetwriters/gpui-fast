@@ -50,6 +50,41 @@ fn is_taken_as_text(window: &mut Window, event: &dyn Any, cx: &mut App) -> bool 
     accepts
 }
 
+/// What an input method does to the focused element's input handler, for tests
+/// that cannot reach the platform: [`Window::simulate_marked_text`] shows text
+/// being composed and [`Window::simulate_committed_text`] replaces it with the
+/// final text.
+#[cfg(any(test, feature = "test-support"))]
+impl Window {
+    /// Marks `text` as being composed in the focused element's input handler.
+    /// Returns whether there was a handler.
+    pub fn simulate_marked_text(&mut self, text: &str, cx: &mut App) -> bool {
+        let Some(mut handler) = self.platform_window.take_input_handler() else {
+            return false;
+        };
+        handler
+            .handler
+            .replace_and_mark_text_in_range(None, text, None, self, cx);
+        self.platform_window.set_input_handler(handler);
+        true
+    }
+
+    /// Replaces the text being composed, or the selection, with `text` and
+    /// ends the composition. Returns whether there was a handler.
+    pub fn simulate_committed_text(&mut self, text: &str, cx: &mut App) -> bool {
+        let Some(mut handler) = self.platform_window.take_input_handler() else {
+            return false;
+        };
+        let marked = handler.handler.marked_text_range(self, cx);
+        handler
+            .handler
+            .replace_text_in_range(marked, text, self, cx);
+        handler.handler.unmark_text(self, cx);
+        self.platform_window.set_input_handler(handler);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -196,6 +231,41 @@ mod tests {
     #[test]
     fn a_character_the_input_takes_is_not_offered_to_ancestors_and_is_still_inserted() {
         assert_eq!(type_key(true, "a", Some("a")), (0, 1, 1));
+    }
+
+    #[test]
+    fn an_input_method_reaches_the_focused_input_handler_without_key_events() {
+        let mut cx = TestAppContext::single();
+        let (outer, own, inserted) = (
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(0)),
+        );
+        let window = cx.add_window({
+            let (outer, own, inserted) = (outer.clone(), own.clone(), inserted.clone());
+            move |_, cx| Field {
+                focus: cx.focus_handle(),
+                accepts: true,
+                outer,
+                own,
+                inserted,
+            }
+        });
+        let field: Entity<Field> = window.entity(&cx).unwrap();
+        let focus = field.read_with(&cx, |field, _| field.focus.clone());
+        let composed = cx
+            .update_window(window.into(), |_, window, cx| {
+                window.focus(&focus, cx);
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
+                (
+                    window.simulate_marked_text("に", cx),
+                    window.simulate_committed_text("日本", cx),
+                )
+            })
+            .unwrap();
+        assert_eq!(composed, (true, true));
+        assert_eq!((outer.get(), own.get(), inserted.get()), (0, 0, 1));
     }
 
     #[test]
