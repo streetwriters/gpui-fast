@@ -28,7 +28,7 @@ pub(super) fn whole_scene_layer<'a>(
 mod tests {
     use super::whole_scene_layer;
     use gpui::{
-        Bounds, ComposedSceneLayer, CompositionSurfaceId, ContentMask, Quad, ScaledPixels, Scene,
+        Bounds, ComposedSceneLayer, CompositionSurfaceId, ClipMask, Quad, ScaledPixels, Scene,
         point, size,
     };
     #[test]
@@ -41,7 +41,7 @@ mod tests {
         scene.push_layer(bounds);
         scene.insert_primitive(Quad {
             bounds,
-            content_mask: ContentMask::new(bounds),
+            content_mask: ClipMask::new(bounds),
             ..Default::default()
         });
         scene.pop_layer();

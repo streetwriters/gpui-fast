@@ -47,7 +47,7 @@ mod apple_build {
             "Pixels".into(),
             "PointF".into(),
             "Hsla".into(),
-            "ContentMask".into(),
+            "ClipMask".into(),
             "Uniforms".into(),
             "AtlasTile".into(),
             "PathRasterizationInputIndex".into(),

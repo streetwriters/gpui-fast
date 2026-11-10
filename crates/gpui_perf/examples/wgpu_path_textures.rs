@@ -13,7 +13,7 @@ mod bench {
                 origin: point(ScaledPixels(100.), ScaledPixels(100.)),
                 size: size(ScaledPixels(800.), ScaledPixels(600.)),
             },
-            content_mask: ContentMask::new(Bounds {
+            content_mask: ClipMask::new(Bounds {
                 origin: point(ScaledPixels(0.), ScaledPixels(0.)),
                 size: size(ScaledPixels(WIDTH as f32), ScaledPixels(HEIGHT as f32)),
             }),
@@ -30,7 +30,7 @@ mod bench {
             point(px(x + side), px(y + side)),
         );
         path.line_to(point(px(x), px(y)));
-        path.content_mask = ContentMask::new(Bounds {
+        path.content_mask = ClipMask::new(Bounds {
             origin: point(px(0.), px(0.)),
             size: size(px(WIDTH as f32), px(HEIGHT as f32)),
         });

@@ -3,7 +3,7 @@
 //! atlas allocates, and the content those tiles are rasterized from.
 
 use crate::{
-    AtlasTextureId, AtlasTextureKind, Bounds, ContentMask, Point, Rgba, ScaledPixels, Scene,
+    AtlasTextureId, AtlasTextureKind, Bounds, ClipMask, Point, Rgba, ScaledPixels, Scene,
     TileId, point,
     scene::{PaintOperation, Primitive},
     size,
@@ -275,7 +275,7 @@ pub(crate) fn translate_primitive(primitive: &Primitive, delta: Point<ScaledPixe
 /// Moves `primitive` by `delta`, as [`translate_primitive`] does, in place.
 pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixels>) {
     let mv = |bounds: &mut Bounds<ScaledPixels>| *bounds = translate_bounds(*bounds, delta);
-    let mv_mask = |mask: &mut ContentMask<ScaledPixels>| *mask = mask.translate(delta);
+    let mv_mask = |mask: &mut ClipMask<ScaledPixels>| *mask = mask.translate(delta);
     match primitive {
         Primitive::Shadow(shadow) => {
             mv(&mut shadow.bounds);

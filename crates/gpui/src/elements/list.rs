@@ -8,7 +8,7 @@
 //! If all of your elements are the same height, see [`crate::UniformList`] for a simpler API
 
 use crate::{
-    Along as _, AnyElement, App, AvailableSpace, Axis, Bounds, ContentMask, DispatchPhase, Edges,
+    Along as _, AnyElement, App, AvailableSpace, Axis, Bounds, ClipMask, DispatchPhase, Edges,
     Element, EntityId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
     IntoElement, Overflow, Pixels, Point, ScrollDelta, ScrollEvent, Size, Style, StyleRefinement,
     Styled, Window, point, px, size,
@@ -1380,7 +1380,7 @@ impl StateInner {
                         item.index,
                         &mut item_origin,
                     );
-                    window.with_content_mask(Some(ContentMask::new(bounds)), |window| {
+                    window.with_clip_mask(Some(ClipMask::new(bounds)), |window| {
                         item.element.prepaint_at(item_origin, window, cx);
                     });
 
@@ -1752,7 +1752,7 @@ impl Element for List {
             }
         });
 
-        window.with_content_mask(Some(ContentMask::new(bounds)), |window| {
+        window.with_clip_mask(Some(ClipMask::new(bounds)), |window| {
             crate::fast::layers::lists::begin_paint_list(window, cx, &self.state);
             for item in &mut prepaint.layout.item_layouts {
                 crate::fast::layers::lists::paint_row(

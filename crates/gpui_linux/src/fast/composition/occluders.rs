@@ -1,7 +1,7 @@
 //! Conservative X11 occlusion rectangles. Rounded clip group markers are
 //! containers, not images: only their drawable descendants contribute bounds.
 
-use gpui::{Bounds, ContentMask, DevicePixels, ScaledPixels, Scene};
+use gpui::{Bounds, ClipMask, DevicePixels, ScaledPixels, Scene};
 
 /// Bound shape request size for text-heavy overlays, as before clip groups.
 const MAX_OCCLUDER_RECTANGLES: usize = 256;
@@ -12,7 +12,7 @@ fn collect(
     enclosing: Option<Bounds<ScaledPixels>>,
     rectangles: &mut Vec<Bounds<ScaledPixels>>,
 ) {
-    let clipped = |bounds: Bounds<ScaledPixels>, mask: &ContentMask<ScaledPixels>| {
+    let clipped = |bounds: Bounds<ScaledPixels>, mask: &ClipMask<ScaledPixels>| {
         let bounds = bounds.intersect(&mask.bounds);
         enclosing.map_or(bounds, |clip| bounds.intersect(&clip))
     };
@@ -127,13 +127,13 @@ pub(crate) fn scene_occluders(scene: &Scene, opaque_only: bool) -> Vec<Bounds<De
 mod tests {
     use super::scene_occluders;
     use gpui::{
-        Bounds, ContentMask, DevicePixels, Quad, ScaledPixels, Scene, Shadow, black, point, size,
+        Bounds, ClipMask, DevicePixels, Quad, ScaledPixels, Scene, Shadow, black, point, size,
     };
 
     fn quad(bounds: Bounds<ScaledPixels>, mask: Bounds<ScaledPixels>) -> Quad {
         Quad {
             bounds,
-            content_mask: ContentMask::new(mask),
+            content_mask: ClipMask::new(mask),
             ..Default::default()
         }
     }
@@ -161,7 +161,7 @@ mod tests {
             blur_radius: ScaledPixels(24.),
             bounds: scaled(500., 500., 100., 100.),
             corner_radii: Default::default(),
-            content_mask: ContentMask::new(everything),
+            content_mask: ClipMask::new(everything),
             color: Default::default(),
             element_bounds: scaled(500., 500., 100., 100.),
             element_corner_radii: Default::default(),
@@ -216,7 +216,7 @@ mod tests {
             grayscale: false.into(),
             opacity: 1.,
             bounds,
-            content_mask: ContentMask::new(bounds),
+            content_mask: ClipMask::new(bounds),
             corner_radii: Default::default(),
             tile: gpui::AtlasTile {
                 texture_id: gpui::AtlasTextureId {

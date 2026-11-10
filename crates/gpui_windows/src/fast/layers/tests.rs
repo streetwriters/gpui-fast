@@ -13,7 +13,7 @@ use std::slice;
 
 use anyhow::{Context as _, Result};
 use gpui::{
-    AtlasKey, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, Edges, FontId, GlyphId, Hsla,
+    AtlasKey, AtlasTile, Bounds, ClipMask, Corners, DevicePixels, Edges, FontId, GlyphId, Hsla,
     ImageId, LayerFrame, LayerKey, MonochromeSprite, Path, PlatformAtlas, PolychromeSprite, Quad,
     RenderGlyphParams, RenderImageParams, Rgba, ScaledPixels, Scene, SceneLayers, Shadow, Size,
     SubpixelSprite, TileCoord, TransformationMatrix, Underline, layer_tile_id,
@@ -113,7 +113,7 @@ fn rounded_content_masks_clip_quads_and_paths() {
     let mut quad_scene = Scene::default();
     quad_scene.insert_primitive(Quad {
         bounds: square,
-        content_mask: ContentMask {
+        content_mask: ClipMask {
             bounds: square,
             rounded_bounds: square,
             corner_radii: Corners::all(ScaledPixels(16.)),
@@ -128,7 +128,7 @@ fn rounded_content_masks_clip_quads_and_paths() {
     path.line_to(point(px(56.), px(56.)));
     path.line_to(point(px(8.), px(56.)));
     path.line_to(point(px(8.), px(8.)));
-    path.content_mask = ContentMask {
+    path.content_mask = ClipMask {
         bounds: square.map(|value| px(value.0)),
         rounded_bounds: square.map(|value| px(value.0)),
         corner_radii: Corners::all(px(16.)),
@@ -340,7 +340,7 @@ fn composited_scene(
                 TILE as f32,
                 TILE as f32,
             ),
-            content_mask: ContentMask::new(viewport),
+            content_mask: ClipMask::new(viewport),
             corner_radii: Corners::default(),
             tile: AtlasTile {
                 texture_id: layer_tile_texture_id(key),
@@ -510,7 +510,7 @@ fn rasterize_and_assemble(harness: &mut Harness, content: Scene, tiles: &[(i32, 
             grayscale: false.into(),
             opacity: 1.,
             bounds,
-            content_mask: ContentMask::new(bounds),
+            content_mask: ClipMask::new(bounds),
             corner_radii: Corners::default(),
             tile: AtlasTile {
                 texture_id: layer_tile_texture_id(key),
@@ -594,7 +594,7 @@ fn add_content(
 ) {
     let (ox, oy) = offset;
     let at = |x: f32, y: f32, w: f32, h: f32| sp(x + ox, y + oy, w, h);
-    let mask = |bounds: Bounds<ScaledPixels>| ContentMask::new(bounds.intersect(&clip));
+    let mask = |bounds: Bounds<ScaledPixels>| ClipMask::new(bounds.intersect(&clip));
 
     scene.insert_primitive(Quad {
         content_mask: mask(clip),
@@ -700,7 +700,7 @@ fn add_covered_paths(
     (ox, oy): (f32, f32),
     clip: Bounds<ScaledPixels>,
 ) {
-    let mask = ContentMask::new(clip);
+    let mask = ClipMask::new(clip);
     for (x, y, dx, dy) in [
         (200., 330., 1., 1.),
         (330.5, 330., -1., 1.),
@@ -711,7 +711,7 @@ fn add_covered_paths(
         path.line_to(corner + point(px(9. * dx), px(0.)));
         path.curve_to(corner + point(px(0.), px(9. * dy)), corner);
         path.line_to(corner);
-        path.content_mask = ContentMask::new(clip.map(|c| px(c.0)));
+        path.content_mask = ClipMask::new(clip.map(|c| px(c.0)));
         path.color = Hsla::from(rgba(0x3366ccff)).into();
         scene.insert_primitive(path.scale(1.));
     }
@@ -739,7 +739,7 @@ fn add_covered_paths(
         point(px(300. + ox), px(395. + oy)),
     );
     path.line_to(point(px(250. + ox), px(360. + oy)));
-    path.content_mask = ContentMask::new(clip.map(|c| px(c.0)));
+    path.content_mask = ClipMask::new(clip.map(|c| px(c.0)));
     path.color = Hsla::from(rgba(0x8800ffcc)).into();
     scene.insert_primitive(path.scale(1.));
 }
@@ -805,8 +805,8 @@ fn sp(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
 }
 
 /// A content mask that clips nothing the tests draw.
-fn no_mask() -> ContentMask<ScaledPixels> {
-    ContentMask::new(sp(-10_000., -10_000., 20_000., 20_000.))
+fn no_mask() -> ClipMask<ScaledPixels> {
+    ClipMask::new(sp(-10_000., -10_000., 20_000., 20_000.))
 }
 
 fn quad(bounds: Bounds<ScaledPixels>, color: Hsla) -> Quad {
@@ -1111,7 +1111,7 @@ mod transforms {
         let mut quad = quad(bounds, Hsla::from(rgba(0xff0000ff)));
         quad.corner_radii = Corners::all(ScaledPixels(corner));
         if let Some(mask) = mask {
-            quad.content_mask = ContentMask::new(mask);
+            quad.content_mask = ClipMask::new(mask);
         }
         scene.insert_primitive(quad);
         scene.pop_transform(previous);
@@ -1448,13 +1448,13 @@ mod groups {
 
 const SIZED_VIEWPORT: (i32, i32) = (1200, 900);
 
-fn sized_mask(rounded: bool) -> ContentMask<gpui::Pixels> {
+fn sized_mask(rounded: bool) -> ClipMask<gpui::Pixels> {
     let bounds = Bounds {
         origin: point(px(0.), px(0.)),
         size: size(px(SIZED_VIEWPORT.0 as f32), px(SIZED_VIEWPORT.1 as f32)),
     };
     if rounded {
-        ContentMask {
+        ClipMask {
             bounds,
             rounded_bounds: Bounds {
                 origin: point(px(20.), px(20.)),
@@ -1466,7 +1466,7 @@ fn sized_mask(rounded: bool) -> ContentMask<gpui::Pixels> {
             corner_radii: Corners::all(px(60.)),
         }
     } else {
-        ContentMask::new(bounds)
+        ClipMask::new(bounds)
     }
 }
 

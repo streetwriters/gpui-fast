@@ -843,9 +843,6 @@ pub struct Hitbox {
     pub content_mask: ContentMask<Pixels>,
     /// Flags that specify hitbox behavior.
     pub behavior: HitboxBehavior,
-    /// The transformation, in logical pixels, that places the space `bounds`
-    /// and `content_mask` are in on the window; `None` is the identity.
-    pub(crate) transform: Option<std::rc::Rc<TransformationMatrix>>,
 }
 
 impl Hitbox {
@@ -1032,7 +1029,7 @@ pub(crate) struct DeferredDraw {
     pub(crate) parent_node: DispatchNodeId,
     pub(crate) element_id_stack: ElementIdStack,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
-    pub(crate) content_mask: Option<ContentMask<Pixels>>,
+    pub(crate) content_mask: Option<ClipMask<Pixels>>,
     pub(crate) rem_size: Pixels,
     pub(crate) element: Option<AnyElement>,
     pub(crate) absolute_offset: Point<Pixels>,
@@ -1056,6 +1053,11 @@ pub(crate) struct Frame {
     pub(crate) fast_composition_input: crate::fast::composition::SurfaceInput,
     pub(crate) fast_images: Vec<crate::ImageId>,
     pub(crate) hitboxes: Vec<Hitbox>,
+    /// The transformation, in logical pixels, that places the space a hitbox's `bounds` and
+    /// `content_mask` are in on the window, for hitboxes inserted under one. Kept beside the
+    /// hitboxes, not in them, so `Hitbox` keeps upstream's fields; a hitbox copied into another
+    /// frame keeps its id, and its transform is copied with it.
+    pub(crate) hitbox_transforms: FxHashMap<HitboxId, std::rc::Rc<TransformationMatrix>>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -1098,6 +1100,39 @@ pub(crate) struct PaintIndex {
     pub(crate) line_layout_index: LineLayoutIndex,
 }
 
+/// Hitbox transforms by hitbox id: a frame's (see `Frame::hitbox_transforms`), or those a record of
+/// some of its hitboxes keeps to put back when it carries them into a later frame.
+pub(crate) type HitboxTransforms = FxHashMap<HitboxId, std::rc::Rc<TransformationMatrix>>;
+
+impl Frame {
+    /// The transforms of `hitboxes`, which this frame holds, for a record keeping them.
+    pub(crate) fn transforms_of(&self, hitboxes: &[Hitbox]) -> HitboxTransforms {
+        if self.hitbox_transforms.is_empty() {
+            return HitboxTransforms::default();
+        }
+        hitboxes
+            .iter()
+            .filter_map(|hitbox| Some((hitbox.id, self.hitbox_transforms.get(&hitbox.id)?.clone())))
+            .collect()
+    }
+
+    /// Copies, from `transforms` of the frame they come from, the transforms of `hitboxes` copied into this frame.
+    pub(crate) fn carry_hitbox_transforms(
+        &mut self,
+        transforms: &FxHashMap<HitboxId, std::rc::Rc<TransformationMatrix>>,
+        hitboxes: &[Hitbox],
+    ) {
+        if transforms.is_empty() {
+            return;
+        }
+        for hitbox in hitboxes {
+            if let Some(transform) = transforms.get(&hitbox.id) {
+                self.hitbox_transforms.insert(hitbox.id, transform.clone());
+            }
+        }
+    }
+}
+
 impl Frame {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn record_debug_bounds(&mut self, selector: String, bounds: Bounds<Pixels>) {
@@ -1118,6 +1153,7 @@ impl Frame {
             fast_composition_input: crate::fast::composition::SurfaceInput::default(),
             fast_images: Vec::new(),
             hitboxes: Vec::new(),
+            hitbox_transforms: FxHashMap::default(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -1151,6 +1187,7 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.hitboxes.clear();
+        self.hitbox_transforms.clear();
         crate::fast::composition::SurfaceInput::clear(&mut self.fast_composition_input);
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
@@ -1194,7 +1231,7 @@ impl Frame {
         let mut hit_test = HitTest::default();
         for hitbox in self.hitboxes.iter().rev() {
             let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
-            let local = match &hitbox.transform {
+            let local = match self.hitbox_transforms.get(&hitbox.id) {
                 None => position,
                 Some(matrix) => {
                     // A box that is flattened to a line or a point is never hit.
@@ -1283,7 +1320,7 @@ pub struct Window {
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
     pub(crate) transformation: TransformationMatrix,
-    pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
+    pub(crate) content_mask_stack: Vec<ClipMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     /// The [`TextInputConfiguration`] most recently forwarded to the platform
     /// window, so that only actual changes are forwarded (reconfiguring a live
@@ -2455,15 +2492,51 @@ pub struct DispatchEventResult {
 }
 
 /// Indicates which region of the window is visible. Content falling outside of this mask will not be
-/// rendered.
-///
-/// The mask is a rectangle, optionally narrowed by one rounded rectangle. The two are kept apart
+/// rendered. Upstream's rectangular mask, kept as it is so code written for GPUI builds against this
+/// crate; [`ClipMask`] is the mask the window keeps, which may also be rounded.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
+    /// The bounds
+    pub bounds: Bounds<P>,
+}
+
+impl ContentMask<Pixels> {
+    /// Scale the content mask's pixel units by the given scaling factor.
+    pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
+        ContentMask {
+            bounds: self.bounds.scale(factor),
+        }
+    }
+
+    /// Intersect the content mask with the given content mask.
+    pub fn intersect(&self, other: &Self) -> Self {
+        let bounds = self.bounds.intersect(&other.bounds);
+        ContentMask { bounds }
+    }
+}
+
+impl<P: Clone + Debug + Default + PartialEq> From<ContentMask<P>> for ClipMask<P> {
+    fn from(mask: ContentMask<P>) -> Self {
+        ClipMask::new(mask.bounds)
+    }
+}
+
+impl<P: Clone + Debug + Default + PartialEq> From<ClipMask<P>> for ContentMask<P> {
+    /// The mask's rectangle; its rounding, if any, is dropped.
+    fn from(mask: ClipMask<P>) -> Self {
+        ContentMask { bounds: mask.bounds }
+    }
+}
+
+/// The mask the window draws under: a rectangle, optionally narrowed by one rounded rectangle.
+/// Set with [`Window::with_clip_mask`]; [`Window::with_content_mask`] sets the rectangle alone. The two are kept apart
 /// because a rectangle that cuts into a rounded one moves its edges but not its corners: content
 /// scrolled half out of a rounded container is still rounded where the container is, not where the
 /// rectangle ends.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
+pub struct ClipMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds
     pub bounds: Bounds<P>,
     /// The rounded rectangle content must also be inside. Ignored while every radius is zero.
@@ -2472,10 +2545,10 @@ pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     pub corner_radii: Corners<P>,
 }
 
-impl<P: Clone + Debug + Default + PartialEq> ContentMask<P> {
+impl<P: Clone + Debug + Default + PartialEq> ClipMask<P> {
     /// A rectangular mask.
     pub fn new(bounds: Bounds<P>) -> Self {
-        ContentMask {
+        ClipMask {
             bounds,
             rounded_bounds: Bounds::default(),
             corner_radii: Corners::default(),
@@ -2484,7 +2557,7 @@ impl<P: Clone + Debug + Default + PartialEq> ContentMask<P> {
 
     /// `self` with its rectangle replaced by `bounds`, keeping its rounded rectangle.
     pub fn with_bounds(&self, bounds: Bounds<P>) -> Self {
-        ContentMask {
+        ClipMask {
             bounds,
             ..self.clone()
         }
@@ -2500,10 +2573,10 @@ impl<P: Clone + Debug + Default + PartialEq> ContentMask<P> {
     }
 }
 
-impl ContentMask<Pixels> {
+impl ClipMask<Pixels> {
     /// A mask that also clips to `bounds` rounded by `corner_radii`.
     pub fn rounded(bounds: Bounds<Pixels>, corner_radii: Corners<Pixels>) -> Self {
-        ContentMask {
+        ClipMask {
             bounds,
             rounded_bounds: bounds,
             corner_radii,
@@ -2511,8 +2584,8 @@ impl ContentMask<Pixels> {
     }
 
     /// Scale the content mask's pixel units by the given scaling factor.
-    pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
-        ContentMask {
+    pub fn scale(&self, factor: f32) -> ClipMask<ScaledPixels> {
+        ClipMask {
             bounds: self.bounds.scale(factor),
             rounded_bounds: self.rounded_bounds.scale(factor),
             corner_radii: self.corner_radii.scale(factor),
@@ -2526,7 +2599,7 @@ impl ContentMask<Pixels> {
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
         let rounded = if self.is_rounded() { self } else { other };
-        ContentMask {
+        ClipMask {
             bounds,
             rounded_bounds: rounded.rounded_bounds,
             corner_radii: rounded.corner_radii,
@@ -2534,7 +2607,7 @@ impl ContentMask<Pixels> {
     }
 }
 
-impl ContentMask<ScaledPixels> {
+impl ClipMask<ScaledPixels> {
     /// `self` moved by `delta`. A mask with no rounded rectangle keeps its unused one as it is,
     /// so it stays equal to the same mask built in place.
     pub fn translate(&self, delta: Point<ScaledPixels>) -> Self {
@@ -2542,7 +2615,7 @@ impl ContentMask<ScaledPixels> {
             origin: bounds.origin + delta,
             size: bounds.size,
         };
-        ContentMask {
+        ClipMask {
             bounds: move_by(self.bounds),
             rounded_bounds: if self.is_rounded() {
                 move_by(self.rounded_bounds)
@@ -3629,8 +3702,8 @@ impl Window {
     }
 
     #[inline]
-    pub(crate) fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
-        let mask = self.content_mask();
+    pub(crate) fn snapped_content_mask(&self) -> ClipMask<ScaledPixels> {
+        let mask = self.clip_mask();
         mask.scale(self.scale_factor())
             .with_bounds(self.cover_bounds(mask.bounds))
     }
@@ -4297,7 +4370,7 @@ impl Window {
                 let recording = crate::fast::retained::begin_deferred_paint(self, enclosing, cx);
                 let ((), accessed_entities) = cx.detect_accessed_entities(|cx| {
                     self.with_rendered_view(deferred_draw.current_view, |window| {
-                        window.with_content_mask(content_mask, |window| {
+                        window.with_clip_mask(content_mask, |window| {
                             window.with_rem_size(Some(deferred_draw.rem_size), |window| {
                                 element.paint(window, cx);
                             });
@@ -4341,6 +4414,10 @@ impl Window {
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
                 .cloned(),
+        );
+        self.next_frame.carry_hitbox_transforms(
+            &self.rendered_frame.hitbox_transforms,
+            &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
         );
         self.next_frame.tooltip_requests.extend(
             self.rendered_frame.tooltip_requests
@@ -4513,9 +4590,20 @@ impl Window {
         mask: Option<ContentMask<Pixels>>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        // A rectangle has no rounding, so nested in a rounded mask it keeps that rounding
+        self.with_clip_mask(mask.map(ClipMask::from), f)
+    }
+
+    /// Like [`Window::with_content_mask`], with a mask that may be rounded: what `f` draws is also
+    /// clipped to the mask's rounded rectangle, the innermost one when masks nest.
+    pub fn with_clip_mask<R>(
+        &mut self,
+        mask: Option<ClipMask<Pixels>>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         self.invalidator.debug_assert_paint_or_prepaint();
         if let Some(mask) = mask {
-            let mask = mask.intersect(&self.content_mask());
+            let mask = mask.intersect(&self.clip_mask());
             self.content_mask_stack.push(mask);
             let result = f(self);
             self.content_mask_stack.pop();
@@ -4785,9 +4873,14 @@ impl Window {
 
     /// Obtain the current content mask. This method should only be called during element drawing.
     pub fn content_mask(&self) -> ContentMask<Pixels> {
+        self.clip_mask().into()
+    }
+
+    /// The mask the window draws under, with its rounded rectangle; see [`Window::content_mask`].
+    pub fn clip_mask(&self) -> ClipMask<Pixels> {
         self.invalidator.debug_assert_paint_or_prepaint();
         self.content_mask_stack.last().cloned().unwrap_or_else(|| {
-            ContentMask::new(Bounds {
+            ClipMask::new(Bounds {
                 origin: Point::default(),
                 size: self.viewport_size,
             })
@@ -4979,7 +5072,7 @@ impl Window {
         element: AnyElement,
         absolute_offset: Point<Pixels>,
         priority: usize,
-        content_mask: Option<ContentMask<Pixels>>,
+        content_mask: Option<ClipMask<Pixels>>,
     ) {
         self.invalidator.debug_assert_prepaint();
         let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
@@ -5232,7 +5325,7 @@ impl Window {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
-        let content_mask = self.content_mask();
+        let content_mask = self.clip_mask();
         let opacity = self.element_opacity();
         path.content_mask = content_mask;
         let color: Background = color.into();
@@ -5444,9 +5537,31 @@ impl Window {
     }
 
     /// Paint a monochrome SVG into the scene for the next frame at the current stacking context.
+    /// `transformation` is in device pixels, as upstream's `Transformation::into_matrix` makes it; it
+    /// is drawn under [`Window::with_transformation`], which nests in the current one.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_svg(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        path: SharedString,
+        data: Option<&[u8]>,
+        transformation: TransformationMatrix,
+        color: Hsla,
+        cx: &App,
+    ) -> Result<()> {
+        if transformation == TransformationMatrix::unit() {
+            return self.paint_svg_untransformed(bounds, path, data, color, cx);
+        }
+        let scale = self.scale_factor();
+        let logical = TransformationMatrix {
+            rotation_scale: transformation.rotation_scale,
+            translation: [transformation.translation[0] / scale, transformation.translation[1] / scale],
+        };
+        self.with_transformation(logical, |window| window.paint_svg_untransformed(bounds, path, data, color, cx))
+    }
+
+    fn paint_svg_untransformed(
         &mut self,
         bounds: Bounds<Pixels>,
         path: SharedString,
@@ -5830,11 +5945,14 @@ impl Window {
         let hitbox = Hitbox {
             id,
             bounds,
-            content_mask,
+            content_mask: content_mask.into(),
             behavior,
-            transform: (self.transformation != TransformationMatrix::unit())
-                .then(|| std::rc::Rc::new(self.transformation)),
         };
+        if self.transformation != TransformationMatrix::unit() {
+            self.next_frame
+                .hitbox_transforms
+                .insert(id, std::rc::Rc::new(self.transformation));
+        }
         self.next_frame.hitboxes.push(hitbox.clone());
         crate::fast::composition::record_input(self, id);
         hitbox
@@ -8467,7 +8585,7 @@ mod tests {
     };
 
     use crate::{
-        AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ContentMask,
+        AnyWindowHandle, AppContext as _, BackGestureEvent, BackGesturePhase, Bounds, ClipMask,
         Context, CursorStyle, DispatchPhase, DragMoveEvent, Empty, ExternalDragPayload,
         ExternalPaths, FileDragPaths, FileDropEvent, FocusHandle, InputEvent as _,
         InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, LongPressEvent, MouseButton,
@@ -10289,7 +10407,7 @@ mod tests {
             let scale = window.scale_factor();
             let original_mask = window.content_mask();
             let original_opacity = window.element_opacity();
-            let mask = ContentMask::new(Bounds::from_corners(
+            let mask = ClipMask::new(Bounds::from_corners(
                 point(px(4.), px(10.)),
                 point(px(16.), px(12.)),
             ));
@@ -10300,7 +10418,7 @@ mod tests {
             };
             let origin = point(px(-1.25), px(9.25));
             let width = px(24.);
-            window.with_content_mask(Some(mask), |window| {
+            window.with_clip_mask(Some(mask), |window| {
                 window.with_element_opacity(Some(0.5), |window| {
                     window.with_element_opacity(Some(0.5), |window| {
                         let original = paint_test_underlines(window, |window| {
@@ -10437,7 +10555,7 @@ mod tests {
                 move |_, _, window, _| {
                     window
                         .content_mask_stack
-                        .push(ContentMask::new(Bounds::from_corners(
+                        .push(ClipMask::new(Bounds::from_corners(
                             point(px(-1000.), px(-1000.)),
                             point(px(1000.), px(1000.)),
                         )));

@@ -142,7 +142,7 @@ fn blur_scene(group: u32, from: u8, mode: u32, sigma: f32, size: (i32, i32)) -> 
         grayscale: crate::scene::PaddedBool32(mode | ((sigma * 16.0).round() as u32) << 8),
         opacity: 1.0,
         bounds,
-        content_mask: crate::ContentMask::new(bounds),
+        content_mask: crate::ClipMask::new(bounds),
         corner_radii: crate::Corners::default(),
         tile: crate::AtlasTile {
             texture_id: crate::effect_group_texture_id(group, from),

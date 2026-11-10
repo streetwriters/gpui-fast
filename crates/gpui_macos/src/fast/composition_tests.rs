@@ -1,6 +1,6 @@
 use super::whole_scene_layer;
 use gpui::{
-    AppContext as _, Bounds, ComposedSceneLayer, CompositionSurfaceId, ContentMask, Context,
+    AppContext as _, Bounds, ComposedSceneLayer, CompositionSurfaceId, ClipMask, Context,
     DevicePixels, IntoElement, ParentElement as _, PlatformHeadlessRenderer as _, Quad, Render,
     ScaledPixels, Scene, Styled as _, TestAppContext, Window, div, point, px, size,
 };
@@ -86,7 +86,7 @@ fn partial_or_split_layers_require_replay_even_when_primitives_match() {
     scene.push_layer(bounds);
     scene.insert_primitive(Quad {
         bounds,
-        content_mask: ContentMask::new(bounds),
+        content_mask: ClipMask::new(bounds),
         ..Default::default()
     });
     scene.pop_layer();

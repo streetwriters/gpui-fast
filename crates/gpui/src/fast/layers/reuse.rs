@@ -46,10 +46,12 @@ pub(crate) fn carry_prepaint(
     input.handle_offset.set(delta);
     // The hitboxes are the layer's, lent to the carry while it runs.
     let hitboxes = std::mem::take(&mut input.hitboxes);
+    let transforms = std::mem::take(&mut input.hitbox_transforms);
     let carried = carry_prepaint_records(
         window,
         &range,
         &hitboxes,
+        &transforms,
         a11y.as_deref(),
         delta,
         viewport,
@@ -58,6 +60,7 @@ pub(crate) fn carry_prepaint(
     );
     if let Some(layer) = window.fast_layers.layers.get_mut(id) {
         layer.input.hitboxes = hitboxes;
+        layer.input.hitbox_transforms = transforms;
         if let Some(record) = layer.record.as_mut() {
             record.prepaint_range = carried;
         }
@@ -78,6 +81,7 @@ pub(crate) fn carry_prepaint_records(
     window: &mut Window,
     range: &Range<PrepaintStateIndex>,
     hitboxes: &[Hitbox],
+    hitbox_transforms: &crate::window::HitboxTransforms,
     a11y: Option<&crate::fast::a11y::A11yStretch>,
     delta: Point<Pixels>,
     viewport: Bounds<Pixels>,
@@ -89,6 +93,8 @@ pub(crate) fn carry_prepaint_records(
     let rendered = &mut window.rendered_frame;
     next.hitboxes
         .extend(LayerInput::hitboxes_at(hitboxes, delta, viewport));
+    next.hitbox_transforms
+        .extend(hitbox_transforms.iter().map(|(id, transform)| (*id, transform.clone())));
     // A scroll hides tooltips (spec §7, rule 5).
     let requests =
         &mut rendered.tooltip_requests[range.start.tooltips_index..range.end.tooltips_index];

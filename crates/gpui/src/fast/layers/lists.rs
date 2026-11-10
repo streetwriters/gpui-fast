@@ -45,7 +45,7 @@
 //! nested views and scroll containers are painted into the layer.
 
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
+    AnyElement, App, AvailableSpace, Bounds, ClipMask, ElementId, EntityId, GlobalElementId,
     Hitbox, HitboxId, PaintIndex, Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels, Scene,
     Size, TextStyle, TileCoord, Window,
     fast::{
@@ -253,6 +253,8 @@ struct Row {
     /// The hitboxes the row inserted, as inserted, their masks clipped by
     /// the row's own clips but not by the viewport.
     hitboxes: Vec<Hitbox>,
+    /// The transforms of those of `hitboxes` drawn under one.
+    hitbox_transforms: crate::window::HitboxTransforms,
     /// The hovers the row was painted by.
     hovers: Vec<(HitboxId, bool)>,
     /// What prepainting the row added to the frame last drawn.
@@ -415,7 +417,7 @@ struct RowLayout {
 struct RowPrepaint {
     row: usize,
     range: Range<PrepaintStateIndex>,
-    masks: Vec<ContentMask<Pixels>>,
+    masks: Vec<ClipMask<Pixels>>,
     /// The layout keys claimed since the row before it was prepainted: those
     /// laying it out claimed.
     layout_keys: Vec<u64>,
@@ -1170,6 +1172,7 @@ fn carry_prepaint_rows(window: &mut Window, id: &GlobalElementId) {
             window,
             &row.prepaint,
             &row.hitboxes,
+            &row.hitbox_transforms,
             None,
             delta,
             viewport,
@@ -2351,7 +2354,7 @@ pub(crate) fn end_list(
         };
         let origin = point(anchor_origin.x, top);
         let began = begin_row(window, list, row);
-        window.with_content_mask(Some(ContentMask::new(bounds)), |window| {
+        window.with_clip_mask(Some(ClipMask::new(bounds)), |window| {
             element.prepaint_at(origin, window, cx);
         });
         if began {
@@ -2527,7 +2530,7 @@ pub(crate) fn begin_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Gl
         spans: Vec::new(),
     };
     if state.swapped {
-        window.content_mask_stack.push(ContentMask::new(region));
+        window.content_mask_stack.push(ClipMask::new(region));
         mem::swap(&mut window.next_frame.scene, &mut state.scene);
         state.recording = Some(cx.begin_recording_dependencies());
         state.reads_start = reads_len();
@@ -2859,23 +2862,24 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         let (tile_hashes, reach) = part_tile_hashes(&row_operations, paint::TILE_SIZE);
         let mut scene = Scene::default();
         scene.paint_operations = row_operations;
-        let (prepaint, hitboxes, layout_keys, layout_states, read, prepaint_writes) =
+        let (prepaint, (hitboxes, hitbox_transforms), layout_keys, layout_states, read, prepaint_writes) =
             match row_prepaints.iter_mut().rev().find(|p| p.row == span.row) {
                 Some(prepainted) => {
                     let range = &prepainted.range;
                     let inserted = &window.next_frame.hitboxes
                         [range.start.hitboxes_index..range.end.hitboxes_index];
                     let mut hitboxes = inserted.to_vec();
+                    let hitbox_transforms = window.next_frame.transforms_of(inserted);
                     if prepainted.masks.len() == hitboxes.len() {
                         for (hitbox, mask) in hitboxes.iter_mut().zip(&prepainted.masks) {
-                            hitbox.content_mask = *mask;
+                            hitbox.content_mask = (*mask).into();
                         }
                     } else {
                         debug_assert!(false, "a hitbox inserted by a row went unnoted");
                     }
                     (
                         range.clone(),
-                        hitboxes,
+                        (hitboxes, hitbox_transforms),
                         mem::take(&mut prepainted.layout_keys),
                         mem::take(&mut prepainted.layout_states),
                         prepainted.entities.clone(),
@@ -2890,7 +2894,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                     let end = frame.prepaint_range.end.clone();
                     (
                         end.clone()..end,
-                        Vec::new(),
+                        (Vec::new(), Default::default()),
                         Vec::new(),
                         Vec::new(),
                         Rc::from([]),
@@ -2931,6 +2935,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 whole,
                 translation,
                 hitboxes,
+                hitbox_transforms,
                 hovers: span.hovers,
                 has_states,
                 layout_keys,

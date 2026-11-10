@@ -1655,7 +1655,7 @@ fn random_opacity(rng: &mut StdRng) -> f32 {
 mod tests {
     use super::*;
     use crate::{
-        AnyWindowHandle, Background, BorderStyle, Bounds, ContentMask, Corners, Edges, Pixels,
+        AnyWindowHandle, Background, BorderStyle, Bounds, ClipMask, Corners, Edges, Pixels,
         ScaledPixels, Size, TestAppContext, size,
     };
     use proptest::prelude::*;
@@ -1747,7 +1747,7 @@ mod tests {
         order: u32,
         border_style: BorderStyle,
         bounds: Bounds<ScaledPixels>,
-        content_mask: ContentMask<ScaledPixels>,
+        content_mask: ClipMask<ScaledPixels>,
         background: Background,
         border_color: Hsla,
         corner_radii: Corners<ScaledPixels>,

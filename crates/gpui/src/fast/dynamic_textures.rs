@@ -545,7 +545,7 @@ mod tests {
         set_dynamic_texture_platform, update, validate_region,
     };
     use crate::{
-        AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ContentMask, DevicePixels,
+        AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ClipMask, DevicePixels,
         PolychromeSprite, ScaledPixels, Scene, TileId, point, size,
     };
     use anyhow::Result;
@@ -866,7 +866,7 @@ mod tests {
                 origin: point(ScaledPixels(0.), ScaledPixels(0.)),
                 size: size(ScaledPixels(64.), ScaledPixels(64.)),
             },
-            content_mask: ContentMask::new(Bounds {
+            content_mask: ClipMask::new(Bounds {
                 origin: point(ScaledPixels(0.), ScaledPixels(0.)),
                 size: size(ScaledPixels(128.), ScaledPixels(128.)),
             }),

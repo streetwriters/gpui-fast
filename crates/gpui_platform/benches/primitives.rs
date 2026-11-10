@@ -285,7 +285,7 @@ fn glyph_tile(index: usize) -> AtlasTile {
 
 fn build_scene(scene: &mut Scene, rectangles: &[Rectangle]) {
     scene.clear();
-    let content_mask = gpui::ContentMask {
+    let content_mask = gpui::ClipMask {
         bounds: Bounds::new(point(px(0.), px(0.)), size(px(1_024.), px(1_024.))).scale(1.),
     };
     for (index, rectangle) in rectangles.iter().enumerate() {

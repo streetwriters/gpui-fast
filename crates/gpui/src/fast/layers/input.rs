@@ -9,7 +9,7 @@
 //! before it sees input that could observe them.
 
 use crate::{
-    App, Bounds, ContentMask, GlobalElementId, Hitbox, Pixels, PlatformInput, Point, Window,
+    App, Bounds, ClipMask, ContentMask, GlobalElementId, Hitbox, Pixels, PlatformInput, Point, Window,
     elements::ScrollHandleState,
     fast::layers::{COMPILED, Layer, policy::Decision},
     fast::splice::view_entity,
@@ -27,6 +27,8 @@ pub(crate) struct LayerInput {
     /// content was painted at, their masks clipped by the content's own
     /// clips but not by the viewport.
     pub(crate) hitboxes: Vec<Hitbox>,
+    /// The transforms of those of `hitboxes` drawn under one.
+    pub(crate) hitbox_transforms: crate::window::HitboxTransforms,
     /// The frame the layer's record's prepaint and paint ranges index the
     /// records of: they can be carried into the frame after it only.
     pub(crate) ranges_frame: Option<u64>,
@@ -60,7 +62,7 @@ pub(crate) struct LayerInput {
 pub(crate) struct PaintingInput {
     /// The mask of each hitbox the content inserted, in order, before
     /// [`hitbox_mask`] clipped it to the viewport.
-    pub(crate) hitbox_masks: Vec<ContentMask<Pixels>>,
+    pub(crate) hitbox_masks: Vec<ClipMask<Pixels>>,
     /// Shared with the scroll handles tracking elements inside the content.
     pub(crate) handle_offset: Rc<Cell<Point<Pixels>>>,
     /// For a virtual list's rows, the part of the content painted, which
@@ -100,15 +102,14 @@ impl LayerInput {
                 origin: hitbox.bounds.origin + delta,
                 size: hitbox.bounds.size,
             },
-            content_mask: ContentMask::new(
-                Bounds {
+            content_mask: ContentMask {
+                bounds: Bounds {
                     origin: hitbox.content_mask.bounds.origin + delta,
                     size: hitbox.content_mask.bounds.size,
                 }
                 .intersect(&viewport),
-            ),
+            },
             behavior: hitbox.behavior,
-            transform: hitbox.transform.clone(),
         })
     }
 }
@@ -295,9 +296,10 @@ pub(crate) fn painted(window: &mut Window, id: &GlobalElementId, painting: Paint
     let input = &mut layer.input;
     input.hitboxes.clear();
     input.hitboxes.extend_from_slice(inserted);
+    input.hitbox_transforms = window.next_frame.transforms_of(inserted);
     if painting.hitbox_masks.len() == inserted.len() {
         for (hitbox, mask) in input.hitboxes.iter_mut().zip(painting.hitbox_masks) {
-            hitbox.content_mask = mask;
+            hitbox.content_mask = mask.into();
         }
     } else {
         debug_assert!(false, "a hitbox inserted inside a layer went unnoted");
@@ -314,8 +316,8 @@ pub(crate) fn painted(window: &mut Window, id: &GlobalElementId, painting: Paint
 /// content against the viewport and its overscan, but only what shows in
 /// the viewport may be hit, as without a layer. The mask before clipping is
 /// kept, for the hitbox to be clipped anew once the content has scrolled.
-pub(crate) fn hitbox_mask(window: &mut Window) -> ContentMask<Pixels> {
-    let mask = window.content_mask();
+pub(crate) fn hitbox_mask(window: &mut Window) -> ClipMask<Pixels> {
+    let mask = window.clip_mask();
     let Some(painting) = window.fast_layers.painting.as_mut() else {
         return mask;
     };
@@ -324,7 +326,7 @@ pub(crate) fn hitbox_mask(window: &mut Window) -> ContentMask<Pixels> {
         None => mask,
     };
     painting.input.hitbox_masks.push(noted);
-    ContentMask::new(mask.bounds.intersect(&painting.viewport))
+    ClipMask::new(mask.bounds.intersect(&painting.viewport))
 }
 
 /// `mask`, a mask inside `viewport`, with each edge it shares with
@@ -332,10 +334,10 @@ pub(crate) fn hitbox_mask(window: &mut Window) -> ContentMask<Pixels> {
 /// virtual list's rows, which move with the rows, without the list's own,
 /// which does not.
 fn unclip(
-    mask: ContentMask<Pixels>,
+    mask: ClipMask<Pixels>,
     viewport: Bounds<Pixels>,
     region: Bounds<Pixels>,
-) -> ContentMask<Pixels> {
+) -> ClipMask<Pixels> {
     let mask = mask.bounds;
     let pick = |edge: Pixels, viewport: Pixels, region: Pixels| {
         if edge == viewport { region } else { edge }
@@ -364,7 +366,7 @@ fn unclip(
             region.bottom().max(viewport.bottom()),
         ),
     );
-    ContentMask::new(Bounds::from_corners(top_left, bottom_right))
+    ClipMask::new(Bounds::from_corners(top_left, bottom_right))
 }
 
 /// Notes, as the element the scroll handle whose state is `handle` tracks

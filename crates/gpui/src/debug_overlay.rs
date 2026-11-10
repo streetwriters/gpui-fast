@@ -3,7 +3,7 @@
 //! infinitely triggering new frames).
 
 use crate::{
-    BorderStyle, Bounds, ContentMask, Corners, Edges, Hsla, Pixels, Quad, ScaledPixels, Scene,
+    BorderStyle, Bounds, ClipMask, Corners, Edges, Hsla, Pixels, Quad, ScaledPixels, Scene,
     Size, point, rgba, size, transparent_black,
 };
 use std::{collections::VecDeque, time::Duration};
@@ -109,7 +109,7 @@ impl DebugFrameOverlay {
         let panel_left = viewport.width.0 - panel_width - cell * PANEL_MARGIN;
         let panel_top = cell * PANEL_MARGIN;
 
-        let content_mask = ContentMask::new(Bounds {
+        let content_mask = ClipMask::new(Bounds {
             origin: point(ScaledPixels(0.), ScaledPixels(0.)),
             size: viewport,
         });
@@ -211,7 +211,7 @@ fn scaled_bounds(left: f32, top: f32, width: f32, height: f32) -> Bounds<ScaledP
 
 fn solid_quad(
     bounds: Bounds<ScaledPixels>,
-    content_mask: &ContentMask<ScaledPixels>,
+    content_mask: &ClipMask<ScaledPixels>,
     color: Hsla,
 ) -> Quad {
     Quad {

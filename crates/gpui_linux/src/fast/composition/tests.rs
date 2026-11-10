@@ -1,7 +1,7 @@
 use super::whole_scene_layer;
 use gpui::PlatformHeadlessRenderer as _;
 use gpui::{
-    Bounds, ComposedSceneLayer, CompositionSurfaceId, ContentMask, Quad, ScaledPixels, Scene,
+    Bounds, ComposedSceneLayer, CompositionSurfaceId, ClipMask, Quad, ScaledPixels, Scene,
     point, size,
 };
 use gpui_wgpu::WgpuHeadlessRenderer;
@@ -91,7 +91,7 @@ fn partial_or_split_layers_require_replay_even_when_primitives_match() {
     scene.push_layer(bounds);
     scene.insert_primitive(Quad {
         bounds,
-        content_mask: ContentMask::new(bounds),
+        content_mask: ClipMask::new(bounds),
         ..Default::default()
     });
     scene.pop_layer();

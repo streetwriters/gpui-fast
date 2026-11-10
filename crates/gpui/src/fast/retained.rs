@@ -20,7 +20,7 @@ use crate::fast::dependencies::{DependencyRecording, RecordedDependencies, Rende
 use crate::fast::splice::{Prebuilt, Rebuild, Splice, SplicedPrepaint};
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
+    AnyElement, App, AvailableSpace, Bounds, ClipMask, ElementId, EntityId, GlobalElementId,
     HitboxId, LayoutId, Pixels, PlatformInputHandler, Size, Style, TextStyle, View, ViewElement,
     Window,
 };
@@ -159,7 +159,7 @@ impl Unbuilt {
                 context: Rc::new(RetainedContext {
                     composition_surface: None,
                     bounds: Bounds::default(),
-                    content_mask: ContentMask::default(),
+                    content_mask: ClipMask::default(),
                     text_style: TextStyle::default(),
                     opacity: 1.,
                     transformation: crate::TransformationMatrix::unit(),
@@ -178,7 +178,7 @@ impl Unbuilt {
 pub(crate) struct RetainedContext {
     pub(crate) composition_surface: Option<crate::fast::composition::CompositionSurfaceId>,
     pub(crate) bounds: Bounds<Pixels>,
-    pub(crate) content_mask: ContentMask<Pixels>,
+    pub(crate) content_mask: ClipMask<Pixels>,
     pub(crate) text_style: TextStyle,
     pub(crate) opacity: f32,
     pub(crate) transformation: crate::TransformationMatrix,
@@ -669,7 +669,7 @@ impl Window {
             && context.bounds == bounds
             && context.opacity == self.element_opacity
             && context.transformation == self.transformation
-            && context.content_mask == self.content_mask()
+            && context.content_mask == self.clip_mask()
             && context.text_style == self.text_style()
             && context.composition_surface == crate::fast::composition::input_surface(self)
     }
@@ -1015,7 +1015,7 @@ impl Window {
         let context = RetainedContext {
             composition_surface: crate::fast::composition::input_surface(self),
             bounds,
-            content_mask: self.content_mask(),
+            content_mask: self.clip_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
             transformation: self.transformation,

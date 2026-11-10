@@ -2,7 +2,7 @@ use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, PaintSurface, Path,
+    AtlasTextureId, Background, Bounds, ClipMask, Corners, DevicePixels, PaintSurface, Path,
     Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -2219,7 +2219,7 @@ pub struct PathSprite {
 #[repr(C)]
 pub struct SurfaceBounds {
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
 }
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -2387,7 +2387,7 @@ mod tests {
             order: 0,
             border_style_and_transform: 0,
             bounds,
-            content_mask: gpui::ContentMask::new(mask.unwrap_or(Bounds {
+            content_mask: gpui::ClipMask::new(mask.unwrap_or(Bounds {
                 origin: gpui::point(ScaledPixels(0.), ScaledPixels(0.)),
                 size: gpui::size(ScaledPixels(200.), ScaledPixels(200.)),
             })),
@@ -2453,7 +2453,7 @@ mod tests {
                 order: 0,
                 border_style_and_transform: 0,
                 bounds: scaled_bounds(x, y, 48., 48.),
-                content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 2400., 1600.)),
+                content_mask: gpui::ClipMask::new(scaled_bounds(0., 0., 2400., 1600.)),
                 background: gpui::rgb(0x202020).into(),
                 border_color: gpui::Hsla::default(),
                 corner_radii: gpui::Corners::all(ScaledPixels(4.)),
@@ -2466,7 +2466,7 @@ mod tests {
                 gpui::point(gpui::px(x + 40.), gpui::px(y + 40.)),
             );
             path.line_to(gpui::point(gpui::px(x + 4.), gpui::px(y + 4.)));
-            path.content_mask = gpui::ContentMask::new(gpui::Bounds {
+            path.content_mask = gpui::ClipMask::new(gpui::Bounds {
                 origin: gpui::point(gpui::px(0.), gpui::px(0.)),
                 size: gpui::size(gpui::px(2400.), gpui::px(1600.)),
             });
@@ -2503,7 +2503,7 @@ mod tests {
             order: 0,
             border_style_and_transform: 0,
             bounds,
-            content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 4000., 4000.)),
+            content_mask: gpui::ClipMask::new(scaled_bounds(0., 0., 4000., 4000.)),
             background: gpui::rgb(color).into(),
             border_color: gpui::Hsla::default(),
             corner_radii: gpui::Corners::default(),
@@ -2619,7 +2619,7 @@ mod tests {
         path.line_to(gpui::point(gpui::px(x + 80.), gpui::px(y)));
         path.line_to(gpui::point(gpui::px(x), gpui::px(y + 80.)));
         path.line_to(gpui::point(gpui::px(x), gpui::px(y)));
-        path.content_mask = gpui::ContentMask::new(gpui::Bounds {
+        path.content_mask = gpui::ClipMask::new(gpui::Bounds {
             origin: gpui::point(gpui::px(0.), gpui::px(0.)),
             size: gpui::size(gpui::px(200.), gpui::px(200.)),
         });
@@ -2908,7 +2908,7 @@ mod tests {
                 order: 0,
                 border_style_and_transform: 0,
                 bounds: scaled_bounds(85., 85., 30., 30.),
-                content_mask: gpui::ContentMask::new(scaled_bounds(0., 0., 200., 200.)),
+                content_mask: gpui::ClipMask::new(scaled_bounds(0., 0., 200., 200.)),
                 background: gpui::rgb(0xff0000).into(),
                 border_color: gpui::Hsla::default(),
                 corner_radii: gpui::Corners::all(ScaledPixels(7.)),
@@ -3103,7 +3103,7 @@ mod tests {
         scene.insert_primitive(PaintSurface {
             order: 0,
             bounds,
-            content_mask: ContentMask::new(bounds),
+            content_mask: ClipMask::new(bounds),
             image_buffer: image_buffer.clone(),
         });
         drop(image_buffer);
@@ -3169,7 +3169,7 @@ mod tests {
             origin: point(ScaledPixels(8.), ScaledPixels(8.)),
             size: size(ScaledPixels(48.), ScaledPixels(48.)),
         };
-        let mask = ContentMask {
+        let mask = ClipMask {
             bounds: square,
             rounded_bounds: square,
             corner_radii: Corners::all(ScaledPixels(16.)),
@@ -3179,7 +3179,7 @@ mod tests {
                 origin: Point::default(),
                 size: size(ScaledPixels(64.), ScaledPixels(64.)),
             },
-            content_mask: ContentMask::new(Bounds {
+            content_mask: ClipMask::new(Bounds {
                 origin: Point::default(),
                 size: size(ScaledPixels(64.), ScaledPixels(64.)),
             }),
@@ -3203,7 +3203,7 @@ mod tests {
         path.line_to(point(px(56.), px(56.)));
         path.line_to(point(px(8.), px(56.)));
         path.line_to(point(px(8.), px(8.)));
-        path.content_mask = ContentMask {
+        path.content_mask = ClipMask {
             bounds: square.map(|value| px(value.0)),
             rounded_bounds: square.map(|value| px(value.0)),
             corner_radii: Corners::all(px(16.)),

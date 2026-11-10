@@ -148,7 +148,7 @@ impl Element for Svg {
                     if let Some((data, path)) = self.data.as_ref().zip(self.data_path.as_ref()) {
                         if let Some(color) = style.text.color {
                             window
-                                .paint_svg(bounds, path.clone(), Some(&**data), color, cx)
+                                .paint_svg(bounds, path.clone(), Some(&**data), TransformationMatrix::unit(), color, cx)
                                 .log_err();
                         }
                     } else if let Some((path, color)) =
@@ -162,11 +162,11 @@ impl Element for Svg {
                         };
 
                         window
-                            .paint_svg(bounds, path.clone(), Some(&bytes), color, cx)
+                            .paint_svg(bounds, path.clone(), Some(&bytes), TransformationMatrix::unit(), color, cx)
                             .log_err();
                     } else if let Some((path, color)) = self.path.as_ref().zip(style.text.color) {
                         window
-                            .paint_svg(bounds, path.clone(), None, color, cx)
+                            .paint_svg(bounds, path.clone(), None, TransformationMatrix::unit(), color, cx)
                             .log_err();
                     }
                 });

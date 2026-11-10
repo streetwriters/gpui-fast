@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result};
 use bench_metrics::MetricReport;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use gpui::{
-    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, BenchMeasurement, Bounds, ContentMask,
+    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, BenchMeasurement, Bounds, ClipMask,
     Corners, DevicePixels, Hsla, ImageId, MonochromeSprite, PaddedBool32, PlatformAtlas,
     PlatformHeadlessRenderer, Point, PolychromeSprite, RenderImageParams, RenderSvgParams,
     ScaledPixels, Scene, SharedString, Size, TransformationMatrix, size,
@@ -219,7 +219,7 @@ fn tile_scene(tile: AtlasTile) -> Scene {
             ScaledPixels(tile.bounds.size.height.0 as f32),
         ),
     };
-    let content_mask = ContentMask::new(bounds);
+    let content_mask = ClipMask::new(bounds);
     let mut scene = Scene::default();
     match tile.texture_id.kind {
         AtlasTextureKind::Monochrome => scene.insert_primitive(MonochromeSprite {

@@ -204,7 +204,7 @@ pub(crate) fn bind_region(
 mod tests {
     use super::{IDLE_FRAMES, MetalRenderer};
     use gpui::{Bounds, DevicePixels, ScaledPixels, Scene, Size, point, size};
-    use gpui::{ContentMask, Corners, Hsla, Pixels, Quad, px, rgba};
+    use gpui::{ClipMask, Corners, Hsla, Pixels, Quad, px, rgba};
     use objc2_metal::MTLTexture;
 
     const VIEWPORT: (i32, i32) = (1200, 900);
@@ -213,13 +213,13 @@ mod tests {
         size(DevicePixels(VIEWPORT.0), DevicePixels(VIEWPORT.1))
     }
 
-    fn mask(rounded: bool) -> ContentMask<Pixels> {
+    fn mask(rounded: bool) -> ClipMask<Pixels> {
         let bounds = Bounds {
             origin: point(px(0.), px(0.)),
             size: size(px(VIEWPORT.0 as f32), px(VIEWPORT.1 as f32)),
         };
         if rounded {
-            ContentMask {
+            ClipMask {
                 bounds,
                 rounded_bounds: Bounds {
                     origin: point(px(20.), px(20.)),
@@ -228,7 +228,7 @@ mod tests {
                 corner_radii: Corners::all(px(60.)),
             }
         } else {
-            ContentMask::new(bounds)
+            ClipMask::new(bounds)
         }
     }
 

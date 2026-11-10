@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTextureKind, AtlasTile, Background, Bounds, ContentMask, Corners, Edges,
+    AtlasTextureId, AtlasTextureKind, AtlasTile, Background, Bounds, ClipMask, Corners, Edges,
     ExternalTexture, Hsla, Pixels, Point, Radians, ScaledPixels, Size, TileId,
     bounds_tree::BoundsTree, point,
 };
@@ -577,7 +577,7 @@ impl Scene {
             grayscale: PaddedBool32(PREMULTIPLIED_SPRITE),
             opacity,
             bounds,
-            content_mask: ContentMask::new(bounds),
+            content_mask: ClipMask::new(bounds),
             corner_radii: Corners::default(),
             tile: AtlasTile {
                 texture_id: effect_group_texture_id(scope.id, slot),
@@ -996,7 +996,7 @@ impl Primitive {
         }
     }
 
-    pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
+    pub fn content_mask(&self) -> &ClipMask<ScaledPixels> {
         match self {
             Primitive::Shadow(shadow) => &shadow.content_mask,
             Primitive::Quad(quad) => &quad.content_mask,
@@ -1312,7 +1312,7 @@ pub struct Quad {
     /// high 24. Use [`Quad::border_style`] and [`Quad::transform_index`].
     pub border_style_and_transform: u32,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub background: Background,
     pub border_color: Hsla,
     pub corner_radii: Corners<ScaledPixels>,
@@ -1362,7 +1362,7 @@ pub struct Underline {
     pub order: DrawOrder,
     pub transform_index: u32,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub color: Hsla,
     pub thickness: ScaledPixels,
     pub wavy: PaddedBool32,
@@ -1382,7 +1382,7 @@ pub struct Shadow {
     pub blur_radius: ScaledPixels,
     pub bounds: Bounds<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub color: Hsla,
     pub element_bounds: Bounds<ScaledPixels>,
     pub element_corner_radii: Corners<ScaledPixels>,
@@ -1622,7 +1622,7 @@ pub struct MonochromeSprite {
     pub transform_index: u32,
     pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub color: Hsla,
 }
 
@@ -1640,7 +1640,7 @@ pub struct SubpixelSprite {
     pub transform_index: u32,
     pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub color: Hsla,
 }
 
@@ -1660,7 +1660,7 @@ pub struct PolychromeSprite {
     pub grayscale: PaddedBool32,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
 }
 
@@ -1682,7 +1682,7 @@ impl From<PolychromeSprite> for Primitive {
 pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
 }
@@ -1700,7 +1700,7 @@ impl From<PaintSurface> for Primitive {
 pub struct PaintExternalTexture {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
+    pub content_mask: ClipMask<ScaledPixels>,
     pub texture: ExternalTexture,
 }
 
@@ -1721,7 +1721,7 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub id: PathId,
     pub order: DrawOrder,
     pub bounds: Bounds<P>,
-    pub content_mask: ContentMask<P>,
+    pub content_mask: ClipMask<P>,
     pub vertices: Vec<PathVertex<P>>,
     pub color: Background,
     /// The effect group the path is drawn in; 0 for none.
@@ -1882,7 +1882,7 @@ impl From<Path<ScaledPixels>> for Primitive {
 pub struct PathVertex<P: Clone + Debug + Default + PartialEq> {
     pub xy_position: Point<P>,
     pub st_position: Point<f32>,
-    pub content_mask: ContentMask<P>,
+    pub content_mask: ClipMask<P>,
 }
 
 #[expect(missing_docs)]
@@ -1912,7 +1912,7 @@ mod transform_tests {
                 origin: point(ScaledPixels(x), ScaledPixels(y)),
                 size: size(ScaledPixels(10.), ScaledPixels(10.)),
             },
-            content_mask: ContentMask::new(Bounds {
+            content_mask: ClipMask::new(Bounds {
                 origin: point(ScaledPixels(-1000.), ScaledPixels(-1000.)),
                 size: size(ScaledPixels(2000.), ScaledPixels(2000.)),
             }),
@@ -2107,7 +2107,7 @@ mod transform_tests {
             id: path.id,
             order: path.order,
             bounds: path.bounds.scale(1.0),
-            content_mask: ContentMask::new(Bounds {
+            content_mask: ClipMask::new(Bounds {
                 origin: point(ScaledPixels(-100.), ScaledPixels(-100.)),
                 size: size(ScaledPixels(300.), ScaledPixels(300.)),
             }),

@@ -2943,7 +2943,7 @@ impl RenderingParameters {
 mod tests {
     use super::*;
     use gpui::{
-        BorderStyle, ColorSpace, ContentMask, Corners, Edges, Hsla, MonochromeSprite,
+        BorderStyle, ColorSpace, ClipMask, Corners, Edges, Hsla, MonochromeSprite,
         PolychromeSprite, Quad, Shadow, Size, SubpixelSprite, Underline, linear_color_stop,
         linear_gradient,
     };
@@ -2977,7 +2977,7 @@ mod tests {
                 gpui::TransformIndex::IDENTITY,
             ),
             bounds,
-            content_mask: ContentMask::new(bounds),
+            content_mask: ClipMask::new(bounds),
             background: color.into(),
             border_color: color,
             corner_radii: Corners::default(),
@@ -3144,7 +3144,7 @@ mod tests {
             origin: point(ScaledPixels(8.), ScaledPixels(8.)),
             size: size(ScaledPixels(48.), ScaledPixels(48.)),
         };
-        let mask = ContentMask {
+        let mask = ClipMask {
             bounds: square,
             rounded_bounds: square,
             corner_radii: Corners::all(ScaledPixels(16.)),
@@ -3155,7 +3155,7 @@ mod tests {
         };
         let background = Quad {
             bounds: everything,
-            content_mask: ContentMask::new(everything),
+            content_mask: ClipMask::new(everything),
             background: Hsla::from(rgba(0xffffffff)).into(),
             ..Default::default()
         };
@@ -3176,7 +3176,7 @@ mod tests {
         path.line_to(point(px(56.), px(56.)));
         path.line_to(point(px(8.), px(56.)));
         path.line_to(point(px(8.), px(8.)));
-        path.content_mask = ContentMask {
+        path.content_mask = ClipMask {
             bounds: square.map(|value| px(value.0)),
             rounded_bounds: square.map(|value| px(value.0)),
             corner_radii: Corners::all(px(16.)),
@@ -3236,7 +3236,7 @@ mod tests {
                     height: 4.0.into(),
                 },
             },
-            content_mask: ContentMask {
+            content_mask: ClipMask {
                 bounds: Bounds {
                     origin: Point {
                         x: 5.0.into(),

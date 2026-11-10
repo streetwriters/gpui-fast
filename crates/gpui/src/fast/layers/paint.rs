@@ -15,7 +15,7 @@
 //!   tiles are composited at the new offset.
 
 use crate::{
-    App, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, GlobalElementId, Overflow, Pixels,
+    App, AtlasTile, Bounds, ClipMask, Corners, DevicePixels, GlobalElementId, Overflow, Pixels,
     Point, PolychromeSprite, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, Style, TileCoord,
     Window, WindowBackgroundAppearance,
     fast::transform::first_transform_in_layer,
@@ -212,7 +212,7 @@ fn begin_scrolling_children(
             // whatever clips it; the composite clips to those.
             window
                 .content_mask_stack
-                .push(ContentMask::new(painted_region));
+                .push(ClipMask::new(painted_region));
         }
     }
     Children {
@@ -466,7 +466,7 @@ pub(crate) fn insert_layer(
 pub(crate) fn insert_tile_quads(
     scene: &mut Scene,
     layer: &Layer,
-    mask: ContentMask<ScaledPixels>,
+    mask: ClipMask<ScaledPixels>,
     translation: Point<ScaledPixels>,
 ) {
     let viewport = mask.bounds;
@@ -562,7 +562,7 @@ struct Viewports {
     snapped: Bounds<ScaledPixels>,
     exact: Bounds<ScaledPixels>,
     /// The current mask, whose rounded rectangle content drawn here adopts.
-    mask: ContentMask<ScaledPixels>,
+    mask: ClipMask<ScaledPixels>,
 }
 
 fn viewports(window: &Window) -> Viewports {
@@ -690,7 +690,7 @@ fn clip_primitive(primitive: &mut Primitive, viewports: Viewports) {
         _ => &viewports.snapped,
     };
     let outer = viewports.mask.with_bounds(*mask);
-    let clip = |content_mask: &mut ContentMask<ScaledPixels>| content_mask.clip_to(&outer);
+    let clip = |content_mask: &mut ClipMask<ScaledPixels>| content_mask.clip_to(&outer);
     match primitive {
         Primitive::Shadow(p) => clip(&mut p.content_mask),
         Primitive::Quad(p) => clip(&mut p.content_mask),
@@ -728,7 +728,7 @@ fn repaint(
 ) {
     window
         .content_mask_stack
-        .push(ContentMask::new(painting.painted_region));
+        .push(ClipMask::new(painting.painted_region));
     mem::swap(&mut window.next_frame.scene, &mut painting.scene);
     let paint_start = window.paint_index();
     window.take_hover_reads();

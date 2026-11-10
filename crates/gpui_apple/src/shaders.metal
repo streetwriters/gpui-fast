@@ -55,7 +55,7 @@ float pick_corner_radius(float2 center_to_point, Corners_ScaledPixels corner_rad
 float quad_sdf(float2 point, Bounds_ScaledPixels bounds,
                Corners_ScaledPixels corner_radii);
 float quad_sdf_impl(float2 center_to_point, float corner_radius);
-float content_mask_alpha(float2 position, ContentMask_ScaledPixels mask);
+float content_mask_alpha(float2 position, ClipMask_ScaledPixels mask);
 float rounded_clip_alpha(float2 position, Bounds_ScaledPixels bounds,
                          Corners_ScaledPixels corner_radii);
 float gaussian(float x, float sigma);
@@ -1378,7 +1378,7 @@ float pick_corner_radius(float2 center_to_point, Corners_ScaledPixels corner_rad
 // The coverage of `position` by the mask's rounded rectangle: 1 inside it, or
 // with no rounded rectangle at all, falling to 0 across one pixel at its edge.
 // The rectangle itself is cut by the clip distances.
-float content_mask_alpha(float2 position, ContentMask_ScaledPixels mask) {
+float content_mask_alpha(float2 position, ClipMask_ScaledPixels mask) {
   return rounded_clip_alpha(position, mask.rounded_bounds, mask.corner_radii);
 }
 

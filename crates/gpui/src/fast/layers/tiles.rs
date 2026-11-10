@@ -12,7 +12,7 @@
 //! hashed whole, it would dirty every tile of a repaint at a new offset.
 
 use crate::{
-    AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Point, ScaledPixels, Scene,
+    AtlasTile, Background, Bounds, ClipMask, Corners, Edges, Hsla, Point, ScaledPixels, Scene,
     TileCoord,
     fast::layers::scene::{drawn_bounds, translate_primitive, visible_bounds},
     point,
@@ -317,7 +317,7 @@ fn hash_bounds(bounds: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
     hash_f32(bounds.size.height.0, hasher);
 }
 
-fn hash_mask(mask: &ContentMask<ScaledPixels>, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
+fn hash_mask(mask: &ClipMask<ScaledPixels>, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
     hash_clipped(&mask.bounds, tile, hasher);
     if mask.is_rounded() {
         hash_bounds(&mask.rounded_bounds, hasher);

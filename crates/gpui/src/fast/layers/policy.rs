@@ -20,7 +20,7 @@ use crate::fast::layers::record::LayerRecord;
 use crate::fast::layers::work::WorkBudget;
 use crate::fast::layers::{Layer, WindowLayers, input, invalidate, lists, scene::LayerKey};
 use crate::{
-    App, Bounds, ContentMask, EntityId, GlobalElementId, Pixels, Point, Size, TextStyle, Window,
+    App, Bounds, ClipMask, EntityId, GlobalElementId, Pixels, Point, Size, TextStyle, Window,
 };
 
 /// What a scroll container does with its content this frame.
@@ -117,7 +117,7 @@ struct LayerContext {
     composition_surface: Option<crate::fast::composition::CompositionSurfaceId>,
     bounds: Bounds<Pixels>,
     content_size: Size<Pixels>,
-    content_mask: ContentMask<Pixels>,
+    content_mask: ClipMask<Pixels>,
     text_style: TextStyle,
     opacity: f32,
     rem_size: Pixels,
@@ -130,7 +130,7 @@ impl LayerContext {
             composition_surface: crate::fast::composition::input_surface(window),
             bounds,
             content_size,
-            content_mask: window.content_mask(),
+            content_mask: window.clip_mask(),
             text_style: window.text_style(),
             opacity: window.element_opacity,
             rem_size: window.rem_size(),

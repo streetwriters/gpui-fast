@@ -1,7 +1,7 @@
 //! Glyph painting that works out a run's rendering once, not once a glyph.
 
 use crate::{
-    App, AtlasTile, Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
+    App, AtlasTile, Bounds, ClipMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
     IsZero, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
     SUBPIXEL_VARIANTS_Y, ScaledPixels, Size, SubpixelSprite, Window, util::round_half_toward_zero,
 };
@@ -158,7 +158,7 @@ impl Window {
         font_size: Pixels,
         color: Hsla,
         rendering: GlyphRunRendering,
-        content_mask: ContentMask<ScaledPixels>,
+        content_mask: ClipMask<ScaledPixels>,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
@@ -252,7 +252,7 @@ impl Window {
 /// for [`LineGlyphPainter::may_reach`], and the rendering of each run, which
 /// only changes with the run's font or color.
 pub(crate) struct LineGlyphPainter {
-    snapped_content_mask: ContentMask<ScaledPixels>,
+    snapped_content_mask: ClipMask<ScaledPixels>,
     content_mask: Bounds<Pixels>,
     reach: GlyphReach,
     run_rendering: Option<(FontId, Hsla, GlyphRunRendering)>,

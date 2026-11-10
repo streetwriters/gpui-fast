@@ -7,7 +7,7 @@
 //! its primitives had there.
 
 use crate::{
-    Bounds, ContentMask, Corners, PaintOperation, Pixels, ScaledPixels, Scene, TransformIndex,
+    Bounds, ClipMask, Corners, PaintOperation, Pixels, ScaledPixels, Scene, TransformIndex,
     TransformTable, TransformationMatrix, Window, point,
 };
 
@@ -17,7 +17,7 @@ pub(crate) fn push_content_mask(window: &mut Window, matrix: &TransformationMatr
     let Some(inverse) = matrix.inverse() else {
         return false;
     };
-    let mask = map_content_mask(&window.content_mask(), &inverse);
+    let mask = map_content_mask(&window.clip_mask(), &inverse);
     window.content_mask_stack.push(mask);
     true
 }
@@ -31,9 +31,9 @@ pub(crate) fn pop_content_mask(window: &mut Window, pushed: bool) {
 /// `mask` mapped by `matrix`. Exact for translation and scale; under a rotation
 /// the mask is the box around the mapped one and loses its rounded corners.
 fn map_content_mask(
-    mask: &ContentMask<Pixels>,
+    mask: &ClipMask<Pixels>,
     matrix: &TransformationMatrix,
-) -> ContentMask<Pixels> {
+) -> ClipMask<Pixels> {
     let map = |bounds: &Bounds<Pixels>| {
         let corners = [
             bounds.origin,
@@ -52,11 +52,11 @@ fn map_content_mask(
     let [[a, b], [c, d]] = matrix.rotation_scale;
     let axis_aligned = b == 0.0 && c == 0.0;
     if !mask.is_rounded() || !axis_aligned {
-        return ContentMask::new(map(&mask.bounds));
+        return ClipMask::new(map(&mask.bounds));
     }
     let scale = (a.abs() + d.abs()) / 2.0;
     let radii = &mask.corner_radii;
-    ContentMask {
+    ClipMask {
         bounds: map(&mask.bounds),
         rounded_bounds: map(&mask.rounded_bounds),
         corner_radii: Corners {

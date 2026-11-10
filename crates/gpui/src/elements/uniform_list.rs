@@ -5,7 +5,7 @@
 //! elements with uniform height.
 
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, Entity,
+    AnyElement, App, AvailableSpace, Bounds, ClipMask, Element, ElementId, Entity,
     GlobalElementId, Hitbox, InspectorElementId, InteractiveElement, Interactivity, IntoElement,
     IsZero, LayoutId, ListSizingBehavior, Overflow, Pixels, Point, ScrollHandle, Size,
     StyleRefinement, Styled, Window, point, px, size,
@@ -518,8 +518,8 @@ impl Element for UniformList {
 
                     let fast_indices =
                         crate::fast::layers::lists::row_indices(&fast_rows, visible_range.clone());
-                    let content_mask = ContentMask::new(bounds);
-                    window.with_content_mask(Some(content_mask), |window| {
+                    let content_mask = ClipMask::new(bounds);
+                    window.with_clip_mask(Some(content_mask), |window| {
                         for (mut item, ix) in items.into_iter().zip(fast_indices) {
                             let item_top = item_height_f64 * ix as f64 - scroll_top;
                             let item_origin = padded_bounds.origin

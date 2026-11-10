@@ -30,7 +30,7 @@ use crate::key_dispatch::{DispatchNodeId, DispatchTree};
 use crate::window::DeferredDraw;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
-    AnyView, App, Bounds, ContentMask, ElementId, EntityId, FocusId, GlobalElementId, HitboxId,
+    AnyView, App, Bounds, ClipMask, ElementId, EntityId, FocusId, GlobalElementId, HitboxId,
     LayoutId, Pixels, Point, StyleRefinement, View, ViewElement, Window,
 };
 use collections::FxHashSet;
@@ -253,7 +253,7 @@ impl SplicedPrepaint {
 struct Inherited {
     element_id_stack: crate::window::ElementIdStack,
     text_style_stack: TextStyleStack,
-    content_mask_stack: Vec<ContentMask<Pixels>>,
+    content_mask_stack: Vec<ClipMask<Pixels>>,
     element_offset_stack: Vec<Point<Pixels>>,
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
     element_opacity: f32,
@@ -266,7 +266,7 @@ impl Window {
         &mut self,
         id: &GlobalElementId,
         rebuild: &Rebuild,
-        content_mask: ContentMask<Pixels>,
+        content_mask: ClipMask<Pixels>,
         opacity: f32,
     ) -> Inherited {
         let parent_ids = &id.ids[..id.ids.len() - 1];
@@ -941,6 +941,10 @@ impl Window {
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
                 .cloned(),
+        );
+        self.next_frame.carry_hitbox_transforms(
+            &self.rendered_frame.hitbox_transforms,
+            &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
         );
         self.next_frame.tooltip_requests.extend(
             self.rendered_frame.tooltip_requests

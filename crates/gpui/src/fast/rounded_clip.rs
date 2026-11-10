@@ -193,7 +193,7 @@ pub(crate) struct Scope {
     pub(crate) parent: Option<usize>,
 }
 
-/// Private scene data; ContentMask and all public primitive layouts stay
+/// Private scene data; ClipMask and all public primitive layouts stay
 /// unchanged. An ordinary rectangular scene never allocates any scope data.
 #[derive(Default)]
 pub(crate) struct SceneClips {
@@ -326,7 +326,7 @@ mod tests {
         let bounds = shape().bounds;
         Quad {
             bounds,
-            content_mask: crate::ContentMask::new(bounds),
+            content_mask: crate::ClipMask::new(bounds),
             ..Default::default()
         }
     }

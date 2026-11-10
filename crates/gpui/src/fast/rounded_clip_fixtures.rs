@@ -232,7 +232,7 @@ pub(super) fn tiled_scene(
         grayscale: false.into(),
         opacity: 1.,
         bounds,
-        content_mask: gpui::ContentMask::new(mask),
+        content_mask: gpui::ClipMask::new(mask),
         corner_radii: Default::default(),
         tile: gpui::AtlasTile {
             texture_id: gpui::layer_tile_texture_id(frame.key),

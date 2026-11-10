@@ -32,7 +32,7 @@ use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 use super::oracle::GlyphBoxTextSystem;
 use crate::fast::layers::verify::drawn;
 use crate::{
-    AnyElement, AppContext as _, Bounds, ContentMask, Context, DispatchPhase, Div, Entity,
+    AnyElement, AppContext as _, Bounds, ClipMask, Context, DispatchPhase, Div, Entity,
     FocusHandle, HitboxBehavior, Hsla, InputEvent as _, InteractiveElement as _, IntoElement,
     KeyDownEvent, LayerFrame, LayerKey, ListAlignment, ListOffset, ListState, Modifiers,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoopTextSystem, ParentElement as _,
@@ -53,7 +53,7 @@ fn sp(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
 fn quad(bounds: Bounds<ScaledPixels>, mask: Bounds<ScaledPixels>, hue: f32) -> Quad {
     Quad {
         bounds,
-        content_mask: ContentMask::new(mask),
+        content_mask: ClipMask::new(mask),
         background: hsla(hue, 0.5, 0.5, 1.).into(),
         ..Default::default()
     }
@@ -130,7 +130,7 @@ fn scenes(tiles: &[TileCoord], nudge: f32) -> (Scene, Scene) {
                 origin: bounds.origin + translation,
                 size: bounds.size,
             },
-            content_mask: ContentMask::new(viewport),
+            content_mask: ClipMask::new(viewport),
             corner_radii: Default::default(),
             tile: crate::AtlasTile {
                 texture_id: layer_tile_texture_id(frame.key),

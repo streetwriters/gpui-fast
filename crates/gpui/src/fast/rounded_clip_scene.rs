@@ -1,5 +1,5 @@
 //! Transport rounded clip groups through the existing renderer layer graph.
-//! No public primitive or ContentMask layout changes. Texture ids in
+//! No public primitive or ClipMask layout changes. Texture ids in
 //! 0xF1000000.. identify clip groups, not atlas sprites or scroll tiles. Such a
 //! group's LayerFrame has tile_size=0 and contains its drawable scene plus
 //! a geometry LayerFrame (key u32::MAX). Horizontal radii are on the group
@@ -13,7 +13,7 @@ use std::mem;
 
 use crate::fast::rounded_clip::{ClipOperation, Shape};
 use crate::{
-    AtlasTextureId, AtlasTextureKind, AtlasTile, ColorFilter, ContentMask, LayerContent,
+    AtlasTextureId, AtlasTextureKind, AtlasTile, ColorFilter, ClipMask, LayerContent,
     LayerFrame, LayerKey, PolychromeSprite, Rgba, ScaledPixels, Scene, TileId, TransformIndex,
     TransformationMatrix,
     scene::{PaintOperation, Primitive},
@@ -119,7 +119,7 @@ pub(crate) fn compile(scene: &mut Scene) {
                         grayscale: false.into(),
                         opacity: 1.,
                         bounds: shape.bounds,
-                        content_mask: ContentMask::new(shape.bounds),
+                        content_mask: ClipMask::new(shape.bounds),
                         corner_radii: shape.radii.map(|radius| radius.width),
                         tile: AtlasTile {
                             texture_id: AtlasTextureId {

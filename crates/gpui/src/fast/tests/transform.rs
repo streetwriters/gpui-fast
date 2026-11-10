@@ -4,7 +4,7 @@
 
 use crate::fast::rounded_clip::{ClipOperation, Shape, record};
 use crate::{
-    Bounds, ContentMask, Corners, Quad, ScaledPixels, Scene, TransformationMatrix, point, size,
+    Bounds, ClipMask, Corners, Quad, ScaledPixels, Scene, TransformationMatrix, point, size,
 };
 
 fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
@@ -17,7 +17,7 @@ fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
 fn quad(bounds: Bounds<ScaledPixels>) -> Quad {
     Quad {
         bounds,
-        content_mask: ContentMask::new(self::bounds(-1000., -1000., 4000., 4000.)),
+        content_mask: ClipMask::new(self::bounds(-1000., -1000., 4000., 4000.)),
         ..Default::default()
     }
 }

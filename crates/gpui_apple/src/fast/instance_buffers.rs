@@ -44,7 +44,7 @@ mod tests {
                 order: 0,
                 border_style_and_transform: 0,
                 bounds,
-                content_mask: gpui::ContentMask::new(bounds),
+                content_mask: gpui::ClipMask::new(bounds),
                 background: gpui::rgb(0x3366ff).into(),
                 border_color: gpui::Hsla::default(),
                 corner_radii: gpui::Corners::default(),

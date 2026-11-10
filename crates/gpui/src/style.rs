@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, Corners,
+    AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ClipMask, ContentMask, Corners,
     CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement, Font,
     FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Hsla, Length, Pixels, Point,
     PointRefinement, Rgba, SharedString, Size, SizeRefinement, Styled, TextRun, Window, black, phi,
@@ -638,11 +638,17 @@ impl Style {
 
     /// Get the content mask for this element style, based on the given bounds.
     /// If the element does not hide its overflow, this will return `None`.
-    pub fn overflow_mask(
+    pub fn overflow_mask(&self, bounds: Bounds<Pixels>, rem_size: Pixels) -> Option<ContentMask<Pixels>> {
+        self.overflow_clip_mask(bounds, rem_size).map(Into::into)
+    }
+
+    /// [`Style::overflow_mask`], rounded to the element's corners when it
+    /// [`clips them`](Style::overflow_clips_corners); draw under it with [`crate::Window::with_clip_mask`].
+    pub fn overflow_clip_mask(
         &self,
         bounds: Bounds<Pixels>,
         rem_size: Pixels,
-    ) -> Option<ContentMask<Pixels>> {
+    ) -> Option<ClipMask<Pixels>> {
         match self.overflow {
             Point {
                 x: Overflow::Visible,
@@ -708,10 +714,10 @@ impl Style {
                         bottom_right: inset(outer.bottom_right, bottom, right),
                         bottom_left: inset(outer.bottom_left, bottom, left),
                     };
-                    return Some(ContentMask::rounded(bounds, corner_radii));
+                    return Some(ClipMask::rounded(bounds, corner_radii));
                 }
 
-                Some(ContentMask::new(bounds))
+                Some(ClipMask::new(bounds))
             }
         }
     }
@@ -1393,11 +1399,11 @@ mod tests {
         };
         let element = bounds(0., 0., 100., 50.);
 
-        let rectangular = style.overflow_mask(element, px(16.)).unwrap();
+        let rectangular = style.overflow_clip_mask(element, px(16.)).unwrap();
         assert!(!rectangular.is_rounded());
 
         style.overflow_clips_corners = true;
-        let mask = style.overflow_mask(element, px(16.)).unwrap();
+        let mask = style.overflow_clip_mask(element, px(16.)).unwrap();
         assert_eq!(mask.bounds, bounds(2., 4., 98., 46.));
         assert_eq!(mask.rounded_bounds, mask.bounds);
         // Each corner loses the wider border beside it.
@@ -1407,14 +1413,14 @@ mod tests {
         assert_eq!(mask.corner_radii.bottom_right, px(10.));
 
         style.overflow.y = Overflow::Visible;
-        assert!(!style.overflow_mask(element, px(16.)).unwrap().is_rounded());
+        assert!(!style.overflow_clip_mask(element, px(16.)).unwrap().is_rounded());
     }
 
     #[test]
     fn nested_masks_keep_the_innermost_rounded_rectangle() {
-        let outer = ContentMask::rounded(bounds(0., 0., 100., 100.), Corners::all(px(20.)));
-        let inner = ContentMask::rounded(bounds(10., 10., 50., 50.), Corners::all(px(5.)));
-        let plain = ContentMask::new(bounds(-10., 50., 200., 200.));
+        let outer = ClipMask::rounded(bounds(0., 0., 100., 100.), Corners::all(px(20.)));
+        let inner = ClipMask::rounded(bounds(10., 10., 50., 50.), Corners::all(px(5.)));
+        let plain = ClipMask::new(bounds(-10., 50., 200., 200.));
 
         let nested = inner.intersect(&outer);
         assert_eq!(nested.rounded_bounds, inner.rounded_bounds);
