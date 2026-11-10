@@ -44,6 +44,7 @@ pub(crate) mod splice;
 pub(crate) mod stats;
 pub(crate) mod tab_stops;
 pub(crate) mod text;
+pub(crate) mod text_keys;
 pub(crate) mod text_style;
 pub(crate) mod tracked_entities;
 pub(crate) mod transform;

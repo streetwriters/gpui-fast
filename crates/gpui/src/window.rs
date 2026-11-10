@@ -6966,6 +6966,7 @@ impl Window {
         dispatch_path: &SmallVec<[DispatchNodeId; 32]>,
         cx: &mut App,
     ) {
+        let dispatch_path = &crate::fast::text_keys::listener_path(self, event, dispatch_path, cx);
         // Capture phase
         for node_id in dispatch_path {
             let node = self.rendered_frame.dispatch_tree.node(*node_id);
