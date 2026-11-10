@@ -10,9 +10,13 @@
 
 #[path = "../../../gpui/src/fast/buffer_shrink.rs"]
 pub(crate) mod buffer_shrink;
+#[cfg(feature = "font-kit")]
+pub(crate) mod color_bitmap_fonts;
 pub(crate) mod composition;
 pub(crate) mod dynamic_textures;
 pub(crate) mod effects;
+#[cfg(feature = "font-kit")]
+pub(crate) mod font_fallbacks;
 #[cfg(feature = "font-kit")]
 pub(crate) mod glyph_coverage;
 pub(crate) mod instance_buffers;
@@ -25,3 +29,5 @@ pub(crate) mod rounded_clip;
 pub(crate) mod shared_device;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;
+#[cfg(all(test, feature = "font-kit"))]
+mod truncation_tests;

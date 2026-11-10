@@ -9,11 +9,13 @@
 
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod adapter;
+pub(crate) mod atlas;
 pub(crate) mod bind_groups;
 #[path = "../../../gpui/src/fast/buffer_shrink.rs"]
 pub(crate) mod buffer_shrink;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod composition;
+pub(crate) mod dynamic_textures;
 pub(crate) mod frame;
 pub(crate) mod globals;
 pub(crate) mod layers;

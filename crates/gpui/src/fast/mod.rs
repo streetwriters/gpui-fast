@@ -20,6 +20,7 @@ pub(crate) mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod dynamic_textures;
 pub(crate) mod effects;
+pub(crate) mod em_metrics;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;
 pub(crate) mod image_scaling;
@@ -31,6 +32,7 @@ pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;
 #[cfg(test)]
 mod line_break;
+pub(crate) mod list_measure;
 pub(crate) mod misc;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
@@ -43,7 +45,9 @@ pub(crate) mod stats;
 pub(crate) mod tab_stops;
 pub(crate) mod text;
 pub(crate) mod text_style;
+pub(crate) mod tracked_entities;
 pub(crate) mod transform;
+pub(crate) mod truncation;
 
 #[cfg(test)]
 mod tests;

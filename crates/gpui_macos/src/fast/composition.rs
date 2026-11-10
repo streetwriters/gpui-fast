@@ -24,8 +24,9 @@ use std::{
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 use gpui::{
-    Bounds, ComposedScene, CompositionSurfaceId, DevicePixels, PlatformCompositionSurface,
-    PlatformCompositionSurfaceContent, PlatformSurfaceAttachment, Point, Size, px,
+    Bounds, ComposedScene, ComposedSceneLayer, CompositionSurfaceId, DevicePixels,
+    PlatformCompositionSurface, PlatformCompositionSurfaceContent, PlatformSurfaceAttachment,
+    Point, Scene, Size, px,
 };
 use objc2::{
     class, msg_send,
@@ -35,6 +36,11 @@ use objc2::{
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSEventType, NSViewLayerContentsRedrawPolicy};
 use objc2_foundation::{NSInteger, NSPoint, NSRect, NSSize};
 use parking_lot::Mutex;
+
+#[path = "composition_capture.rs"]
+mod capture;
+
+use capture::{PointerCapture, PointerOwner, PointerPhase, PointerRoute, route_pointer_event};
 
 use crate::{
     renderer,
@@ -71,8 +77,7 @@ pub(crate) struct MacComposition {
     native_views: Rc<Vec<usize>>,
     input_order: Rc<Vec<InputLayer>>,
     native_event: usize,
-    native_buttons: u64,
-    native_owner: Option<usize>,
+    pointer_capture: PointerCapture,
     input_forwarders: FxHashSet<usize>,
     event_result: gpui::DispatchEventResult,
     forwarding_scroll: bool,
@@ -88,8 +93,7 @@ impl MacComposition {
             native_views: Rc::new(Vec::new()),
             input_order: Rc::new(Vec::new()),
             native_event: 0,
-            native_buttons: 0,
-            native_owner: None,
+            pointer_capture: PointerCapture::default(),
             input_forwarders: FxHashSet::default(),
             event_result: gpui::DispatchEventResult {
                 propagate: true,
@@ -241,13 +245,29 @@ fn send_window_event(this: &AnyObject, event: Id, superclass: &AnyClass) {
         }
         return;
     }
+    let button = if observe {
+        let number: NSInteger = unsafe { msg_send![event, buttonNumber] };
+        1u64.checked_shl(number as u32).unwrap_or(0)
+    } else {
+        0
+    };
+    let up = matches!(
+        kind,
+        NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp
+    );
     let state = unsafe { get_window_state(this) };
     let (root, native_views, captured, has_forwarders) = {
-        let state = state.lock();
+        let mut state = state.lock();
+        if observe && !up {
+            state
+                .fast_composition
+                .pointer_capture
+                .reconcile_down(button);
+        }
         (
             state.native_view,
             state.fast_composition.native_views.clone(),
-            state.fast_composition.native_owner,
+            state.fast_composition.pointer_capture.owner(),
             !state.fast_composition.input_forwarders.is_empty(),
         )
     };
@@ -257,33 +277,58 @@ fn send_window_event(this: &AnyObject, event: Id, superclass: &AnyClass) {
         }
         return;
     }
-    let up = matches!(
-        kind,
-        NSEventType::LeftMouseUp | NSEventType::RightMouseUp | NSEventType::OtherMouseUp
-    );
-    let button = if observe {
-        let number: NSInteger = unsafe { msg_send![event, buttonNumber] };
-        1u64.checked_shl(number as u32).unwrap_or(0)
-    } else {
-        0
-    };
+    // A press on the window's own chrome (the resize border, the titlebar
+    // buttons) belongs to AppKit, as in a window without composition.
+    // `root.hitTest` below cannot see the frame view, so a resize grabbed where
+    // a native view reaches the window's edge would make that view the press
+    // owner and dispatch the press to GPUI. AppKit's live-resize loop can then
+    // consume the matching mouse-up (it does with a physical mouse on macOS
+    // 26.6), which leaves the press open and loses the next click. A release
+    // that does reach `sendEvent:` still takes the path below, which clears
+    // the owner.
+    if observe && !up && unsafe { hits_window_chrome(this, root.as_ptr(), event) } {
+        unsafe {
+            let _: () = msg_send![super(this, superclass), sendEvent: event];
+        }
+        return;
+    }
     if up {
         let mut state = state.lock();
-        state.fast_composition.native_buttons &= !button;
-        if state.fast_composition.native_buttons == 0 {
-            state.fast_composition.native_owner = None;
-        }
+        state.fast_composition.pointer_capture.release(button);
     }
-    let native = if captured.is_some() && (dragged || up) {
-        captured
+    let phase = if up {
+        PointerPhase::Up
+    } else if observe {
+        PointerPhase::Down
+    } else if dragged {
+        PointerPhase::Drag
     } else {
-        unsafe {
+        PointerPhase::Other
+    };
+    if captured == Some(PointerOwner::Gpui) && phase == PointerPhase::Down {
+        state
+            .lock()
+            .fast_composition
+            .pointer_capture
+            .press(button, None);
+    }
+    // Captured GPUI secondary downs intentionally bypass AppKit's menuForEvent:
+    // path, just as GPUIView's rightMouseDown: dispatches handle_view_event
+    // directly. GPUI owns context-menu handling, not the native view underneath.
+    let native = match route_pointer_event(
+        captured,
+        phase,
+        || handle_view_event(unsafe { root.as_ref() }, sel!(sendEvent:), event),
+        || unsafe {
             let parent: Id = msg_send![root.as_ptr(), superview];
             let location: NSPoint = msg_send![event, locationInWindow];
             let point: NSPoint = msg_send![parent, convertPoint: location, fromView: NIL];
             let target: Id = msg_send![root.as_ptr(), hitTest: point];
             native_for_target(target, &native_views)
-        }
+        },
+    ) {
+        PointerRoute::Delivered => return,
+        PointerRoute::AppKit(native) => native,
     };
     let forward =
         native.is_some_and(|id| state.lock().fast_composition.input_forwarders.contains(&id));
@@ -292,8 +337,7 @@ fn send_window_event(this: &AnyObject, event: Id, superclass: &AnyClass) {
     // a popup and withheld the down event from the producer.
     if forward && observe && !up {
         let mut state = state.lock();
-        state.fast_composition.native_buttons |= button;
-        state.fast_composition.native_owner = native;
+        state.fast_composition.pointer_capture.press(button, native);
     }
     if native.is_some() && (observe || forward) {
         state.lock().fast_composition.event_result = gpui::DispatchEventResult {
@@ -321,10 +365,23 @@ fn send_window_event(this: &AnyObject, event: Id, superclass: &AnyClass) {
         if forward
             || (!(captured.is_some() && up) && (!result.propagate || result.default_prevented))
         {
+            if observe && !up && !forward && captured.is_none() {
+                // A consumed capture-phase down belongs to GPUI, not the view
+                // underneath the popup that capture may just have dismissed.
+                let mut state = state.lock();
+                state.fast_composition.pointer_capture.press(button, None);
+            }
             return;
         }
     }
     if native.is_none() {
+        if observe && !up && captured.is_none() {
+            state
+                .lock()
+                .fast_composition
+                .pointer_capture
+                .press(button, None);
+        }
         unsafe {
             let _: () = msg_send![super(this, superclass), sendEvent: event];
         }
@@ -333,8 +390,7 @@ fn send_window_event(this: &AnyObject, event: Id, superclass: &AnyClass) {
     let previous = {
         let mut state = state.lock();
         if observe && !up {
-            state.fast_composition.native_buttons |= button;
-            state.fast_composition.native_owner = native;
+            state.fast_composition.pointer_capture.press(button, native);
         }
         let previous = state.fast_composition.native_event;
         state.fast_composition.native_event = event as usize;
@@ -344,6 +400,29 @@ fn send_window_event(this: &AnyObject, event: Id, superclass: &AnyClass) {
         let _: () = msg_send![super(this, superclass), sendEvent: event];
     }
     state.lock().fast_composition.native_event = previous;
+}
+
+/// Whether AppKit hit-tests `event` outside the window's view `root`: to the
+/// frame view itself (its resize border) or to one of its controls, such as
+/// the titlebar buttons.
+unsafe fn hits_window_chrome(window: &AnyObject, root: Id, event: Id) -> bool {
+    unsafe {
+        let content: Id = msg_send![window, contentView];
+        if content.is_null() {
+            return false;
+        }
+        let frame_view: Id = msg_send![content, superview];
+        if frame_view.is_null() {
+            return false;
+        }
+        let location: NSPoint = msg_send![event, locationInWindow];
+        let target: Id = msg_send![frame_view, hitTest: location];
+        if target.is_null() {
+            return false;
+        }
+        let inside: Bool = msg_send![target, isDescendantOf: root];
+        !inside.as_bool()
+    }
 }
 
 unsafe fn belongs_to_native(view: Id, native: &[usize]) -> bool {
@@ -365,6 +444,34 @@ unsafe fn native_for_target(mut view: Id, native: &[usize]) -> Option<usize> {
         view = unsafe { msg_send![view, superview] };
     }
     None
+}
+
+/// AppKit may consume releases during deactivation or a native tracking loop.
+/// Relinquish both GPUI and native ownership before handing a gesture to AppKit.
+pub(crate) fn clear_pointer_capture(state: &Rc<Mutex<MacWindowState>>) {
+    state.lock().fast_composition.pointer_capture.clear();
+}
+
+pub(crate) fn window_activation_changed(state: &Rc<Mutex<MacWindowState>>, active: bool) {
+    if !active {
+        clear_pointer_capture(state);
+    }
+}
+
+pub(crate) fn start_window_move(state: &Rc<Mutex<MacWindowState>>) {
+    let window = {
+        let state = state.lock();
+        if state.simple_fullscreen_state.is_some() {
+            return;
+        }
+        state.native_window
+    };
+    clear_pointer_capture(state);
+    unsafe {
+        let app: Id = msg_send![class!(NSApplication), sharedApplication];
+        let event: Id = msg_send![app, currentEvent];
+        let _: () = msg_send![window, performWindowDragWithEvent: event];
+    }
 }
 
 pub(crate) fn native_event_observed(state: &MacWindowState, event: Id) -> bool {
@@ -498,23 +605,31 @@ pub(crate) fn draw_composed(window_state: &Rc<Mutex<MacWindowState>>, scene: Com
         state.renderer.draw(scene.scene());
         return;
     };
-    for layer in scene.layers() {
-        let surface_scene = match scene.layer_scene(layer) {
-            Ok(surface_scene) => surface_scene,
-            Err(error) => {
-                log::error!("replaying AppKit composition scene: {error:#}");
-                return;
+    let whole_scene = whole_scene_layer(scene.scene(), scene.layers());
+    for (layer_index, layer) in scene.layers().iter().enumerate() {
+        let replayed_scene;
+        let surface_scene = match whole_scene {
+            Some((target_index, whole_scene)) if target_index == layer_index => whole_scene,
+            _ => {
+                replayed_scene = match scene.layer_scene(layer) {
+                    Ok(surface_scene) => surface_scene,
+                    Err(error) => {
+                        log::error!("replaying AppKit composition scene: {error:#}");
+                        return;
+                    }
+                };
+                &replayed_scene
             }
         };
         if layer.surface == base_surface {
-            state.renderer.draw(&surface_scene);
+            state.renderer.draw(surface_scene);
         } else if let Some(surface) = state.fast_composition.gpui_surfaces.get_mut(&layer.surface) {
             {
                 let mut regions = surface.input_regions.borrow_mut();
                 regions.clear();
                 regions.extend(scene.layer_hitboxes(layer).iter().cloned());
             }
-            surface.renderer.draw(&surface_scene);
+            surface.renderer.draw(surface_scene);
         } else {
             log::error!(
                 "missing AppKit GPUI composition surface {:?}",
@@ -523,6 +638,32 @@ pub(crate) fn draw_composed(window_state: &Rc<Mutex<MacWindowState>>, scene: Com
         }
     }
 }
+
+/// `present` supplies the current frame's scene after `Frame::finish`.
+/// Only the layer covering its full stream may borrow it; other layers must
+/// have empty range lists and still replay and draw to clear their surfaces.
+fn whole_scene_layer<'a>(
+    scene: &'a Scene,
+    layers: &[ComposedSceneLayer],
+) -> Option<(usize, &'a Scene)> {
+    let mut target = None;
+    for (index, layer) in layers.iter().enumerate() {
+        if !layer.ranges.is_empty() {
+            let [range] = layer.ranges.as_slice() else {
+                return None;
+            };
+            if target.is_some() || range.start != 0 || range.end != scene.len() {
+                return None;
+            }
+            target = Some((index, scene));
+        }
+    }
+    target
+}
+
+#[cfg(test)]
+#[path = "composition_tests.rs"]
+mod tests;
 
 /// `PlatformWindow::enable_window_composition`: an AppKit window can always
 /// compose, and sets itself up when it's first given an order.
@@ -690,8 +831,7 @@ pub(crate) fn set_composition_order(
                     .collect(),
             );
             if lock.fast_composition.native_views.is_empty() {
-                lock.fast_composition.native_buttons = 0;
-                lock.fast_composition.native_owner = None;
+                lock.fast_composition.pointer_capture.clear();
             }
             lock.fast_composition.view_order = view_order;
         }

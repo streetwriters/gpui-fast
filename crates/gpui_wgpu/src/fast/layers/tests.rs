@@ -828,6 +828,7 @@ pub(super) struct Harness {
     path_targets: Option<PathTargets>,
     path_region: Option<Bounds<DevicePixels>>,
     state: FrameState,
+    dynamic_textures: crate::fast::dynamic_textures::TextureStore,
     dual_source_blending: bool,
 }
 
@@ -940,6 +941,7 @@ impl Harness {
             path_targets: None,
             path_region: None,
             state: FrameState::default(),
+            dynamic_textures: crate::fast::dynamic_textures::TextureStore::default(),
             dual_source_blending,
         })
     }
@@ -1108,6 +1110,7 @@ impl FrameHost for Harness {
     fn target(&self) -> Result<FrameTarget<'_>> {
         let path_targets = self.path_targets.as_ref();
         Ok(FrameTarget {
+            dynamic_textures: &self.dynamic_textures,
             device: &self.device,
             queue: &self.queue,
             pipelines: &self.pipelines,
