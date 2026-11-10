@@ -831,11 +831,11 @@ impl MacWindowState {
     /// weakly to deliver frames.
     fn start_display_link(&mut self, window_state: &Rc<Mutex<MacWindowState>>) {
         self.stop_display_link();
-        if !self
-            .native_window()
-            .occlusionState()
-            .contains(NSWindowOcclusionState::Visible)
-        {
+        if !crate::fast::test_active::visible(
+            self.native_window()
+                .occlusionState()
+                .contains(NSWindowOcclusionState::Visible),
+        ) {
             return;
         }
         match &mut self.frame_source {
@@ -3029,10 +3029,12 @@ pub(crate) extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_even
 }
 
 fn visibility(state: &MacWindowState) -> WindowVisibility {
-    let is_visible = state
-        .native_window()
-        .occlusionState()
-        .contains(NSWindowOcclusionState::Visible);
+    let is_visible = crate::fast::test_active::visible(
+        state
+            .native_window()
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible),
+    );
     if is_visible {
         WindowVisibility::Visible
     } else {
@@ -3075,11 +3077,11 @@ fn report_visibility(window_state: &Rc<Mutex<MacWindowState>>) {
 extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mut AnyObject) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
-    if lock
-        .native_window()
-        .occlusionState()
-        .contains(NSWindowOcclusionState::Visible)
-    {
+    if crate::fast::test_active::visible(
+        lock.native_window()
+            .occlusionState()
+            .contains(NSWindowOcclusionState::Visible),
+    ) {
         lock.move_traffic_light();
         lock.start_display_link(&window_state);
     } else {
