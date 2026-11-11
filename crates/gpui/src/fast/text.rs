@@ -280,6 +280,9 @@ pub(crate) fn prepaint_text(
     if let Some(inner) = layout.0.borrow_mut().as_mut() {
         inner.bounds = Some(bounds);
     }
+    if window.a11y.is_active() {
+        window.a11y.nodes.add_text(text);
+    }
 }
 
 /// Whether [`TextLayout`]'s paint can paint the text: it was measured and

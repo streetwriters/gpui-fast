@@ -372,9 +372,70 @@ impl<'a> A11ySubtreeBuilder<'a> {
     }
 }
 
+/// What text painted inside an open node does to names: a node a user
+/// activates by name (a button, a link, a tab) and has no label is named by
+/// it, as on the web; one with a label keeps it from naming a node around it.
+enum Naming {
+    Collect(String),
+    Stop,
+    Pass,
+}
+
+impl Naming {
+    fn of(node: &accesskit::Node) -> Self {
+        match (named_by_contents(node), node.label().is_some()) {
+            (false, _) => Naming::Pass,
+            (true, false) => Naming::Collect(String::new()),
+            (true, true) => Naming::Stop,
+        }
+    }
+}
+
+fn named_by_contents(node: &accesskit::Node) -> bool {
+    use accesskit::Role;
+    matches!(
+        node.role(),
+        Role::Button
+            | Role::DefaultButton
+            | Role::Link
+            | Role::CheckBox
+            | Role::RadioButton
+            | Role::Switch
+            | Role::Tab
+            | Role::MenuItem
+            | Role::MenuItemCheckBox
+            | Role::MenuItemRadio
+            | Role::ListBoxOption
+            | Role::TreeItem
+    )
+}
+
+/// Longest name taken from contents, in characters: a clickable card names
+/// itself by its first words, not its whole text.
+const CONTENTS_NAME_MAX: usize = 80;
+
+/// The name for `text` painted inside a node: whitespace collapsed, cut at
+/// [`CONTENTS_NAME_MAX`]; `None` when there is none.
+fn contents_name(text: &str) -> Option<String> {
+    let mut name = String::new();
+    for word in text.split_whitespace() {
+        if !name.is_empty() {
+            name.push(' ');
+        }
+        name.push_str(word);
+    }
+    if name.chars().count() > CONTENTS_NAME_MAX {
+        name = name.chars().take(CONTENTS_NAME_MAX - 1).collect::<String>();
+        name.push('…');
+    }
+    (!name.is_empty()).then_some(name)
+}
+
 pub(crate) struct A11yNodeBuilder {
     ids_stack: SmallVec<[NodeId; 16]>,
     pub(crate) nodes_stack: SmallVec<[accesskit::Node; 16]>,
+    /// For each open node, what text painted inside it does to its name.
+    names_stack: SmallVec<[Naming; 16]>,
     /// This is the exact type required by accesskit, so we can't just make it a
     /// `HashMap<NodeId, Node>` to remove the need for `seen_ids`
     pub(crate) all_nodes: Vec<(NodeId, accesskit::Node)>,
@@ -397,6 +458,7 @@ impl A11yNodeBuilder {
         Self {
             ids_stack: SmallVec::new(),
             nodes_stack: SmallVec::new(),
+            names_stack: SmallVec::new(),
             all_nodes: Vec::new(),
             seen_ids: FxHashSet::default(),
             focus: None,
@@ -442,8 +504,40 @@ impl A11yNodeBuilder {
         }
         crate::fast::a11y::A11yLog::push(&mut self.fast, id);
         self.ids_stack.push(id);
+        self.names_stack.push(Naming::of(&node));
         self.nodes_stack.push(node);
         true
+    }
+
+    /// Makes the open node take its name from the text painted inside it.
+    pub(crate) fn name_from_contents(&mut self) {
+        if let Some(naming) = self.names_stack.last_mut() {
+            *naming = Naming::Collect(String::new());
+        }
+    }
+
+    /// Whether the open node takes its name from the text painted inside it.
+    pub(crate) fn takes_name_from_contents(&self) -> bool {
+        matches!(self.names_stack.last(), Some(Naming::Collect(_)))
+    }
+
+    /// Text painted with no node of its own: it names the innermost open node
+    /// that takes its name from its contents.
+    pub(crate) fn add_text(&mut self, text: &str) {
+        crate::fast::a11y::A11yLog::text(&mut self.fast, text);
+        for naming in self.names_stack.iter_mut().rev() {
+            match naming {
+                Naming::Collect(name) => {
+                    if !name.is_empty() {
+                        name.push(' ');
+                    }
+                    name.push_str(text);
+                    return;
+                }
+                Naming::Stop => return,
+                Naming::Pass => {}
+            }
+        }
     }
 
     /// Add a leaf node as a child of the current top-of-stack node, without
@@ -473,7 +567,14 @@ impl A11yNodeBuilder {
     pub(crate) fn pop(&mut self) {
         debug_assert!(self.ids_stack.len() > 1, "pop would remove the root node");
 
-        if let (Some(id), Some(node)) = (self.ids_stack.pop(), self.nodes_stack.pop()) {
+        if let (Some(id), Some(mut node)) = (self.ids_stack.pop(), self.nodes_stack.pop()) {
+            if let Some(Naming::Collect(name)) = self.names_stack.pop()
+                && node.label().is_none()
+                && let Some(name) = contents_name(&name)
+            {
+                node.set_label(name);
+                crate::fast::a11y::A11yLog::named(&mut self.fast);
+            }
             crate::fast::a11y::A11yLog::pop(&mut self.fast, self.all_nodes.len());
             self.all_nodes.push((id, node));
         }
@@ -484,6 +585,7 @@ impl A11yNodeBuilder {
         self.all_nodes.clear();
         self.ids_stack.clear();
         self.nodes_stack.clear();
+        self.names_stack.clear();
         self.seen_ids.clear();
         #[cfg(debug_assertions)]
         self.node_info.clear();
@@ -493,6 +595,7 @@ impl A11yNodeBuilder {
         }
 
         self.ids_stack.push(ROOT_NODE_ID);
+        self.names_stack.push(Naming::Pass);
         self.nodes_stack.push(root_node);
         self.focus = None;
         self.active_descendant = None;

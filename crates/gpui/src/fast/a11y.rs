@@ -32,6 +32,7 @@
 //! in an [`A11yStretch`], and done again moved by the scroll since, as its
 //! hitboxes are.
 
+use crate::SharedString;
 use crate::{
     Bounds, FocusId, PaintIndex, Pixels, Point, PrepaintStateIndex, Window,
     window::a11y::{A11y, A11yActionListener, A11yNodeBuilder, A11ySubtreeBuilder},
@@ -87,11 +88,14 @@ pub(crate) fn finish_synthetic_children(builder: A11ySubtreeBuilder) {
 }
 
 /// One thing building a frame's accessibility tree did.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Op {
     /// A node pushed: it hangs off the node open then and is open until
-    /// its [`Op::Pop`].
-    Push(NodeId),
+    /// its [`Op::Pop`]. Whether it took its name from the text painted
+    /// inside it, which a stretch drawn again names it by again.
+    Push(NodeId, bool),
+    /// Text painted with no node of its own, naming the node open around it.
+    Text(SharedString),
     /// A leaf added under the node open, finished at this index of the
     /// frame's nodes.
     Leaf(usize),
@@ -136,13 +140,33 @@ pub(crate) struct A11yLog {
     /// Whether the next node finished keeps its children on replay; see
     /// [`finish_synthetic_children`].
     preserve_next_pop: bool,
+    /// Where in `ops` each open node was pushed, if it was logged.
+    open_pushes: Vec<Option<usize>>,
 }
 
 impl A11yLog {
     #[inline]
     pub(crate) fn push(log: &mut Self, id: NodeId) {
+        log.open_pushes.push(log.recording.then_some(log.ops.len()));
         if log.recording {
-            log.ops.push(Op::Push(id));
+            log.ops.push(Op::Push(id, false));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn text(log: &mut Self, text: &str) {
+        if log.recording {
+            log.ops.push(Op::Text(SharedString::from(text.to_owned())));
+        }
+    }
+
+    /// The open node took its name from the text painted inside it.
+    #[inline]
+    pub(crate) fn named(log: &mut Self) {
+        if let Some(Some(at)) = log.open_pushes.last()
+            && let Some(Op::Push(_, named)) = log.ops.get_mut(*at)
+        {
+            *named = true;
         }
     }
 
@@ -156,6 +180,7 @@ impl A11yLog {
     #[inline]
     pub(crate) fn pop(log: &mut Self, at: usize) {
         let preserve_children = mem::take(&mut log.preserve_next_pop);
+        log.open_pushes.pop();
         if log.recording {
             log.ops.push(Op::Pop(at, preserve_children));
         }
@@ -203,6 +228,7 @@ pub(crate) fn begin_frame(a11y: &mut A11y) {
     let log = &mut a11y.nodes.fast;
     log.recording = true;
     log.replay_open.clear();
+    log.open_pushes.clear();
     log.ops.clear();
     mem::swap(&mut log.previous_bounds, &mut a11y.node_bounds);
     let mut counts: FxHashMap<NodeId, usize> = FxHashMap::default();
@@ -325,10 +351,13 @@ fn replay(window: &mut Window, source: &Source, delta: Point<Pixels>) {
     let logged = window.a11y.nodes.fast.ops.len();
     for op in source.ops {
         match *op {
-            Op::Push(id) => {
+            Op::Push(id, named) => {
                 let pushed = window.a11y.nodes.push(id, accesskit::Node::default());
                 window.a11y.nodes.fast.replay_open.push(pushed);
                 if pushed {
+                    if named {
+                        window.a11y.nodes.name_from_contents();
+                    }
                     if let Some(bounds) = source.bounds.get(&id) {
                         let bounds = Bounds::new(bounds.origin + delta, bounds.size);
                         window.a11y.node_bounds.insert(id, bounds);
@@ -361,6 +390,10 @@ fn replay(window: &mut Window, source: &Source, delta: Point<Pixels>) {
                         accesskit::Node::default()
                     }
                 };
+                // Named by its text, it is named by the text drawn this frame
+                if window.a11y.nodes.takes_name_from_contents() {
+                    node.clear_label();
+                }
                 if let Some(open) = window.a11y.nodes.nodes_stack.last_mut() {
                     // Ordinary children follow this frame's splices. A synthetic
                     // hierarchy instead comes from the finished node: replaying
@@ -384,6 +417,7 @@ fn replay(window: &mut Window, source: &Source, delta: Point<Pixels>) {
                 }
             }
             Op::ActiveDescendant(node) => window.a11y.set_active_descendant(node),
+            Op::Text(ref text) => window.a11y.nodes.add_text(text),
         }
     }
     let log = &mut window.a11y.nodes.fast;
@@ -484,7 +518,7 @@ pub(crate) fn capture(
                     Op::Leaf(local)
                 }
             }
-            Op::Push(id) => {
+            Op::Push(id, named) => {
                 if let Some(bounds) = window.a11y.node_bounds.get(&id) {
                     stretch.bounds.insert(id, *bounds);
                 }
@@ -492,9 +526,9 @@ pub(crate) fn capture(
                 if let Some(info) = builder.node_info.get(&id) {
                     stretch.info.insert(id, info.clone());
                 }
-                Op::Push(id)
+                Op::Push(id, named)
             }
-            other => other,
+            ref other => other.clone(),
         };
         stretch.ops.push(op);
     }

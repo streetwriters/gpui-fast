@@ -553,3 +553,202 @@ fn a11y_dump_counts_the_tab_stops_of_its_frame(cx: &mut TestAppContext) {
         "the captured tree is older than the frame on screen"
     );
 }
+
+/// The role and name of every node of `window`'s last tree with a role other
+/// than the window's, in depth-first order.
+fn named_nodes(window: &Window) -> Vec<(Role, Option<String>)> {
+    let tree = crate::fast::a11y::last_tree(window).expect("accessibility is active");
+    let nodes: collections::FxHashMap<NodeId, &accesskit::Node> =
+        tree.nodes.iter().map(|(id, node)| (*id, node)).collect();
+    let mut out = Vec::new();
+    let mut stack = vec![crate::window::a11y::ROOT_NODE_ID];
+    while let Some(id) = stack.pop() {
+        let node = nodes[&id];
+        stack.extend(node.children().iter().rev());
+        if id != crate::window::a11y::ROOT_NODE_ID {
+            out.push((node.role(), node.label().map(str::to_string)));
+        }
+    }
+    out
+}
+
+struct Clickables {
+    clicks: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl Render for Clickables {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let clicks = self.clicks.clone();
+        div()
+            .child(
+                div()
+                    .id("row")
+                    .size(px(40.))
+                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                    .child("Background")
+                    .child(div().child("repro")),
+            )
+            .child(
+                div()
+                    .id("labelled")
+                    .on_click(|_, _, _| {})
+                    .aria_label("Explicit")
+                    .child("ignored"),
+            )
+            .child(div().id("link").role(Role::Link).child("Docs"))
+            .child(div().id("group").role(Role::Group).child("not a name"))
+            .child(
+                div()
+                    .id("outer")
+                    .on_click(|_, _, _| {})
+                    .child("Outer")
+                    .child(div().id("inner").on_click(|_, _, _| {}).child("Inner")),
+            )
+            .child(
+                div()
+                    .id("card")
+                    .on_click(|_, _, _| {})
+                    .child("Card")
+                    .child(
+                        div()
+                            .id("copy")
+                            .role(Role::Button)
+                            .aria_label("Copy")
+                            .child("Copy the text"),
+                    ),
+            )
+            .child(div().id("long").on_click(|_, _, _| {}).child("word ".repeat(30)))
+            .child(div().id("plain").child("no node"))
+    }
+}
+
+/// A clickable element with no role is a button, named by the text painted
+/// inside it unless it has a label; a press runs its click handler.
+#[crate::test]
+fn clickable_elements_are_buttons_named_by_their_text(cx: &mut TestAppContext) {
+    let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
+    let window = cx.add_window({
+        let clicks = clicks.clone();
+        |_, _| Clickables { clicks }
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.set_a11y_active_for_tests(true);
+        window.draw(cx).clear(cx);
+        let long = format!("{}…", "word ".repeat(16).trim_end().chars().take(79).collect::<String>());
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            named_nodes(window),
+            vec![
+                (Role::Button, some("Background repro")),
+                (Role::Button, some("Explicit")),
+                (Role::Link, some("Docs")),
+                (Role::Group, None),
+                (Role::Button, some("Outer")),
+                (Role::Button, some("Inner")),
+                (Role::Button, some("Card")),
+                (Role::Button, some("Copy")),
+                (Role::Button, Some(long)),
+            ]
+        );
+        let tree = crate::fast::a11y::last_tree(window).unwrap();
+        let row = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Background repro"))
+            .map(|(id, _)| *id)
+            .unwrap();
+        window.handle_a11y_action(
+            accesskit::ActionRequest {
+                action: accesskit::Action::Click,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: row,
+                data: None,
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(clicks.get(), 1);
+}
+
+struct Caption {
+    text: String,
+}
+
+impl Render for Caption {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.text.clone())
+    }
+}
+
+struct Rows {
+    captions: Vec<Entity<Caption>>,
+    title: usize,
+}
+
+impl Render for Rows {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(format!("title {}", self.title))
+            .children(self.captions.iter().enumerate().map(|(ix, caption)| {
+                div()
+                    .id(ix)
+                    .on_click(|_, _, _| {})
+                    .child(caption.clone())
+                    .child(div().id("own").on_click(|_, _, _| {}).child(caption.clone()))
+            }))
+    }
+}
+
+/// Names taken from text are the same whether views are drawn again from the
+/// last frame or built from scratch, and follow text a spliced view changed.
+#[crate::test]
+fn reused_views_keep_the_names_their_text_gave(cx: &mut TestAppContext) {
+    let open = |cx: &mut TestAppContext| {
+        cx.add_window(|_, cx| Rows {
+            captions: (0..3)
+                .map(|ix| cx.new(|_| Caption { text: format!("row {ix}") }))
+                .collect(),
+            title: 0,
+        })
+    };
+    let retained = open(cx);
+    let scratch = open(cx);
+    for window in [retained, scratch] {
+        cx.update_window(window.into(), |_, window, _| window.set_a11y_active_for_tests(true))
+            .unwrap();
+    }
+    let names = |cx: &mut TestAppContext, window: crate::WindowHandle<Rows>| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            (named_nodes(window), window.rendered_frame.retained.reused_any())
+        })
+        .unwrap()
+    };
+    let step = |cx: &mut TestAppContext, f: &dyn Fn(&mut Rows, &mut Context<Rows>)| {
+        for window in [retained, scratch] {
+            window.update(cx, |view, _, cx| f(view, cx)).unwrap();
+        }
+        cx.update_window(scratch.into(), |_, window, _| window.refresh()).unwrap();
+        let (expected, _) = names(cx, scratch);
+        let (actual, reused) = names(cx, retained);
+        assert_eq!(actual, expected);
+        (actual, reused)
+    };
+    step(cx, &|_, _| {});
+    let (_, reused) = step(cx, &|_, cx| cx.notify());
+    assert!(reused);
+    let (names_now, reused) = step(cx, &|view, cx| {
+        view.captions[1].update(cx, |caption, cx| {
+            caption.text = "renamed".into();
+            cx.notify();
+        })
+    });
+    assert!(reused);
+    assert!(names_now.contains(&(Role::Button, Some("renamed".into()))));
+    let (_, reused) = step(cx, &|view, cx| {
+        view.title += 1;
+        cx.notify()
+    });
+    assert!(reused);
+}
