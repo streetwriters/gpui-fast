@@ -866,3 +866,119 @@ fn hovering_by_accessibility_shows_the_tooltip(cx: &mut TestAppContext) {
     assert!(!hovered.get());
     assert_eq!(names(cx), vec![(Role::Group, None)]);
 }
+
+struct Scrolled {
+    clicked: std::rc::Rc<std::cell::Cell<Option<usize>>>,
+}
+
+impl Render for Scrolled {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size(px(200.))
+            .child(
+                div()
+                    .id("list")
+                    .h(px(100.))
+                    .overflow_y_scroll()
+                    .children((0..10).map(|ix| {
+                        let clicked = self.clicked.clone();
+                        div()
+                            .id(ix)
+                            .h(px(40.))
+                            .flex_none()
+                            .on_click(move |_, _, _| clicked.set(Some(ix)))
+                            .child(format!("Row {ix}"))
+                    })),
+            )
+    }
+}
+
+/// Assistive technology scrolls an element below the fold into view, and a
+/// press then lands on it: the container scrolls as for the wheel.
+#[crate::test]
+fn scrolling_by_accessibility_reveals_the_node(cx: &mut TestAppContext) {
+    let clicked = std::rc::Rc::new(std::cell::Cell::new(None));
+    let window = cx.add_window({
+        let clicked = clicked.clone();
+        |_, _| Scrolled { clicked }
+    });
+    let row = |window: &Window, name: &str| {
+        let tree = crate::fast::a11y::last_tree(window).unwrap();
+        tree.nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(name))
+            .map(|(id, _)| *id)
+            .unwrap()
+    };
+    let act = |cx: &mut TestAppContext, action: accesskit::Action| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let target_node = row(window, "Row 8");
+            window.handle_a11y_action(
+                accesskit::ActionRequest {
+                    action,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node,
+                    data: None,
+                },
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    cx.update_window(window.into(), |_, window, cx| {
+        window.set_a11y_active_for_tests(true);
+        window.draw(cx).clear(cx);
+        let tree = crate::fast::a11y::last_tree(window).unwrap();
+        let list = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::ScrollView);
+        assert!(list.is_some(), "the scroll container is a node");
+        let row_8 = tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == row(window, "Row 8"));
+        assert!(
+            row_8
+                .unwrap()
+                .1
+                .supports_action(accesskit::Action::ScrollIntoView)
+        );
+    })
+    .unwrap();
+
+    let in_view = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let bounds = window.a11y.node_bounds[&row(window, "Row 8")];
+            (bounds.top(), bounds.bottom())
+        })
+        .unwrap()
+    };
+    act(cx, accesskit::Action::ScrollIntoView);
+    assert_eq!(in_view(cx), (px(60.), px(100.)));
+
+    // A press below the fold scrolls first and lands once that frame is drawn.
+    cx.update_window(window.into(), |_, window, cx| {
+        window.handle_a11y_action(
+            accesskit::ActionRequest {
+                action: accesskit::Action::Click,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: row(window, "Row 0"),
+                data: None,
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(clicked.get(), None, "the press waits for the frame");
+    let platform_window = cx.test_window(window.into());
+    for _ in 0..2 {
+        platform_window.simulate_frame_request(crate::RequestFrameOptions {
+            require_presentation: true,
+            ..Default::default()
+        });
+    }
+    assert_eq!(clicked.get(), Some(0));
+}

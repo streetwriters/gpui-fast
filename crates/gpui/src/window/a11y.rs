@@ -512,6 +512,13 @@ impl A11yNodeBuilder {
         true
     }
 
+    /// Whether the node being built is inside a scroll container.
+    pub(crate) fn in_scroll_view(&self) -> bool {
+        self.nodes_stack
+            .iter()
+            .any(|node| node.role() == accesskit::Role::ScrollView)
+    }
+
     /// Makes the open node take its name from the text painted inside it.
     pub(crate) fn name_from_contents(&mut self) {
         if let Some(naming) = self.names_stack.last_mut() {

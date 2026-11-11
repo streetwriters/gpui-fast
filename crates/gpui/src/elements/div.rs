@@ -1967,6 +1967,9 @@ impl Element for Div {
                     None
                 } else if !interactivity.click_listeners.is_empty() {
                     Some(accesskit::Role::Button)
+                } else if interactivity.scroll_offset.is_some() {
+                    // So a GUI driver's ScrollIntoView can find the containers to scroll.
+                    Some(accesskit::Role::ScrollView)
                 } else {
                     // Reachable so that it can be hovered (see `Interactivity::hovers`)
                     interactivity.hovers().then_some(accesskit::Role::Group)

@@ -7781,23 +7781,16 @@ impl Window {
         // Fall back to built-in action handling.
         match request.action {
             accesskit::Action::Click => {
-                if let Some(bounds) = self.a11y.node_bounds.get(&request.target_node).copied() {
-                    let center = bounds.center();
-                    let mouse_down = PlatformInput::MouseDown(crate::MouseDownEvent {
-                        button: MouseButton::Left,
-                        position: center,
-                        modifiers: Modifiers::default(),
-                        click_count: 1,
-                        first_mouse: false,
+                let target = request.target_node;
+                // Hitboxes are the drawn frame's, so a node scrolled out of
+                // its container is pressed once the frame that scrolled it in
+                // is drawn: callbacks of the next frame run before its draw.
+                if self.scroll_a11y_node_into_view(target, cx) {
+                    self.on_next_frame(move |window, _| {
+                        window.on_next_frame(move |window, cx| window.press_a11y_node(target, cx))
                     });
-                    let mouse_up = PlatformInput::MouseUp(MouseUpEvent {
-                        button: MouseButton::Left,
-                        position: center,
-                        modifiers: Modifiers::default(),
-                        click_count: 1,
-                    });
-                    self.dispatch_event(mouse_down, cx);
-                    self.dispatch_event(mouse_up, cx);
+                } else {
+                    self.press_a11y_node(target, cx);
                 }
             }
             // Hovering by accessibility: the pointer moves onto the node, so its
@@ -7828,6 +7821,9 @@ impl Window {
                 });
                 self.dispatch_event(exited, cx);
             }
+            accesskit::Action::ScrollIntoView => {
+                self.scroll_a11y_node_into_view(request.target_node, cx);
+            }
             accesskit::Action::Focus => {
                 if let Some(focus_id) = self.a11y.focus_ids.get(&request.target_node).copied()
                     && let Some(handle) = FocusHandle::for_id(focus_id, &cx.focus_handles)
@@ -7846,6 +7842,103 @@ impl Window {
                 );
             }
         }
+    }
+
+    /// Presses a node at its centre, as a click there would.
+    fn press_a11y_node(&mut self, target: accesskit::NodeId, cx: &mut App) {
+        if let Some(bounds) = self.a11y.node_bounds.get(&target).copied() {
+            let center = bounds.center();
+            let mouse_down = PlatformInput::MouseDown(crate::MouseDownEvent {
+                button: MouseButton::Left,
+                position: center,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            });
+            let mouse_up = PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: center,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            });
+            self.dispatch_event(mouse_down, cx);
+            self.dispatch_event(mouse_up, cx);
+        }
+    }
+
+    /// Scrolls each scroll container around the node, innermost first, until
+    /// the node is inside it. Done by wheel events at the container, so the
+    /// container scrolls, clamps and redraws as it does for the real wheel.
+    /// Returns whether it scrolled any.
+    fn scroll_a11y_node_into_view(&mut self, target: accesskit::NodeId, cx: &mut App) -> bool {
+        let Some(mut bounds) = self.a11y.node_bounds.get(&target).copied() else {
+            return false;
+        };
+        let containers = {
+            let Some(tree) = self.a11y.debug.last_tree_update.as_ref() else {
+                return false;
+            };
+            let mut parents = FxHashMap::default();
+            for (id, node) in &tree.nodes {
+                for child in node.children() {
+                    parents.insert(*child, (*id, node.role()));
+                }
+            }
+            let mut containers = Vec::new();
+            let mut id = target;
+            while let Some((parent, role)) = parents.get(&id).copied() {
+                if role == accesskit::Role::ScrollView
+                    && let Some(container) = self.a11y.node_bounds.get(&parent)
+                {
+                    containers.push(*container);
+                }
+                id = parent;
+            }
+            containers
+        };
+
+        // How far content must move for `start..end` to show in `from..to`,
+        // keeping its start in view when it is longer than the container.
+        fn reveal(start: Pixels, end: Pixels, from: Pixels, to: Pixels) -> Pixels {
+            if start < from {
+                from - start
+            } else if end > to {
+                (to - end).max(from - start)
+            } else {
+                Pixels::ZERO
+            }
+        }
+        let mut scrolled = false;
+        for container in containers {
+            let delta = point(
+                reveal(
+                    bounds.left(),
+                    bounds.right(),
+                    container.left(),
+                    container.right(),
+                ),
+                reveal(
+                    bounds.top(),
+                    bounds.bottom(),
+                    container.top(),
+                    container.bottom(),
+                ),
+            );
+            if delta.x.is_zero() && delta.y.is_zero() {
+                continue;
+            }
+            let scroll = PlatformInput::Scroll(crate::ScrollEvent {
+                position: container.center(),
+                delta: crate::ScrollDelta::Pixels(delta),
+                modifiers: Modifiers::default(),
+                touch_phase: crate::TouchPhase::Moved,
+                source: crate::ScrollSource::Pointer,
+            });
+            self.dispatch_event(scroll, cx);
+            bounds.origin += delta;
+            scrolled = true;
+        }
+        scrolled
     }
 
     /// Toggles the inspector mode on this window.

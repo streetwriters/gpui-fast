@@ -150,7 +150,7 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
             Role::Ruby => NSAccessibilityGroupRole,
             Role::RubyAnnotation => NSAccessibilityUnknownRole,
             Role::ScrollBar => NSAccessibilityScrollBarRole,
-            Role::ScrollView => NSAccessibilityUnknownRole,
+            Role::ScrollView => NSAccessibilityScrollAreaRole,
             Role::Search => NSAccessibilityGroupRole,
             Role::Section => NSAccessibilityGroupRole,
             Role::SectionFooter => NSAccessibilityGroupRole,
