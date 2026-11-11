@@ -1613,7 +1613,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn is_active(&self) -> bool {
-        self.0.state.borrow().active
+        crate::fast::test_active::apply(self.0.state.borrow().active)
     }
 
     fn visibility(&self) -> WindowVisibility {

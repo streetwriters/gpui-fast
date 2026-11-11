@@ -8,6 +8,7 @@
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
 pub(crate) mod composition;
+pub(crate) mod test_active;
 #[cfg(feature = "x11")]
 pub(crate) mod x11_focus;
 pub(crate) mod x11_frame;
