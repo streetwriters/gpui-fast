@@ -605,19 +605,21 @@ impl Render for Clickables {
                     .child(div().id("inner").on_click(|_, _, _| {}).child("Inner")),
             )
             .child(
-                div()
-                    .id("card")
-                    .on_click(|_, _, _| {})
-                    .child("Card")
-                    .child(
-                        div()
-                            .id("copy")
-                            .role(Role::Button)
-                            .aria_label("Copy")
-                            .child("Copy the text"),
-                    ),
+                div().id("card").on_click(|_, _, _| {}).child("Card").child(
+                    div()
+                        .id("copy")
+                        .role(Role::Button)
+                        .aria_label("Copy")
+                        .child("Copy the text"),
+                ),
             )
-            .child(div().id("long").on_click(|_, _, _| {}).child("word ".repeat(30)))
+            .child(
+                div()
+                    .id("long")
+                    .on_click(|_, _, _| {})
+                    .child("word ".repeat(30)),
+            )
+            .child(div().id("tip").role(Role::Tooltip).child("Help text"))
             .child(div().id("plain").child("no node"))
     }
 }
@@ -634,7 +636,15 @@ fn clickable_elements_are_buttons_named_by_their_text(cx: &mut TestAppContext) {
     cx.update_window(window.into(), |_, window, cx| {
         window.set_a11y_active_for_tests(true);
         window.draw(cx).clear(cx);
-        let long = format!("{}…", "word ".repeat(16).trim_end().chars().take(79).collect::<String>());
+        let long = format!(
+            "{}…",
+            "word "
+                .repeat(16)
+                .trim_end()
+                .chars()
+                .take(79)
+                .collect::<String>()
+        );
         let some = |s: &str| Some(s.to_string());
         assert_eq!(
             named_nodes(window),
@@ -648,6 +658,7 @@ fn clickable_elements_are_buttons_named_by_their_text(cx: &mut TestAppContext) {
                 (Role::Button, some("Card")),
                 (Role::Button, some("Copy")),
                 (Role::Button, Some(long)),
+                (Role::Tooltip, some("Help text")),
             ]
         );
         let tree = crate::fast::a11y::last_tree(window).unwrap();
@@ -695,7 +706,12 @@ impl Render for Rows {
                     .id(ix)
                     .on_click(|_, _, _| {})
                     .child(caption.clone())
-                    .child(div().id("own").on_click(|_, _, _| {}).child(caption.clone()))
+                    .child(
+                        div()
+                            .id("own")
+                            .on_click(|_, _, _| {})
+                            .child(caption.clone()),
+                    )
             }))
     }
 }
@@ -707,7 +723,11 @@ fn reused_views_keep_the_names_their_text_gave(cx: &mut TestAppContext) {
     let open = |cx: &mut TestAppContext| {
         cx.add_window(|_, cx| Rows {
             captions: (0..3)
-                .map(|ix| cx.new(|_| Caption { text: format!("row {ix}") }))
+                .map(|ix| {
+                    cx.new(|_| Caption {
+                        text: format!("row {ix}"),
+                    })
+                })
                 .collect(),
             title: 0,
         })
@@ -715,13 +735,18 @@ fn reused_views_keep_the_names_their_text_gave(cx: &mut TestAppContext) {
     let retained = open(cx);
     let scratch = open(cx);
     for window in [retained, scratch] {
-        cx.update_window(window.into(), |_, window, _| window.set_a11y_active_for_tests(true))
-            .unwrap();
+        cx.update_window(window.into(), |_, window, _| {
+            window.set_a11y_active_for_tests(true)
+        })
+        .unwrap();
     }
     let names = |cx: &mut TestAppContext, window: crate::WindowHandle<Rows>| {
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
-            (named_nodes(window), window.rendered_frame.retained.reused_any())
+            (
+                named_nodes(window),
+                window.rendered_frame.retained.reused_any(),
+            )
         })
         .unwrap()
     };
@@ -729,7 +754,8 @@ fn reused_views_keep_the_names_their_text_gave(cx: &mut TestAppContext) {
         for window in [retained, scratch] {
             window.update(cx, |view, _, cx| f(view, cx)).unwrap();
         }
-        cx.update_window(scratch.into(), |_, window, _| window.refresh()).unwrap();
+        cx.update_window(scratch.into(), |_, window, _| window.refresh())
+            .unwrap();
         let (expected, _) = names(cx, scratch);
         let (actual, reused) = names(cx, retained);
         assert_eq!(actual, expected);
@@ -751,4 +777,92 @@ fn reused_views_keep_the_names_their_text_gave(cx: &mut TestAppContext) {
         cx.notify()
     });
     assert!(reused);
+}
+
+struct TipText;
+
+impl Render for TipText {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child("Saves the file")
+    }
+}
+
+struct Hoverable {
+    hovered: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Render for Hoverable {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let hovered = self.hovered.clone();
+        div().size(px(200.)).child(
+            div()
+                .id("save")
+                .size(px(40.))
+                .on_hover(move |is_hovered, _, _| hovered.set(*is_hovered))
+                .tooltip(|_, cx| cx.new(|_| TipText).into())
+                .child("Save"),
+        )
+    }
+}
+
+/// Assistive technology hovers an element that reacts to hover: its listeners
+/// and tooltip follow as for the pointer, and the tooltip's text is a node.
+#[crate::test]
+fn hovering_by_accessibility_shows_the_tooltip(cx: &mut TestAppContext) {
+    let hovered = std::rc::Rc::new(std::cell::Cell::new(false));
+    let window = cx.add_window({
+        let hovered = hovered.clone();
+        |_, _| Hoverable { hovered }
+    });
+    let act = |cx: &mut TestAppContext, action: accesskit::Action| {
+        cx.update_window(window.into(), |_, window, cx| {
+            let tree = crate::fast::a11y::last_tree(window).unwrap();
+            let save = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.supports_action(action))
+                .map(|(id, _)| *id)
+                .expect("a node offering the action");
+            window.handle_a11y_action(
+                accesskit::ActionRequest {
+                    action,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: save,
+                    data: None,
+                },
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    let names = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            named_nodes(window)
+        })
+        .unwrap()
+    };
+    cx.update_window(window.into(), |_, window, _| {
+        window.set_a11y_active_for_tests(true)
+    })
+    .unwrap();
+    assert_eq!(names(cx), vec![(Role::Group, None)]);
+    act(cx, accesskit::Action::ShowTooltip);
+    assert!(hovered.get());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(
+        names(cx),
+        vec![
+            (Role::Group, None),
+            (Role::Tooltip, Some("Saves the file".to_string()))
+        ]
+    );
+    act(cx, accesskit::Action::HideTooltip);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(!hovered.get());
+    assert_eq!(names(cx), vec![(Role::Group, None)]);
 }

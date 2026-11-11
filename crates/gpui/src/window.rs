@@ -73,7 +73,7 @@ pub use a11y::A11ySubtreeBuilder;
 
 use self::a11y::A11y;
 #[cfg(not(target_family = "wasm"))]
-use self::a11y::ROOT_NODE_ID;
+use self::a11y::{ROOT_NODE_ID, TOOLTIP_NODE_ID};
 use crate::util::{
     atomic_incr_if_not_zero, ceil_to_device_pixel, floor_to_device_pixel, round_half_toward_zero,
     round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
@@ -4248,9 +4248,31 @@ impl Window {
                 continue;
             }
 
+            // The tooltip's text is in the accessibility tree as a tooltip node
+            // it names, so a background driver that hovered can read it.
+            let a11y_node = self.a11y.is_active()
+                && self.a11y.nodes.push(
+                    TOOLTIP_NODE_ID,
+                    accesskit::Node::new(accesskit::Role::Tooltip),
+                );
+            if a11y_node {
+                let scale = self.scale_factor();
+                if let Some(node) = self.a11y.nodes.current_node_mut() {
+                    node.set_bounds(accesskit::Rect {
+                        x0: (tooltip_bounds.origin.x.0 * scale) as f64,
+                        y0: (tooltip_bounds.origin.y.0 * scale) as f64,
+                        x1: (tooltip_bounds.right().0 * scale) as f64,
+                        y1: (tooltip_bounds.bottom().0 * scale) as f64,
+                    });
+                }
+                self.a11y.nodes.name_from_contents();
+            }
             self.with_absolute_element_offset(tooltip_bounds.origin, |window| {
                 element.prepaint(window, cx)
             });
+            if a11y_node {
+                self.a11y.nodes.pop();
+            }
 
             self.tooltip_bounds = Some(TooltipBounds {
                 id: tooltip_request.id,
@@ -7777,6 +7799,34 @@ impl Window {
                     self.dispatch_event(mouse_down, cx);
                     self.dispatch_event(mouse_up, cx);
                 }
+            }
+            // Hovering by accessibility: the pointer moves onto the node, so its
+            // hover style, group hover, listeners and tooltip follow as they do
+            // for the real pointer, and off the window to end it.
+            accesskit::Action::ShowTooltip => {
+                if let Some(bounds) = self.a11y.node_bounds.get(&request.target_node).copied() {
+                    let mouse_move = PlatformInput::MouseMove(MouseMoveEvent {
+                        position: bounds.center(),
+                        pressed_button: None,
+                        modifiers: Modifiers::default(),
+                    });
+                    self.dispatch_event(mouse_move, cx);
+                }
+            }
+            accesskit::Action::HideTooltip => {
+                let outside = point(px(-1.), px(-1.));
+                let mouse_move = PlatformInput::MouseMove(MouseMoveEvent {
+                    position: outside,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                });
+                self.dispatch_event(mouse_move, cx);
+                let exited = PlatformInput::MouseExited(crate::MouseExitEvent {
+                    position: outside,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                });
+                self.dispatch_event(exited, cx);
             }
             accesskit::Action::Focus => {
                 if let Some(focus_id) = self.a11y.focus_ids.get(&request.target_node).copied()

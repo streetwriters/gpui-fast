@@ -1962,9 +1962,15 @@ impl Element for Div {
             // Something a user can click is a button unless it says otherwise,
             // so assistive technology (and GUI drivers) can find and press it.
             .or_else(|| {
-                (self.interactivity.override_role.is_none()
-                    && !self.interactivity.click_listeners.is_empty())
-                .then_some(accesskit::Role::Button)
+                let interactivity = &self.interactivity;
+                if interactivity.override_role.is_some() {
+                    None
+                } else if !interactivity.click_listeners.is_empty() {
+                    Some(accesskit::Role::Button)
+                } else {
+                    // Reachable so that it can be hovered (see `Interactivity::hovers`)
+                    interactivity.hovers().then_some(accesskit::Role::Group)
+                }
             })
     }
 
@@ -3654,6 +3660,16 @@ impl Interactivity {
         style
     }
 
+    /// Whether hovering it changes anything: its style, a group's, a listener or
+    /// a tooltip. Assistive technology hovers it with `ShowTooltip`, which a
+    /// window handles as the pointer moving onto its center.
+    pub(crate) fn hovers(&self) -> bool {
+        self.hover_style.is_some()
+            || self.group.is_some()
+            || self.hover_listener.is_some()
+            || self.tooltip_builder.is_some()
+    }
+
     pub(crate) fn write_a11y_info(&self, node: &mut accesskit::Node) {
         if let Some(id) = &self.aria.author_id {
             node.set_author_id(id.to_string());
@@ -3720,6 +3736,10 @@ impl Interactivity {
         }
         if !self.click_listeners.is_empty() {
             node.add_action(accesskit::Action::Click);
+        }
+        if self.hovers() {
+            node.add_action(accesskit::Action::ShowTooltip);
+            node.add_action(accesskit::Action::HideTooltip);
         }
         if self.tracked_focus_handle.is_some() || self.focusable {
             node.add_action(accesskit::Action::Focus);

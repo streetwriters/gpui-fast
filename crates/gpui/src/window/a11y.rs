@@ -114,6 +114,8 @@ use std::sync::{
 
 /// The fixed AccessKit node ID used for the root of every window's a11y tree.
 pub(crate) const ROOT_NODE_ID: NodeId = NodeId(0);
+/// The node of the tooltip on show; a window shows one at a time.
+pub(crate) const TOOLTIP_NODE_ID: NodeId = NodeId(u64::MAX - 1);
 
 /// A listener for an accessibility action on a specific node.
 pub(crate) type A11yActionListener =
@@ -373,8 +375,8 @@ impl<'a> A11ySubtreeBuilder<'a> {
 }
 
 /// What text painted inside an open node does to names: a node a user
-/// activates by name (a button, a link, a tab) and has no label is named by
-/// it, as on the web; one with a label keeps it from naming a node around it.
+/// activates by name (a button, a link, a tab) or a tooltip and has no label
+/// is named by it, as on the web; one with a label keeps it from naming a node around it.
 enum Naming {
     Collect(String),
     Stop,
@@ -407,6 +409,7 @@ fn named_by_contents(node: &accesskit::Node) -> bool {
             | Role::MenuItemRadio
             | Role::ListBoxOption
             | Role::TreeItem
+            | Role::Tooltip
     )
 }
 
