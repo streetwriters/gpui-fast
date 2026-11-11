@@ -1959,6 +1959,13 @@ impl Element for Div {
         self.interactivity
             .override_role
             .filter(|role| *role != accesskit::Role::GenericContainer)
+            // Something a user can click is a button unless it says otherwise,
+            // so assistive technology (and GUI drivers) can find and press it.
+            .or_else(|| {
+                (self.interactivity.override_role.is_none()
+                    && !self.interactivity.click_listeners.is_empty())
+                .then_some(accesskit::Role::Button)
+            })
     }
 
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
