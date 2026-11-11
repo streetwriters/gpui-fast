@@ -203,7 +203,10 @@ impl WindowsWindowInner {
     }
 
     fn handle_get_min_max_info_msg(&self, lparam: LPARAM) -> Option<isize> {
-        let min_size = self.state.min_size?;
+        let lifted = crate::fast::scale_override::lift_max_track_size(lparam);
+        let Some(min_size) = self.state.min_size else {
+            return lifted.then_some(0);
+        };
         let scale_factor = self.state.scale_factor.get();
         let boarder_offset = &self.state.border_offset;
 
@@ -930,7 +933,8 @@ impl WindowsWindowInner {
         let new_dpi = wparam.loword() as f32;
 
         let is_maximized = self.state.is_maximized();
-        let new_scale_factor = new_dpi / USER_DEFAULT_SCREEN_DPI as f32;
+        let new_scale_factor =
+            crate::fast::scale_override::apply(new_dpi / USER_DEFAULT_SCREEN_DPI as f32);
         self.state.scale_factor.set(new_scale_factor);
         crate::fast::layers::release_tiles(&mut self.state.renderer.borrow_mut());
         self.state.border_offset.update(handle).log_err();

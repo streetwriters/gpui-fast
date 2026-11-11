@@ -29,4 +29,5 @@ pub(crate) mod layers;
 pub(crate) mod native_tests;
 pub(crate) mod path_textures;
 pub(crate) mod rounded_clip;
+pub(crate) mod scale_override;
 pub(crate) mod shared_device;
