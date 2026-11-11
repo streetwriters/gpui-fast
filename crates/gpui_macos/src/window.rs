@@ -414,6 +414,7 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
         let mut decl = ClassBuilder::new(name, superclass).unwrap();
         decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
         crate::fast::composition::register_window_input(&mut decl, superclass);
+        crate::fast::frame_constraint::register(&mut decl, superclass);
         decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, Sel));
 
         decl.add_method(

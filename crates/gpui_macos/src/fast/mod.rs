@@ -8,5 +8,6 @@
 //! tests — is written here, one file per topic.
 
 pub(crate) mod composition;
+pub(crate) mod frame_constraint;
 pub(crate) mod scale_override;
 pub(crate) mod test_active;
