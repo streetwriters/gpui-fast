@@ -651,6 +651,9 @@ impl Platform for MacPlatform {
 
     #[allow(deprecated)]
     fn activate(&self, ignoring_other_apps: bool) {
+        if crate::fast::test_active::in_background() {
+            return;
+        }
         let app = NSApplication::sharedApplication(self.1);
         app.activateIgnoringOtherApps(ignoring_other_apps);
     }

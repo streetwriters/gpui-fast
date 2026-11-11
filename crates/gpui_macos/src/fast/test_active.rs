@@ -10,6 +10,11 @@
 //! driver that acts on it in the background would read stale pixels and a
 //! stale accessibility tree. In the same mode a window also counts as visible,
 //! so it keeps drawing while covered.
+//!
+//! The run must not take the user's focus or pointer either: in this mode a
+//! window opens behind the user's windows, and activating the application or
+//! a window does nothing. A window brought in front of the user's work catches
+//! the user's next click, and an activated application their typing.
 
 use std::sync::OnceLock;
 
@@ -23,6 +28,12 @@ pub(crate) fn apply(key: bool) -> bool {
 /// the system says `occlusion_visible`.
 pub(crate) fn visible(occlusion_visible: bool) -> bool {
     reports_active() || occlusion_visible
+}
+
+/// Whether the app runs in the background under a test driver: its windows
+/// open behind the user's and it never activates.
+pub(crate) fn in_background() -> bool {
+    reports_active()
 }
 
 fn reports_active() -> bool {

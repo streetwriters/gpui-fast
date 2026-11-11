@@ -1318,7 +1318,9 @@ impl MacWindow {
                 }
             }
 
-            if focus && show {
+            if show && crate::fast::test_active::in_background() {
+                let _: () = msg_send![native_window, orderBack: ptr::null_mut::<AnyObject>()];
+            } else if focus && show {
                 let _: () =
                     msg_send![native_window, makeKeyAndOrderFront: ptr::null_mut::<AnyObject>()];
             } else if show {
@@ -1829,6 +1831,12 @@ impl PlatformWindow for MacWindow {
                     if !window.isVisible() {
                         let view = unsafe { &*view.cast::<NSView>() };
                         view.setNeedsDisplay(true);
+                    }
+                    if crate::fast::test_active::in_background() {
+                        if !window.isVisible() {
+                            window.orderBack(None);
+                        }
+                        return;
                     }
                     window.makeKeyAndOrderFront(None);
                 }
