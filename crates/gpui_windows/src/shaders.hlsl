@@ -1548,6 +1548,13 @@ float4 polychrome_sprite_fragment_body(PolychromeSpriteFragmentInput input) {
         // An effect group's texture holds premultiplied colour.
         color = float4(color.rgb / max(color.a, 0.00001), color.a);
         if (mode == 6u) {
+            if ((sprite.grayscale >> 8u) == 17u) {
+                // A mask: the blend state scales the backdrop by this alpha,
+                // which is one where the sprite does not reach.
+                float coverage = saturate(0.5 - distance) *
+                    content_mask_alpha(frag_pos, sprite.content_mask);
+                return float4(0.0, 0.0, 0.0, 1.0 - coverage * (1.0 - sample.a * sprite.opacity));
+            }
             // Combined with what is beneath by the mode in the high bits.
             float4 backdrop = t_backdrop.Load(int3(int2(input.position.xy), 0));
             color = float4(blend_source_color(sprite.grayscale >> 8u, backdrop, color.rgb), color.a);

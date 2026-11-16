@@ -977,6 +977,13 @@ float4 polychrome_sprite_fragment_body(
     // multiplies by alpha again.
     color.rgb /= max(color.a, 1e-5);
     if (mode == 6u) {
+      if ((sprite.grayscale >> 8) == 17u) {
+        // A mask: the pipeline scales the backdrop by this alpha, which is
+        // one where the sprite does not reach.
+        float coverage = saturate(0.5 - distance) *
+                         content_mask_alpha(frag_pos, sprite.content_mask);
+        return float4(0.0, 0.0, 0.0, 1.0 - coverage * (1.0 - sample.a * sprite.opacity));
+      }
       // Combined with what is beneath by the mode in the high bits.
       color.rgb = blend_source_color(sprite.grayscale >> 8, backdrop.read(uint2(input.position.xy)), color.rgb);
     }

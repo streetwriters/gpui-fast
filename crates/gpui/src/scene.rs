@@ -303,6 +303,9 @@ pub enum BlendMode {
     Color,
     Luminosity,
     PlusLighter,
+    /// Keeps the backdrop scaled by the group's alpha, and nothing else: the
+    /// group is a mask for what is beneath it, inside its isolated parent.
+    DestinationIn,
 }
 
 /// What an effect group does to its picture.
@@ -534,6 +537,28 @@ impl Scene {
             id,
         );
         EffectGroupScope { previous, id }
+    }
+
+    /// Counts `bounds`, in device pixels of the current space, as painted by the
+    /// group being painted, so a [`BlendMode::DestinationIn`] group masks all
+    /// of them and not only what it drew.
+    pub fn cover_effect_group(&mut self, bounds: Bounds<ScaledPixels>) {
+        let transform = self.current_transform;
+        let group = self.transforms.group(transform);
+        if group == 0 {
+            return;
+        }
+        let bounds = if transform.is_identity() {
+            bounds
+        } else {
+            self.transforms.get(transform).transform_bounds(&bounds)
+        };
+        let record = &mut self.groups[group as usize - 1];
+        record.bounds = if record.bounds.is_empty() {
+            bounds
+        } else {
+            record.bounds.union(&bounds)
+        };
     }
 
     /// Ends the group `scope` started and inserts what composites it, above
@@ -1668,6 +1693,12 @@ impl PolychromeSprite {
     /// The low byte of the sprite's flag word: how its texture is read.
     pub fn mode(&self) -> u32 {
         self.grayscale.0 & 0xff
+    }
+
+    /// The index of the blend mode of a [`BLEND_SPRITE`], from the high bits of
+    /// the flag word.
+    pub fn blend(&self) -> u32 {
+        self.grayscale.0 >> 8
     }
 }
 

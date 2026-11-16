@@ -155,6 +155,10 @@ pub struct MetalRenderer {
     monochrome_sprites_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub(crate) polychrome_sprites_pipeline_state:
         Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    destination_in_sprites_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    /// Set while a batch of mask sprites is drawn, which scale the backdrop
+    /// instead of covering it.
+    pub(crate) destination_in: bool,
     surfaces_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub(crate) unit_vertices: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub(crate) instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
@@ -329,6 +333,7 @@ impl MetalRenderer {
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
+            destination_in_sprites_pipeline_state,
             surfaces_pipeline_state,
         } = crate::fast::shared_device::gpu(&device, || {
             #[cfg(feature = "runtime_shaders")]
@@ -432,6 +437,20 @@ impl MetalRenderer {
                 "polychrome_sprite_fragment",
                 MTLPixelFormat::BGRA8Unorm,
             )?;
+            let destination_in_sprites_pipeline_state = build_blended_pipeline_state(
+                &device,
+                &library,
+                "destination_in_sprites",
+                "polychrome_sprite_vertex",
+                "polychrome_sprite_fragment",
+                MTLPixelFormat::BGRA8Unorm,
+                [
+                    MTLBlendFactor::Zero,
+                    MTLBlendFactor::Zero,
+                    MTLBlendFactor::SourceAlpha,
+                    MTLBlendFactor::SourceAlpha,
+                ],
+            )?;
             let surfaces_pipeline_state = build_pipeline_state(
                 &device,
                 &library,
@@ -450,6 +469,7 @@ impl MetalRenderer {
                 underlines_pipeline_state,
                 monochrome_sprites_pipeline_state,
                 polychrome_sprites_pipeline_state,
+                destination_in_sprites_pipeline_state,
                 surfaces_pipeline_state,
             })
         })?;
@@ -487,6 +507,8 @@ impl MetalRenderer {
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
+            destination_in_sprites_pipeline_state,
+            destination_in: false,
             surfaces_pipeline_state,
             unit_vertices,
             instance_buffer_pool,
@@ -1120,6 +1142,7 @@ impl MetalRenderer {
                     ),
                 PrimitiveBatch::PolychromeSprites { texture_id, range } => {
                     let blended = is_blend_batch(scene, &range);
+                    self.destination_in = is_destination_in_batch(scene, &range);
                     if blended {
                         command_encoder.endEncoding();
                         self.copy_backdrop(&command_buffer, texture)?;
@@ -1139,6 +1162,7 @@ impl MetalRenderer {
                     );
                     if blended {
                         self.backdrop = None;
+                        self.destination_in = false;
                     }
                 }
                 PrimitiveBatch::Surfaces(range) => {
@@ -1603,7 +1627,11 @@ impl MetalRenderer {
             DevicePixels(texture.width() as i32),
             DevicePixels(texture.height() as i32),
         );
-        command_encoder.setRenderPipelineState(&self.polychrome_sprites_pipeline_state);
+        command_encoder.setRenderPipelineState(if self.destination_in {
+            &self.destination_in_sprites_pipeline_state
+        } else {
+            &self.polychrome_sprites_pipeline_state
+        });
         // SAFETY: The scene's sprite range, six unit vertices, and copied sizes match the shader layouts and slots.
         // Metal retains the buffers and texture, and writer.finish publishes the instance writes.
         unsafe {
@@ -1846,6 +1874,13 @@ fn read_texture_to_image(texture: &ProtocolObject<dyn MTLTexture>) -> Result<Rgb
 
 /// Whether `range` of the scene's polychrome sprites is one that is combined
 /// with the backdrop under it.
+pub(crate) fn is_destination_in_batch(scene: &Scene, range: &Range<usize>) -> bool {
+    scene.polychrome_sprites.get(range.start).is_some_and(|sprite| {
+        sprite.mode() == gpui::BLEND_SPRITE
+            && sprite.blend() == gpui::BlendMode::DestinationIn as u32
+    })
+}
+
 pub(crate) fn is_blend_batch(scene: &Scene, range: &Range<usize>) -> bool {
     scene
         .polychrome_sprites
@@ -1877,6 +1912,33 @@ pub(crate) fn build_pipeline_state(
     fragment_fn_name: &str,
     pixel_format: MTLPixelFormat,
 ) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>> {
+    build_blended_pipeline_state(
+        device,
+        library,
+        label,
+        vertex_fn_name,
+        fragment_fn_name,
+        pixel_format,
+        [
+            MTLBlendFactor::SourceAlpha,
+            MTLBlendFactor::One,
+            MTLBlendFactor::OneMinusSourceAlpha,
+            MTLBlendFactor::OneMinusSourceAlpha,
+        ],
+    )
+}
+
+/// Like [`build_pipeline_state`], with the blend factors of the source's
+/// colour, its alpha, and the destination's colour and alpha.
+pub(crate) fn build_blended_pipeline_state(
+    device: &ProtocolObject<dyn MTLDevice>,
+    library: &ProtocolObject<dyn MTLLibrary>,
+    label: &str,
+    vertex_fn_name: &str,
+    fragment_fn_name: &str,
+    pixel_format: MTLPixelFormat,
+    factors: [MTLBlendFactor; 4],
+) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>> {
     let vertex_fn = library
         .newFunctionWithName(&NSString::from_str(vertex_fn_name))
         .with_context(|| format!("locating vertex function {vertex_fn_name}"))?;
@@ -1894,10 +1956,10 @@ pub(crate) fn build_pipeline_state(
     color_attachment.setBlendingEnabled(true);
     color_attachment.setRgbBlendOperation(MTLBlendOperation::Add);
     color_attachment.setAlphaBlendOperation(MTLBlendOperation::Add);
-    color_attachment.setSourceRGBBlendFactor(MTLBlendFactor::SourceAlpha);
-    color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
-    color_attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+    color_attachment.setSourceRGBBlendFactor(factors[0]);
+    color_attachment.setSourceAlphaBlendFactor(factors[1]);
+    color_attachment.setDestinationRGBBlendFactor(factors[2]);
+    color_attachment.setDestinationAlphaBlendFactor(factors[3]);
 
     device
         .newRenderPipelineStateWithDescriptor_error(&descriptor)
@@ -2833,6 +2895,26 @@ mod tests {
         let image = render(&mut scene);
         // Multiplied with nothing, the orange stays as it is.
         assert_close(image.get_pixel(100, 100).0, [255, 128, 0]);
+    }
+
+    #[test]
+    fn a_destination_in_group_keeps_the_isolated_group_only_where_it_is_opaque() {
+        let mut scene = Scene::default();
+        colored_quad(&mut scene, scaled_bounds(0., 0., 200., 200.), 0x808080);
+        let isolated = scene.begin_effect_group_with(1.0, gpui::GroupEffect::Isolate);
+        colored_quad(&mut scene, scaled_bounds(0., 0., 200., 200.), 0xff0000);
+        let mask = scene.begin_effect_group_blended(
+            1.0,
+            gpui::GroupEffect::None,
+            gpui::BlendMode::DestinationIn,
+        );
+        colored_quad(&mut scene, scaled_bounds(50., 50., 100., 100.), 0x0000ff);
+        scene.cover_effect_group(scaled_bounds(0., 0., 200., 200.));
+        scene.end_effect_group(mask, scaled_bounds(0., 0., 200., 200.));
+        scene.end_effect_group(isolated, scaled_bounds(0., 0., 200., 200.));
+        let image = render(&mut scene);
+        assert_close(image.get_pixel(100, 100).0, [255, 0, 0]);
+        assert_close(image.get_pixel(10, 10).0, [128, 128, 128]);
     }
 
     #[test]

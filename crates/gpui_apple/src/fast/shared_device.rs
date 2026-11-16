@@ -31,6 +31,7 @@ pub(crate) struct Gpu {
     pub(crate) underlines_pipeline_state: PipelineState,
     pub(crate) monochrome_sprites_pipeline_state: PipelineState,
     pub(crate) polychrome_sprites_pipeline_state: PipelineState,
+    pub(crate) destination_in_sprites_pipeline_state: PipelineState,
     pub(crate) surfaces_pipeline_state: PipelineState,
 }
 

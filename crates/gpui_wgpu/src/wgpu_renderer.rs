@@ -188,6 +188,9 @@ pub(crate) struct WgpuPipelines {
     pub(crate) mono_sprites: wgpu::RenderPipeline,
     pub(crate) subpixel_sprites: Option<wgpu::RenderPipeline>,
     pub(crate) poly_sprites: wgpu::RenderPipeline,
+    /// Draws the sprites of [`gpui::BlendMode::DestinationIn`] groups, which
+    /// scale what is beneath them by their alpha.
+    pub(crate) poly_sprites_destination_in: wgpu::RenderPipeline,
     #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
     /// Paints a [`gpui::ExternalTexture`] (a single RGBA/BGRA texture) using
@@ -1095,6 +1098,31 @@ impl WgpuRendererCore {
             &shader_module,
         );
 
+        let scale_by_alpha = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::SrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let poly_sprites_destination_in = create_pipeline(
+            "poly_sprites_destination_in",
+            "vs_poly_sprite",
+            "fs_poly_sprite",
+            &layouts.globals,
+            &layouts.instances,
+            Some(&layouts.texture),
+            wgpu::PrimitiveTopology::TriangleStrip,
+            &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState {
+                    color: scale_by_alpha,
+                    alpha: scale_by_alpha,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            1,
+            &shader_module,
+        );
+
         let surfaces = create_pipeline(
             "surfaces",
             "vs_surface",
@@ -1137,6 +1165,7 @@ impl WgpuRendererCore {
             mono_sprites,
             subpixel_sprites,
             poly_sprites,
+            poly_sprites_destination_in,
             surfaces,
             surfaces_rgba,
         }

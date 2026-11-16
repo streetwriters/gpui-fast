@@ -1131,11 +1131,23 @@ pub(crate) fn draw_scene(
                         .map(|backdrop| &backdrop.view)
                         .unwrap_or(&target.bind_group_layouts.dummy_backdrop),
                 );
+                let destination_in = draw
+                    .scene
+                    .polychrome_sprites
+                    .get(range.start)
+                    .is_some_and(|sprite| {
+                        sprite.mode() == gpui::BLEND_SPRITE
+                            && sprite.blend() == gpui::BlendMode::DestinationIn as u32
+                    });
                 draw_batch(
                     &mut pass,
                     &mut bound,
                     draw.globals,
-                    &pipelines.poly_sprites,
+                    if destination_in {
+                        &pipelines.poly_sprites_destination_in
+                    } else {
+                        &pipelines.poly_sprites
+                    },
                     &upload.polychrome_sprites,
                     Some(&bind_group),
                     range,

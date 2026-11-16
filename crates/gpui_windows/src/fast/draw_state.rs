@@ -87,6 +87,18 @@ impl DrawState {
         }
     }
 
+    /// Binds `blend_state`, over the one `set_pipeline` bound.
+    pub(crate) fn set_blend_state(
+        &mut self,
+        device_context: &ID3D11DeviceContext,
+        blend_state: &ID3D11BlendState,
+    ) {
+        if self.blend_state.as_ref() != Some(blend_state) {
+            unsafe { device_context.OMSetBlendState(blend_state, None, 0xFFFFFFFF) };
+            self.blend_state = Some(blend_state.clone());
+        }
+    }
+
     /// Binds `sampler` to the pixel shader and `texture` to both stages.
     pub(crate) fn set_texture(
         &mut self,

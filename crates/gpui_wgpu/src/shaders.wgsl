@@ -1575,6 +1575,9 @@ fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
     }
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
+        if (mode == 6u && (sprite.grayscale >> 8u) == 17u) {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
         return vec4<f32>(0.0);
     }
 
@@ -1586,6 +1589,13 @@ fn fs_poly_sprite_body(input: PolySpriteVarying) -> vec4<f32> {
         // An effect group's texture holds premultiplied colour.
         color = vec4<f32>(color.rgb / max(color.a, 0.00001), color.a);
         if (mode == 6u) {
+            if ((sprite.grayscale >> 8u) == 17u) {
+                // A mask: the blend state scales the backdrop by this alpha,
+                // which is one where the sprite does not reach.
+                let coverage = saturate(0.5 - distance) *
+                    content_mask_alpha(frag_pos, sprite.content_mask);
+                return vec4<f32>(0.0, 0.0, 0.0, 1.0 - coverage * (1.0 - sample.a * sprite.opacity));
+            }
             // Combined with what is beneath by the mode in the high bits.
             let backdrop = textureLoad(t_backdrop, vec2<i32>(input.position.xy), 0);
             color = vec4<f32>(blend_source_color(sprite.grayscale >> 8u, backdrop, color.rgb), color.a);

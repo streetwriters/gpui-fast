@@ -182,6 +182,8 @@ pub(crate) fn draw_primitives_to_texture(
                 ),
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
                 let blended = crate::metal_renderer::is_blend_batch(scene, &range);
+                renderer.destination_in =
+                    crate::metal_renderer::is_destination_in_batch(scene, &range);
                 if blended {
                     command_encoder.endEncoding();
                     renderer.copy_backdrop(&command_buffer, texture)?;
@@ -201,6 +203,7 @@ pub(crate) fn draw_primitives_to_texture(
                 );
                 if blended {
                     renderer.backdrop = None;
+                    renderer.destination_in = false;
                 }
             }
             PrimitiveBatch::Surfaces(range) => {

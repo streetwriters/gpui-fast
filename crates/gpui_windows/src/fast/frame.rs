@@ -18,7 +18,7 @@ use gpui::{Bounds, DevicePixels, Path, PrimitiveBatch, ScaledPixels, Scene};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP},
     Direct3D11::{
-        D3D11_TEXTURE2D_DESC, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
+        D3D11_TEXTURE2D_DESC, ID3D11BlendState, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
         ID3D11RenderTargetView, ID3D11SamplerState, ID3D11ShaderResourceView, ID3D11Texture2D,
     },
 };
@@ -304,6 +304,9 @@ pub(crate) fn draw_scene_masked(
                     .polychrome_sprites
                     .get(range.start)
                     .is_some_and(|sprite| sprite.mode() == gpui::BLEND_SPRITE);
+                let destination_in = blended
+                    && scene.polychrome_sprites[range.start].blend()
+                        == gpui::BlendMode::DestinationIn as u32;
                 if blended {
                     copy_backdrop(target, layers)?;
                 }
@@ -313,7 +316,14 @@ pub(crate) fn draw_scene_masked(
                     continue;
                 };
                 let pipeline = &pipelines.poly_sprites;
-                draw.instances(pipeline, range.start, range.len(), Some(&group.view))
+                let blend_state = destination_in.then_some(&pipelines.destination_in_blend);
+                draw.instances_blended(
+                    pipeline,
+                    blend_state,
+                    range.start,
+                    range.len(),
+                    Some(&group.view),
+                )
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
                 // The atlas has released the texture; upstream skips the batch.
@@ -375,6 +385,19 @@ impl Draw<'_> {
         instance_count: usize,
         texture: Option<&Option<ID3D11ShaderResourceView>>,
     ) -> Result<()> {
+        self.instances_blended(pipeline, None, first_instance, instance_count, texture)
+    }
+
+    /// Like [`Self::instances`], with `blend_state` in place of the
+    /// pipeline's.
+    fn instances_blended<T>(
+        &mut self,
+        pipeline: &PipelineState<T>,
+        blend_state: Option<&ID3D11BlendState>,
+        first_instance: usize,
+        instance_count: usize,
+        texture: Option<&Option<ID3D11ShaderResourceView>>,
+    ) -> Result<()> {
         if instance_count == 0 {
             return Ok(());
         }
@@ -388,6 +411,9 @@ impl Draw<'_> {
             .set_batch_start(context, self.batch_params, first_instance as u32)?;
         self.state
             .set_pipeline(context, pipeline, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        if let Some(blend_state) = blend_state {
+            self.state.set_blend_state(context, blend_state);
+        }
         if let Some(texture) = texture {
             self.state.set_texture(context, texture, self.sampler);
         }

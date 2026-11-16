@@ -270,6 +270,8 @@ fn encode(
                     }
                 } else {
                     let blended = crate::metal_renderer::is_blend_batch(scene, &range);
+                    renderer.destination_in =
+                        crate::metal_renderer::is_destination_in_batch(scene, &range);
                     if blended {
                         encoder.endEncoding();
                         renderer.copy_backdrop(commands, texture)?;
@@ -281,6 +283,7 @@ fn encode(
                         .draw_polychrome_sprites(texture_id, range, bindings, viewport, &encoder);
                     if blended {
                         renderer.backdrop = None;
+                        renderer.destination_in = false;
                     }
                 }
             }

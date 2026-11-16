@@ -4702,6 +4702,40 @@ impl Window {
         self.with_blended_group(opacity, effect, BlendMode::Normal, f)
     }
 
+    /// Prepaints with `f`, leaving no hitbox it inserts to be hit.
+    pub fn without_hitboxes<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let inserted = self.next_frame.hitboxes.len();
+        let result = f(self);
+        self.next_frame.hitboxes.truncate(inserted);
+        result
+    }
+
+    /// Whether effect groups are drawn here; inside a scroll layer's content
+    /// they are not.
+    pub fn paints_effect_groups(&self) -> bool {
+        self.fast_layers.painting.is_none()
+    }
+
+    /// Counts `bounds` as painted by the effect group in progress, so a
+    /// [`BlendMode::DestinationIn`] group masks all of them.
+    pub fn cover_effect_group(&mut self, bounds: Bounds<Pixels>) {
+        if self.fast_layers.painting.is_some() {
+            return;
+        }
+        let scale = self.scale_factor;
+        let scaled = Bounds::from_corners(
+            point(
+                ScaledPixels(bounds.origin.x.0 * scale),
+                ScaledPixels(bounds.origin.y.0 * scale),
+            ),
+            point(
+                ScaledPixels((bounds.origin.x.0 + bounds.size.width.0) * scale),
+                ScaledPixels((bounds.origin.y.0 + bounds.size.height.0) * scale),
+            ),
+        );
+        self.next_frame.scene.cover_effect_group(scaled);
+    }
+
     /// Like [`Window::with_group_effect`], combining the group's picture with
     /// what is beneath it by `blend`.
     pub fn with_blended_group<R>(
