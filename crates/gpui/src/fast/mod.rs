@@ -22,6 +22,7 @@ pub(crate) mod dispatch;
 pub(crate) mod dynamic_textures;
 pub(crate) mod effects;
 pub(crate) mod em_metrics;
+pub(crate) mod frame_fit;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;
 pub(crate) mod image_scaling;
