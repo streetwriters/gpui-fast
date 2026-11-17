@@ -3148,3 +3148,95 @@ fn a_view_painting_an_effect_group_around_a_changed_view_is_not_spliced() {
     .unwrap();
     assert_eq!(changed, draw_shell(&mut cx, window));
 }
+
+/// A view that can be focused and does not draw differently for it.
+struct Focusable {
+    focus: crate::FocusHandle,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Focusable {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        div().track_focus(&self.focus).w(px(50.)).h(px(20.))
+    }
+}
+
+/// A view that draws differently while it is focused.
+struct FocusReader {
+    focus: crate::FocusHandle,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for FocusReader {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let color = if self.focus.is_focused(window) {
+            crate::white()
+        } else {
+            crate::black()
+        };
+        div()
+            .track_focus(&self.focus)
+            .w(px(50.))
+            .h(px(20.))
+            .bg(color)
+    }
+}
+
+/// Moving focus builds only the view focused, which reads it as it paints its
+/// focus handle, and not the views around it or beside it.
+#[test]
+fn a_change_of_focus_builds_only_the_views_that_read_it() {
+    let mut cx = TestAppContext::single();
+    let (a_builds, b_builds) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let a = cx.new(|cx| Focusable {
+        focus: cx.focus_handle(),
+        builds: a_builds.clone(),
+    });
+    let b = cx.new(|cx| Focusable {
+        focus: cx.focus_handle(),
+        builds: b_builds.clone(),
+    });
+    let pair = cx.new(|_| Pair {
+        left: a.clone().into(),
+        right: b.clone().into(),
+    });
+    let (window, shell_builds) = shell(&mut cx, move |_| pair.into());
+    draw_shell(&mut cx, window);
+    draw_shell(&mut cx, window);
+    let before = (shell_builds.get(), a_builds.get(), b_builds.get());
+    let handle = cx.read(|cx| a.read(cx).focus.clone());
+    cx.update_window(window.into(), |_, window, cx| window.focus(&handle, cx))
+        .unwrap();
+    draw_shell(&mut cx, window);
+    draw_shell(&mut cx, window);
+    assert_eq!(
+        (shell_builds.get(), a_builds.get(), b_builds.get()),
+        (before.0, before.1 + 1, before.2),
+        "only the focused view reads its focus"
+    );
+}
+
+/// A view that read which element is focused is built again when focus moves.
+#[test]
+fn a_change_of_focus_builds_the_view_that_read_it() {
+    let mut cx = TestAppContext::single();
+    let builds = Rc::new(Cell::new(0));
+    let reader = cx.new(|cx| FocusReader {
+        focus: cx.focus_handle(),
+        builds: builds.clone(),
+    });
+    let (window, _) = shell(&mut cx, {
+        let reader = reader.clone();
+        move |_| reader.into()
+    });
+    draw_shell(&mut cx, window);
+    let unfocused = describe_shell(&mut cx, window);
+    let handle = cx.read(|cx| reader.read(cx).focus.clone());
+    cx.update_window(window.into(), |_, window, cx| window.focus(&handle, cx))
+        .unwrap();
+    let focused = draw_shell(&mut cx, window);
+    assert_ne!(unfocused, focused, "the focused view draws differently");
+    assert_eq!(builds.get(), 2);
+}

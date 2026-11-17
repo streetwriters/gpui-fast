@@ -505,21 +505,27 @@ pub(crate) struct FocusRef {
 impl FocusId {
     /// Obtains whether the element associated with this handle is currently focused.
     pub fn is_focused(&self, window: &Window) -> bool {
+        window.note_focus_read(Some(*self));
         window.focus == Some(*self)
     }
 
     /// Obtains whether the element associated with this handle contains the focused
     /// element or is itself focused.
     pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
+        window.note_focus_read(Some(*self));
         window
-            .focused(cx)
+            .focus
+            .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
             .is_some_and(|focused| self.contains(focused.id, window))
     }
 
     /// Obtains whether the element associated with this handle is contained within the
     /// focused element or is itself focused.
     pub fn within_focused(&self, window: &Window, cx: &App) -> bool {
-        let focused = window.focused(cx);
+        window.note_focus_read(Some(*self));
+        let focused = window
+            .focus
+            .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles));
         focused.is_some_and(|focused| focused.id.contains(*self, window))
     }
 
@@ -2764,6 +2770,7 @@ impl Window {
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.
     pub fn focused(&self, cx: &App) -> Option<FocusHandle> {
+        self.note_focus_read(None);
         self.focus
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
     }
@@ -2785,11 +2792,69 @@ impl Window {
             return;
         }
 
-        self.focus = Some(handle.id);
+        let previous = self.focus.replace(handle.id);
         self.focus_generation = self.focus_generation.wrapping_add(1);
         self.clear_pending_keystrokes(cx);
 
-        self.refresh();
+        self.focus_changed(previous, cx);
+    }
+
+    /// Notes that the focus state of `handle`, or of no handle in particular,
+    /// was read while drawing. See [`Self::focus_changed`].
+    pub(crate) fn note_focus_read(&self, handle: Option<FocusId>) {
+        if self.invalidator.not_drawing() {
+            return;
+        }
+        match handle {
+            None => self.retained_state.focus_read_unnamed.set(true),
+            Some(handle) => {
+                if let Some(subtree) = self.retained_state.subtree_stack.last() {
+                    self.retained_state
+                        .focus_readers
+                        .borrow_mut()
+                        .entry(handle)
+                        .or_default()
+                        .insert(subtree.clone());
+                }
+            }
+        }
+    }
+
+    /// Schedules the frame a change of focus from `previous` needs. A view
+    /// drawn again from last frame cannot draw differently for the focus, so
+    /// the subtrees that read the focus state of the two elements, or of
+    /// what contains them, are marked to be built again, and the views
+    /// around them are drawn around them. A read that named no element
+    /// builds every view.
+    fn focus_changed(&mut self, previous: Option<FocusId>, cx: &mut App) {
+        if !self.retained_state.view_retention
+            || self.retained_state.focus_read_unnamed.get()
+            || !self.invalidator.not_drawing()
+        {
+            self.refresh();
+            return;
+        }
+        let tree = &self.rendered_frame.dispatch_tree;
+        let mut affected = Vec::new();
+        for id in [previous, self.focus].into_iter().flatten() {
+            affected.push(id);
+            affected.extend(tree.focus_path(id));
+        }
+        let readers = self.retained_state.focus_readers.borrow();
+        let mut subtrees = Vec::new();
+        for id in &affected {
+            if let Some(found) = readers.get(id) {
+                subtrees.extend(found.iter().cloned());
+            }
+        }
+        drop(readers);
+        for subtree in subtrees {
+            if let Some(entity) = crate::fast::splice::view_entity(&subtree) {
+                cx.notify(entity);
+            }
+            self.retained_state.dirty_subtrees.insert(subtree);
+        }
+        self.invalidator.set_dirty(true);
     }
 
     /// Remove focus from all elements within this context's window.
@@ -2803,8 +2868,8 @@ impl Window {
         if self.focus.is_some() {
             self.focus_generation = self.focus_generation.wrapping_add(1);
         }
-        self.focus = None;
-        self.refresh();
+        let previous = self.focus.take();
+        self.focus_changed(previous, cx);
     }
 
     /// Blur the window and don't allow anything in it to be focused again.

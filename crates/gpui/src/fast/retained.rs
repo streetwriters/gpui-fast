@@ -33,6 +33,10 @@ use std::{any::TypeId, cell::RefCell, mem, ops::Range, rc::Rc};
 /// dirty for what they read. See [`Window::mark_changed_retained_views_dirty`].
 #[inline(always)]
 pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
+    if window.refreshing {
+        window.retained_state.focus_readers.get_mut().clear();
+        window.retained_state.focus_read_unnamed.set(false);
+    }
     window.fast_layout.phase_times.begin();
     crate::fast::a11y::new_frame(window);
     window.mark_changed_retained_views_dirty(cx);
@@ -304,6 +308,14 @@ pub(crate) struct RetainedState {
     /// The focus of the input handler last given to the platform window, if
     /// one was. See [`note_restored_input_handler`].
     pub(crate) installed_input_focus: Option<Option<crate::FocusId>>,
+    /// For each focus handle whose state a retained subtree read while it
+    /// was drawn, the innermost subtrees that did, since the last frame that
+    /// drew every view. A change of focus builds those again. See
+    /// [`Window::focus`].
+    pub(crate) focus_readers: RefCell<FxHashMap<crate::FocusId, FxHashSet<GlobalElementId>>>,
+    /// Whether what is focused was read without naming a handle, which the
+    /// subtree that read it cannot be found by.
+    pub(crate) focus_read_unnamed: std::cell::Cell<bool>,
 }
 
 impl RetainedState {
@@ -323,6 +335,8 @@ impl RetainedState {
             rendering_since: FxHashMap::default(),
             render_writes: FxHashMap::default(),
             installed_input_focus: None,
+            focus_readers: RefCell::new(FxHashMap::default()),
+            focus_read_unnamed: std::cell::Cell::new(false),
         }
     }
 
