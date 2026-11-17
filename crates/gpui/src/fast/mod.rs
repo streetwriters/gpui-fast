@@ -24,6 +24,7 @@ pub(crate) mod effects;
 pub(crate) mod em_metrics;
 pub(crate) mod frame_fit;
 pub(crate) mod global_id;
+pub(crate) mod idle_trim;
 pub(crate) mod glyphs;
 pub(crate) mod image_scaling;
 pub(crate) mod interactive_text;

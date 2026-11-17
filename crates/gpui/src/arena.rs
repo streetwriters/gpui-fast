@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
 };
 
-struct ArenaElement {
+pub(crate) struct ArenaElement {
     value: *mut u8,
     drop: unsafe fn(*mut u8),
 }
@@ -19,7 +19,7 @@ impl Drop for ArenaElement {
     }
 }
 
-struct Chunk {
+pub(crate) struct Chunk {
     start: *mut u8,
     end: *mut u8,
     offset: *mut u8,
@@ -79,13 +79,13 @@ impl Chunk {
 }
 
 pub struct Arena {
-    chunks: Vec<Chunk>,
-    elements: Vec<ArenaElement>,
+    pub(crate) chunks: Vec<Chunk>,
+    pub(crate) elements: Vec<ArenaElement>,
     valid: Rc<Cell<bool>>,
     current_chunk_index: usize,
     chunk_size: NonZeroUsize,
-    scope_depth: usize,
-    trim: crate::fast::arena::ChunkTrim,
+    pub(crate) scope_depth: usize,
+    pub(crate) trim: crate::fast::arena::ChunkTrim,
 }
 
 impl Drop for Arena {

@@ -1325,6 +1325,7 @@ pub struct Window {
     pub(crate) retained_state: crate::fast::retained::RetainedState,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
+    pub(crate) fast_idle_trim: crate::fast::idle_trim::IdleTrim,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
     pub(crate) fast_composition: crate::fast::composition::WindowCompositionHandle,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
@@ -2416,6 +2417,7 @@ impl Window {
             retained_state: crate::fast::retained::RetainedState::new(cx),
             text_style_stack: crate::fast::text_style::TextStyleStack::default(),
             fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
+            fast_idle_trim: crate::fast::idle_trim::IdleTrim::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
             fast_composition: crate::fast::composition::WindowCompositionHandle::default(),
             rendered_entity_stack: Vec::new(),
@@ -4031,6 +4033,8 @@ impl Window {
                 .end_draw(frame_dirty.dirty_at, frame_dirty.invalidations);
             self.debug_frame_overlay.record_frame(draw_duration);
         }
+
+        crate::fast::idle_trim::frame_drawn(self, cx);
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
         // scope's teardown itself happens in `ElementArenaScope::drop`.

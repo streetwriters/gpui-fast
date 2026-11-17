@@ -13,6 +13,18 @@
 /// again, which costs little next to building that many elements.
 pub(crate) const MAX_KEPT_CHUNKS: usize = 8;
 
+/// Frees every chunk but the first while the app is idle and nothing is
+/// allocated in the arena. See [`crate::fast::idle_trim`].
+pub(crate) fn release_idle(arena: &mut crate::arena::Arena) {
+    if arena.scope_depth != 0 || !arena.elements.is_empty() {
+        return;
+    }
+    arena.chunks.truncate(1);
+    arena.chunks.shrink_to_fit();
+    arena.elements.shrink_to_fit();
+    arena.trim.previous_frame = 1;
+}
+
 /// What the arena remembers between clears.
 #[derive(Default)]
 pub(crate) struct ChunkTrim {
