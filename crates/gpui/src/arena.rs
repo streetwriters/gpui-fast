@@ -156,7 +156,11 @@ impl Arena {
         for chunk_index in 0..=self.current_chunk_index {
             self.chunks[chunk_index].reset();
         }
-        crate::fast::arena::ChunkTrim::trim(&mut self.trim, &mut self.chunks, self.current_chunk_index);
+        crate::fast::arena::ChunkTrim::trim(
+            &mut self.trim,
+            &mut self.chunks,
+            self.current_chunk_index,
+        );
         self.current_chunk_index = 0;
     }
 

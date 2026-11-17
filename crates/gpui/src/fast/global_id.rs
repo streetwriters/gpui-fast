@@ -75,7 +75,10 @@ impl Path {
     }
 
     /// Writes the path's element ids, dot separated.
-    pub(crate) fn display(id: &GlobalElementId, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub(crate) fn display(
+        id: &GlobalElementId,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         for (i, element_id) in id.ids().into_iter().enumerate() {
             if i > 0 {
                 write!(f, ".")?;
@@ -254,7 +257,10 @@ mod tests {
         assert!(b.starts_with(&root));
         assert!(!b.starts_with(&a));
         assert_eq!(b.last(), Some(&ElementId::from("b")));
-        assert_eq!(b, GlobalElementId::new(&[ElementId::from("root"), ElementId::from("b")]));
+        assert_eq!(
+            b,
+            GlobalElementId::new(&[ElementId::from("root"), ElementId::from("b")])
+        );
         assert_eq!(b.to_string(), "root.b");
     }
 

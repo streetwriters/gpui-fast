@@ -26,6 +26,7 @@ impl WindowInvalidators {
         Some(self.0.remove(index).1)
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, window: &WindowId) -> Option<&WindowInvalidator> {
         self.0
             .iter()
