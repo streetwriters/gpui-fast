@@ -40,9 +40,8 @@ use crate::{
 };
 use std::{
     any::Any,
-    fmt::{self, Debug, Display},
+    fmt::{self, Display},
     mem, panic,
-    sync::Arc,
 };
 
 /// Implemented by types that participate in laying out and painting the contents of a window.
@@ -218,7 +217,7 @@ pub trait ParentElement {
 /// so on a deep tree the hashing alone was a visible share of a frame.
 #[derive(Clone, Debug)]
 pub struct GlobalElementId {
-    pub(crate) ids: Arc<[ElementId]>,
+    pub(crate) path: crate::fast::global_id::Path,
     pub(crate) hash: u64,
 }
 
@@ -237,17 +236,7 @@ pub(crate) fn extend_path_hash(prefix: u64, id: &ElementId) -> u64 {
 
 impl GlobalElementId {
     pub(crate) fn new(ids: &[ElementId]) -> Self {
-        let hash = ids.iter().fold(EMPTY_PATH_HASH, extend_path_hash);
-        Self::with_hash(ids, hash)
-    }
-
-    /// `ids` with its hash already known, as the window's id stack keeps it.
-    pub(crate) fn with_hash(ids: &[ElementId], hash: u64) -> Self {
-        debug_assert_eq!(hash, ids.iter().fold(EMPTY_PATH_HASH, extend_path_hash));
-        Self {
-            ids: Arc::from(ids),
-            hash,
-        }
+        crate::fast::global_id::Path::from_ids(ids)
     }
 
     pub(crate) fn accesskit_node_id(&self) -> accesskit::NodeId {
@@ -261,17 +250,9 @@ impl Default for GlobalElementId {
     }
 }
 
-impl std::ops::Deref for GlobalElementId {
-    type Target = [ElementId];
-
-    fn deref(&self) -> &Self::Target {
-        &self.ids
-    }
-}
-
 impl PartialEq for GlobalElementId {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash && (Arc::ptr_eq(&self.ids, &other.ids) || self.ids == other.ids)
+        crate::fast::global_id::Path::same(self, other)
     }
 }
 
@@ -285,13 +266,7 @@ impl std::hash::Hash for GlobalElementId {
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, element_id) in self.ids.iter().enumerate() {
-            if i > 0 {
-                write!(f, ".")?;
-            }
-            write!(f, "{}", element_id)?;
-        }
-        Ok(())
+        crate::fast::global_id::Path::display(self, f)
     }
 }
 
@@ -428,7 +403,10 @@ impl<E: Element> Drawable<E> {
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.element_id_stack.push(element_id);
-                    debug_assert_eq!(&**global_id.as_ref().unwrap(), &*window.element_id_stack);
+                    debug_assert!(crate::fast::global_id::Path::is(
+                        global_id.as_ref().unwrap(),
+                        &window.element_id_stack
+                    ));
                 }
 
                 let bounds = window.layout_bounds(layout_id);
@@ -547,7 +525,10 @@ impl<E: Element> Drawable<E> {
             } => {
                 if let Some(element_id) = self.element.id() {
                     window.element_id_stack.push(element_id);
-                    debug_assert_eq!(&**global_id.as_ref().unwrap(), &*window.element_id_stack);
+                    debug_assert!(crate::fast::global_id::Path::is(
+                        global_id.as_ref().unwrap(),
+                        &window.element_id_stack
+                    ));
                 }
 
                 window.next_frame.dispatch_tree.set_active_node(node_id);
@@ -888,7 +869,7 @@ fn prepare_inspector_id(
     window: &mut Window,
 ) -> InspectorElementId {
     let path = InspectorElementPath {
-        global_id: window.element_id_stack.global_id(),
+        global_id: crate::fast::global_id::current(window),
         source_location: source,
     };
     window.build_inspector_element_id(path)
@@ -925,7 +906,7 @@ mod global_element_id_tests {
         assert_ne!(a, c);
         assert_ne!(a, shallower);
         assert_ne!(fx_hash(&a), fx_hash(&c));
-        assert_eq!(&*a, path(8, 1).as_slice());
+        assert!(crate::fast::global_id::Path::is(&a, &path(8, 1)));
         assert_eq!(a.to_string(), b.to_string());
         assert_eq!(GlobalElementId::default(), GlobalElementId::new(&[]));
     }

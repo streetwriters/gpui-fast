@@ -145,7 +145,6 @@ pub(crate) struct Gap {
 impl Gap {
     fn element_id(&self) -> ElementId {
         self.global_id
-            .ids
             .last()
             .cloned()
             .expect("a view has an id")
@@ -269,12 +268,13 @@ impl Window {
         content_mask: ClipMask<Pixels>,
         opacity: f32,
     ) -> Inherited {
-        let parent_ids = &id.ids[..id.ids.len() - 1];
+        let ids = id.ids();
+        let parent_ids = &ids[..ids.len() - 1];
         Inherited {
             element_id_stack: mem::replace(&mut self.element_id_stack, {
                 let mut stack = crate::window::ElementIdStack::default();
                 for id in parent_ids {
-                    stack.push(id.clone());
+                    stack.push((*id).clone());
                 }
                 stack
             }),
@@ -597,7 +597,7 @@ impl Window {
         let previous_layout = nested.layout.clone();
         let global_id = nested.id.clone();
         let bounds = nested.context.bounds;
-        let element_id = global_id.ids.last().cloned()?;
+        let element_id = global_id.last().cloned()?;
         let layout_id = previous_layout.as_ref()?.root;
         let layout_key = self.with_parent_layout_key(rebuild.parent_layout_key, |window| {
             let key = crate::fast::layout_key::push_layout_key(window, Some(&element_id));
@@ -646,7 +646,7 @@ impl Window {
         let root = nested.layout.as_ref()?.root;
         let global_id = nested.id.clone();
         let context = nested.context.clone();
-        let element_id = global_id.ids.last().cloned()?;
+        let element_id = global_id.last().cloned()?;
 
         let engine = self.layout_engine.as_ref().unwrap();
         let (changes, remeasures, transient) = (
@@ -1165,26 +1165,19 @@ fn copy_splice_state_accesses(
     } else {
         match gaps {
             [gap] => {
-                let prefix = &gap.global_id.ids;
-                let depth = prefix.len() - 1;
-                let view = &prefix[depth];
+                let prefix = &gap.global_id;
                 copy_state_accesses(
                     states,
                     &mut target.accessed_element_states,
                     range.start,
-                    |id| id.ids.get(depth) == Some(view) && id.ids.starts_with(prefix),
+                    |id| id.starts_with(prefix),
                 )
             }
             _ => copy_state_accesses(
                 states,
                 &mut target.accessed_element_states,
                 range.start,
-                |id| {
-                    gaps.iter().any(|gap| {
-                        let prefix = &gap.global_id.ids;
-                        id.ids.get(prefix.len() - 1) == prefix.last() && id.ids.starts_with(prefix)
-                    })
-                },
+                |id| gaps.iter().any(|gap| id.starts_with(&gap.global_id)),
             ),
         }
     }
@@ -1249,7 +1242,7 @@ fn copy_record(
 /// The entity of the view whose element has the id `id`.
 #[inline(always)]
 pub(crate) fn view_entity(id: &GlobalElementId) -> Option<EntityId> {
-    match id.ids.last()? {
+    match id.last()? {
         ElementId::View(entity) => Some(*entity),
         _ => None,
     }

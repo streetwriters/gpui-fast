@@ -1018,7 +1018,11 @@ impl ElementIdStack {
     }
 
     pub(crate) fn global_id(&self) -> GlobalElementId {
-        GlobalElementId::with_hash(&self.ids, self.hash())
+        crate::fast::global_id::Path::from_ids(&self.ids)
+    }
+
+    pub(crate) fn hashes(&self) -> &[u64] {
+        crate::fast::global_id::prefix_hashes(&self.hashes)
     }
 }
 

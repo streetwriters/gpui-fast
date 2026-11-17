@@ -1725,9 +1725,11 @@ fn list_id(window: &Window, version: &StateVersion) -> GlobalElementId {
 /// What the ids of the elements and views inside the scroll container `id`
 /// start with: `id`, or for a `list`, which has no id of its own, the id of
 /// the elements around it (see [`list_id`]).
-pub(crate) fn content_prefix(id: &GlobalElementId) -> &[ElementId] {
-    match id.split_last() {
-        Some((ElementId::NamedInteger(name, _), around)) if name.as_ref() == LIST_ID_NAME => around,
+pub(crate) fn content_prefix(id: &GlobalElementId) -> &GlobalElementId {
+    match (id.last(), id.parent()) {
+        (Some(ElementId::NamedInteger(name, _)), Some(around)) if name.as_ref() == LIST_ID_NAME => {
+            around
+        }
         _ => id,
     }
 }
