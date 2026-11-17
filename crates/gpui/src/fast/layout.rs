@@ -417,6 +417,12 @@ impl TaffyLayoutEngine {
     }
 
     /// The keys an open recording saw since `start`, where the log was then.
+    /// How long the log of claimed keys is, for a recording nested in an open
+    /// one to know which of them are its own.
+    pub(crate) fn claimed_key_log_len(&self) -> usize {
+        self.retention.claimed_key_log.len()
+    }
+
     pub(crate) fn claimed_keys_since(&self, start: usize) -> &[u64] {
         let log = &self.retention.claimed_key_log;
         &log[start.min(log.len())..]

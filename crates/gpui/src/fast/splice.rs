@@ -402,22 +402,22 @@ impl Window {
             return None;
         }
 
+        let gap_keys: Vec<_> = gaps
+            .iter()
+            .map(|&gap| records[gap].layout.as_ref().unwrap().keys())
+            .collect();
+        let gap_states: Vec<_> = gaps
+            .iter()
+            .map(|&gap| records[gap].layout.as_ref().unwrap().element_states())
+            .collect();
         let mut kept = kept_keys(
-            &layout.keys,
-            gaps.iter()
-                .map(|&gap| records[gap].layout.as_ref().unwrap().keys.as_slice()),
+            &layout.keys(),
+            gap_keys.iter().map(|keys| &keys[..]),
             &mut self.retained_state.splice_keys,
         );
         let mut element_states = kept_element_states(
-            &layout.element_states,
-            gaps.iter().map(|&gap| {
-                records[gap]
-                    .layout
-                    .as_ref()
-                    .unwrap()
-                    .element_states
-                    .as_slice()
-            }),
+            &layout.element_states(),
+            gap_states.iter().map(|states| &states[..]),
         );
         // A gap is built without the transforms of the views around it, so a
         // view drawn under one is built with the view around it instead.
@@ -484,15 +484,16 @@ impl Window {
         }
         let layout = (self.layout_engine.as_ref().unwrap().transient_count() == transient_before)
             .then(|| {
-                if kept[..] == previous_layout.keys[..]
-                    && element_states[..] == previous_layout.element_states[..]
+                if kept[..] == previous_layout.keys()[..]
+                    && element_states[..] == previous_layout.element_states()[..]
                 {
                     previous_layout
                 } else {
                     Rc::new(RetainedLayout {
                         root: previous_layout.root,
-                        keys: SmallVec::from_vec(kept),
-                        element_states: SmallVec::from_vec(element_states),
+                        own_keys: SmallVec::from_vec(kept),
+                        own_element_states: SmallVec::from_vec(element_states),
+                        nested: SmallVec::new(),
                         text_style: previous_layout.text_style.clone(),
                         rem_size: previous_layout.rem_size,
                         parent_layout_key: previous_layout.parent_layout_key,

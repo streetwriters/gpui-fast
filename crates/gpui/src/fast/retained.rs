@@ -210,23 +210,89 @@ impl std::ops::Deref for RetainedContext {
     }
 }
 
+/// The items of `items`, which start at `start` in their log, that are not
+/// in any of the `nested` ranges of that log.
+fn outside_nested<T: Clone, A: smallvec::Array<Item = T>>(
+    items: &[T],
+    start: usize,
+    nested: impl Iterator<Item = Range<usize>>,
+) -> SmallVec<A> {
+    let mut own = SmallVec::new();
+    let mut cursor = start;
+    for range in nested {
+        if range.start > cursor {
+            own.extend(items[cursor - start..range.start - start].iter().cloned());
+        }
+        cursor = cursor.max(range.end);
+    }
+    let end = start + items.len();
+    if end > cursor {
+        own.extend(items[cursor - start..].iter().cloned());
+    }
+    own
+}
+
 /// What it takes to lay a view out as it was laid out last frame without
 /// building it: the view is laid out by its content, so its layout is only
 /// known from the nodes its content left.
 pub(crate) struct RetainedLayout {
     /// The node its content is laid out at.
     pub(crate) root: LayoutId,
-    /// Every node its content claimed while its layout was requested.
-    pub(crate) keys: SmallVec<[u64; 2]>,
+    /// The nodes its content claimed while its layout was requested, but
+    /// for those of `nested`.
+    pub(crate) own_keys: SmallVec<[u64; 2]>,
     /// The element states its content used while its layout was requested,
-    /// kept for as long as it is not built.
-    pub(crate) element_states: SmallVec<[(GlobalElementId, TypeId); 1]>,
+    /// kept for as long as it is not built, but for those of `nested`.
+    pub(crate) own_element_states: SmallVec<[(GlobalElementId, TypeId); 1]>,
+    /// The retained layouts of the views laid out inside its content, which
+    /// hold their own nodes and element states: an ancestor shares them
+    /// rather than copying them, which would cost every view as much again
+    /// for each view around it.
+    pub(crate) nested: SmallVec<[Rc<RetainedLayout>; 1]>,
     /// Shared with the layouts recorded before it under the same style.
     pub(crate) text_style: Rc<TextStyle>,
     pub(crate) rem_size: Pixels,
     /// The layout key of the element the view hangs off, which keys the
     /// view's own node, when it was laid out in the request-layout walk.
     pub(crate) parent_layout_key: Option<u64>,
+}
+
+impl RetainedLayout {
+    /// Every node its content claimed, its nested views' included.
+    pub(crate) fn keys(&self) -> std::borrow::Cow<'_, [u64]> {
+        if self.nested.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.own_keys);
+        }
+        let mut keys = Vec::new();
+        self.collect(&mut keys, &mut Vec::new());
+        std::borrow::Cow::Owned(keys)
+    }
+
+    /// Every element state its content used, its nested views' included.
+    pub(crate) fn element_states(&self) -> std::borrow::Cow<'_, [(GlobalElementId, TypeId)]> {
+        if self.nested.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.own_element_states);
+        }
+        let mut states = Vec::new();
+        self.collect(&mut Vec::new(), &mut states);
+        std::borrow::Cow::Owned(states)
+    }
+
+    fn collect(&self, keys: &mut Vec<u64>, states: &mut Vec<(GlobalElementId, TypeId)>) {
+        keys.extend_from_slice(&self.own_keys);
+        states.extend(self.own_element_states.iter().cloned());
+        for nested in &self.nested {
+            nested.collect(keys, states);
+        }
+    }
+}
+
+/// A view laid out inside the one whose layout is being recorded, with what
+/// it added to the claimed keys and the accessed element states.
+pub(crate) struct NestedLayout {
+    layout: Rc<RetainedLayout>,
+    keys: Range<usize>,
+    element_states: Range<usize>,
 }
 
 /// A layout request being recorded as a [`RetainedLayout`].
@@ -348,6 +414,9 @@ pub(crate) struct RetainedState {
     /// The text style stack the last rebuildable view was recorded under,
     /// for the next one to share.
     pub(crate) last_text_style_stack: Option<Rc<crate::fast::text_style::TextStyleStack>>,
+    /// For each layout request being recorded, innermost last, the retained
+    /// layouts of the views laid out inside it so far.
+    pub(crate) nested_layouts: Vec<Vec<NestedLayout>>,
 }
 
 impl RetainedState {
@@ -372,6 +441,7 @@ impl RetainedState {
             last_inherited: None,
             last_text_style: None,
             last_text_style_stack: None,
+            nested_layouts: Vec::new(),
         }
     }
 
@@ -736,17 +806,27 @@ impl Window {
         if layout.rem_size != self.rem_size() || *layout.text_style != self.text_style() {
             return None;
         }
+        let keys_start = self.layout_engine.as_ref().unwrap().claimed_key_log_len();
         if !self
             .layout_engine
             .as_mut()
             .unwrap()
-            .try_keep_retained(&layout.keys)
+            .try_keep_retained(&layout.keys())
         {
             return None;
         }
+        let states_start = self.next_frame.accessed_element_states.len();
         self.next_frame
             .accessed_element_states
-            .extend(layout.element_states.iter().cloned());
+            .extend(layout.element_states().iter().cloned());
+        let nested = NestedLayout {
+            layout: layout.clone(),
+            keys: keys_start..self.layout_engine.as_ref().unwrap().claimed_key_log_len(),
+            element_states: states_start..self.next_frame.accessed_element_states.len(),
+        };
+        if let Some(open) = self.retained_state.nested_layouts.last_mut() {
+            open.push(nested);
+        }
         let root = layout.root;
         cx.replay_dependencies(&record.dependencies);
         Some(root)
@@ -762,7 +842,7 @@ impl Window {
             self.layout_engine
                 .as_mut()
                 .unwrap()
-                .release_kept(&layout.keys);
+                .release_kept(&layout.keys());
         }
     }
 
@@ -778,6 +858,7 @@ impl Window {
     /// Starts recording a view's layout request, to lay it out again as it
     /// was without building it. See [`RetainedLayout`].
     pub(crate) fn begin_retained_layout(&mut self, cx: &mut App) -> RetainedLayoutRecording {
+        self.retained_state.nested_layouts.push(Vec::new());
         RetainedLayoutRecording {
             keys: self.record_claimed_layout_keys(),
             transient: self.layout_engine.as_ref().unwrap().transient_count(),
@@ -798,7 +879,15 @@ impl Window {
         root: LayoutId,
         cx: &mut App,
     ) -> (Option<Rc<RetainedLayout>>, RecordedDependencies) {
-        let keys = self.finish_recording_claimed_layout_keys(recording.keys);
+        let nested = self.retained_state.nested_layouts.pop().unwrap_or_default();
+        let engine = self.layout_engine.as_ref().unwrap();
+        let keys_end = engine.claimed_key_log_len();
+        let own_keys = outside_nested(
+            engine.claimed_keys_since(recording.keys),
+            recording.keys,
+            nested.iter().map(|nested| nested.keys.clone()),
+        );
+        self.end_recording_claimed_layout_keys();
         let mut dependencies = cx.finish_recording_dependencies(recording.dependencies);
         dependencies.render = recording.render;
         // A node nothing retains is gone at the end of the frame.
@@ -813,18 +902,29 @@ impl Window {
                 text_style
             }
         };
-        let layout = RetainedLayout {
+        let states_end = self.next_frame.accessed_element_states.len();
+        let own_element_states = outside_nested(
+            &self.next_frame.accessed_element_states[recording.element_states..],
+            recording.element_states,
+            nested.iter().map(|nested| nested.element_states.clone()),
+        );
+        let layout = Rc::new(RetainedLayout {
             root,
-            keys,
-            element_states: self.next_frame.accessed_element_states[recording.element_states..]
-                .iter()
-                .cloned()
-                .collect(),
+            own_keys,
+            own_element_states,
+            nested: nested.into_iter().map(|nested| nested.layout).collect(),
             text_style,
             rem_size: recording.rem_size,
             parent_layout_key: recording.parent_layout_key,
-        };
-        (Some(Rc::new(layout)), dependencies)
+        });
+        if let Some(open) = self.retained_state.nested_layouts.last_mut() {
+            open.push(NestedLayout {
+                layout: layout.clone(),
+                keys: recording.keys..keys_end,
+                element_states: recording.element_states..states_end,
+            });
+        }
+        (Some(layout), dependencies)
     }
 
     /// Draws the subtree last frame's record `previous` stands for again, as
@@ -1777,7 +1877,7 @@ impl<V: View> ViewElement<V> {
                         .layout_engine
                         .as_mut()
                         .unwrap()
-                        .release_kept(&layout.keys);
+                        .release_kept(&layout.keys());
                     self.build_at_layout(
                         Some(layout.root),
                         layout.parent_layout_key,

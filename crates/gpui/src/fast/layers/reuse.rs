@@ -426,14 +426,14 @@ pub(crate) fn reuse_kept_layout(
         .layout_engine
         .as_mut()
         .unwrap()
-        .try_keep_retained(&layout.keys)
+        .try_keep_retained(&layout.keys())
     {
         return None;
     }
     window
         .next_frame
         .accessed_element_states
-        .extend(layout.element_states.iter().cloned());
+        .extend(layout.element_states().iter().cloned());
     cx.replay_dependencies(&dependencies);
     Some((layout.root, layout))
 }
