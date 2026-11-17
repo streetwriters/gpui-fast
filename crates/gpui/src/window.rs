@@ -5521,6 +5521,13 @@ impl Window {
             return false;
         }
 
+        // An effect group is drawn into a transparent texture, where subpixel
+        // coverage has no backdrop to blend with and leaves no alpha.
+        let scene = &self.next_frame.scene;
+        if scene.transforms.group(scene.current_transform()) != 0 {
+            return false;
+        }
+
         let mode = match self.text_rendering_mode.get() {
             TextRenderingMode::PlatformDefault => self
                 .text_system()
