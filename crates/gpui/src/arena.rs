@@ -85,6 +85,7 @@ pub struct Arena {
     current_chunk_index: usize,
     chunk_size: NonZeroUsize,
     scope_depth: usize,
+    trim: crate::fast::arena::ChunkTrim,
 }
 
 impl Drop for Arena {
@@ -103,6 +104,7 @@ impl Arena {
             current_chunk_index: 0,
             chunk_size,
             scope_depth: 0,
+            trim: crate::fast::arena::ChunkTrim::default(),
         }
     }
 
@@ -154,6 +156,7 @@ impl Arena {
         for chunk_index in 0..=self.current_chunk_index {
             self.chunks[chunk_index].reset();
         }
+        crate::fast::arena::ChunkTrim::trim(&mut self.trim, &mut self.chunks, self.current_chunk_index);
         self.current_chunk_index = 0;
     }
 
