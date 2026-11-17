@@ -3,8 +3,40 @@
 //! stopped drawing.
 
 use collections::FxHashSet;
+use smallvec::SmallVec;
 
-use crate::{AnyWindowHandle, App, EntityId, WindowInvalidator};
+use crate::{AnyWindowHandle, App, EntityId, WindowId, WindowInvalidator};
+
+/// The windows an entity's notifications invalidate. Nearly every entity is
+/// drawn in one window, so this is a short list rather than a map, which
+/// would be an allocation for each entity.
+#[derive(Clone, Default)]
+pub(crate) struct WindowInvalidators(SmallVec<[(WindowId, WindowInvalidator); 1]>);
+
+impl WindowInvalidators {
+    pub(crate) fn insert(&mut self, window: WindowId, invalidator: WindowInvalidator) {
+        match self.0.iter_mut().find(|(id, _)| *id == window) {
+            Some((_, existing)) => *existing = invalidator,
+            None => self.0.push((window, invalidator)),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, window: &WindowId) -> Option<WindowInvalidator> {
+        let index = self.0.iter().position(|(id, _)| id == window)?;
+        Some(self.0.remove(index).1)
+    }
+
+    pub(crate) fn get(&self, window: &WindowId) -> Option<&WindowInvalidator> {
+        self.0
+            .iter()
+            .find(|(id, _)| id == window)
+            .map(|(_, invalidator)| invalidator)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&WindowId, &WindowInvalidator)> {
+        self.0.iter().map(|(id, invalidator)| (id, invalidator))
+    }
+}
 
 /// Records that the window drew `entities` and nothing else, as
 /// [`App::record_entities_accessed`] does.

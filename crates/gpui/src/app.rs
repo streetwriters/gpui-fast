@@ -961,7 +961,7 @@ pub struct App {
     pub(crate) propagate_event: bool,
     pub(crate) prompt_builder: Option<PromptBuilder>,
     pub(crate) window_invalidators_by_entity:
-        FxHashMap<EntityId, FxHashMap<WindowId, WindowInvalidator>>,
+        FxHashMap<EntityId, crate::fast::tracked_entities::WindowInvalidators>,
     pub(crate) tracked_entities: FxHashMap<WindowId, FxHashSet<EntityId>>,
     pub(crate) current_window_by_entity: FxHashMap<EntityId, WindowId>,
     #[cfg(any(feature = "inspector", debug_assertions))]
