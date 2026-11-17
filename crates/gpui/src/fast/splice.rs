@@ -328,7 +328,7 @@ impl Window {
         let record = &records[previous];
         let layout = record.layout.as_ref()?;
         if layout.rem_size != self.rem_size()
-            || layout.text_style != self.text_style()
+            || *layout.text_style != self.text_style()
             || cx.dependencies_changed(&record.own_dependencies, self.inside_notified_view())
             || crate::fast::layers::invalidate::offset_read_changed(self, &record.own_dependencies)
             || !self.hovers_unchanged(&record.own_hovers)
@@ -473,14 +473,15 @@ impl Window {
         }
         let layout = (self.layout_engine.as_ref().unwrap().transient_count() == transient_before)
             .then(|| {
-                if kept == previous_layout.keys && element_states == previous_layout.element_states
+                if kept[..] == previous_layout.keys[..]
+                    && element_states[..] == previous_layout.element_states[..]
                 {
                     previous_layout
                 } else {
                     Rc::new(RetainedLayout {
                         root: previous_layout.root,
-                        keys: kept,
-                        element_states,
+                        keys: SmallVec::from_vec(kept),
+                        element_states: SmallVec::from_vec(element_states),
                         text_style: previous_layout.text_style.clone(),
                         rem_size: previous_layout.rem_size,
                         parent_layout_key: previous_layout.parent_layout_key,

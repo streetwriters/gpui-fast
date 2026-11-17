@@ -94,7 +94,7 @@ pub(crate) struct RetainedSubtree {
     pub(crate) paint: PaintStatus,
     /// How many of the records following this one are nested inside it.
     pub(crate) nested: usize,
-    pub(crate) context: Rc<RetainedContext>,
+    pub(crate) context: RetainedContext,
     /// Everything the subtree read, the subtrees nested in it included.
     pub(crate) dependencies: RenderDependencies,
     /// What the subtree read itself, outside the subtrees nested in it. While
@@ -151,7 +151,7 @@ pub(crate) enum PaintStatus {
 /// What a record holds until the subtree it stands for is built, shared by
 /// every record being built, which would otherwise allocate each of them.
 struct Unbuilt {
-    context: Rc<RetainedContext>,
+    context: RetainedContext,
     hovers: Rc<[(HitboxId, bool)]>,
     keys: Rc<[u64]>,
 }
@@ -160,14 +160,16 @@ impl Unbuilt {
     fn with<R>(f: impl FnOnce(&Unbuilt) -> R) -> R {
         thread_local! {
             static UNBUILT: Unbuilt = Unbuilt {
-                context: Rc::new(RetainedContext {
-                    composition_surface: None,
+                context: RetainedContext {
                     bounds: Bounds::default(),
-                    content_mask: ClipMask::default(),
-                    text_style: TextStyle::default(),
-                    opacity: 1.,
-                    transformation: crate::TransformationMatrix::unit(),
-                }),
+                    inherited: Rc::new(InheritedContext {
+                        composition_surface: None,
+                        content_mask: ClipMask::default(),
+                        text_style: TextStyle::default(),
+                        opacity: 1.,
+                        transformation: crate::TransformationMatrix::unit(),
+                    }),
+                },
                 hovers: Rc::from([]),
                 keys: Rc::from([]),
             };
@@ -180,12 +182,28 @@ impl Unbuilt {
 /// place it was drawn in and what it inherited there.
 #[derive(Clone, PartialEq)]
 pub(crate) struct RetainedContext {
-    pub(crate) composition_surface: Option<crate::fast::composition::CompositionSurfaceId>,
     pub(crate) bounds: Bounds<Pixels>,
+    /// Shared by the subtrees drawn under the same ancestors, siblings
+    /// especially, which would otherwise each hold a copy of a text style.
+    pub(crate) inherited: Rc<InheritedContext>,
+}
+
+/// What a retained subtree inherited where it was drawn.
+#[derive(Clone, PartialEq)]
+pub(crate) struct InheritedContext {
+    pub(crate) composition_surface: Option<crate::fast::composition::CompositionSurfaceId>,
     pub(crate) content_mask: ClipMask<Pixels>,
     pub(crate) text_style: TextStyle,
     pub(crate) opacity: f32,
     pub(crate) transformation: crate::TransformationMatrix,
+}
+
+impl std::ops::Deref for RetainedContext {
+    type Target = InheritedContext;
+
+    fn deref(&self) -> &InheritedContext {
+        &self.inherited
+    }
 }
 
 /// What it takes to lay a view out as it was laid out last frame without
@@ -195,11 +213,12 @@ pub(crate) struct RetainedLayout {
     /// The node its content is laid out at.
     pub(crate) root: LayoutId,
     /// Every node its content claimed while its layout was requested.
-    pub(crate) keys: Vec<u64>,
+    pub(crate) keys: SmallVec<[u64; 2]>,
     /// The element states its content used while its layout was requested,
     /// kept for as long as it is not built.
-    pub(crate) element_states: Vec<(GlobalElementId, TypeId)>,
-    pub(crate) text_style: TextStyle,
+    pub(crate) element_states: SmallVec<[(GlobalElementId, TypeId); 1]>,
+    /// Shared with the layouts recorded before it under the same style.
+    pub(crate) text_style: Rc<TextStyle>,
     pub(crate) rem_size: Pixels,
     /// The layout key of the element the view hangs off, which keys the
     /// view's own node, when it was laid out in the request-layout walk.
@@ -316,6 +335,12 @@ pub(crate) struct RetainedState {
     /// Whether what is focused was read without naming a handle, which the
     /// subtree that read it cannot be found by.
     pub(crate) focus_read_unnamed: std::cell::Cell<bool>,
+    /// What the last subtree recorded inherited, for the next one to share
+    /// when it inherited the same.
+    pub(crate) last_inherited: Option<Rc<InheritedContext>>,
+    /// The text style the last retained layout was recorded under, for the
+    /// next one to share.
+    pub(crate) last_text_style: Option<Rc<TextStyle>>,
 }
 
 impl RetainedState {
@@ -337,6 +362,8 @@ impl RetainedState {
             installed_input_focus: None,
             focus_readers: RefCell::new(FxHashMap::default()),
             focus_read_unnamed: std::cell::Cell::new(false),
+            last_inherited: None,
+            last_text_style: None,
         }
     }
 
@@ -698,7 +725,7 @@ impl Window {
     ) -> Option<LayoutId> {
         let record = &self.rendered_frame.retained.records[previous];
         let layout = record.layout.as_ref()?;
-        if layout.rem_size != self.rem_size() || layout.text_style != self.text_style() {
+        if layout.rem_size != self.rem_size() || *layout.text_style != self.text_style() {
             return None;
         }
         if !self
@@ -770,12 +797,22 @@ impl Window {
         if self.layout_engine.as_ref().unwrap().transient_count() != recording.transient {
             return (None, dependencies);
         }
+        let text_style = match &self.retained_state.last_text_style {
+            Some(last) if **last == recording.text_style => last.clone(),
+            _ => {
+                let text_style = Rc::new(recording.text_style);
+                self.retained_state.last_text_style = Some(text_style.clone());
+                text_style
+            }
+        };
         let layout = RetainedLayout {
             root,
             keys,
             element_states: self.next_frame.accessed_element_states[recording.element_states..]
-                .to_vec(),
-            text_style: recording.text_style,
+                .iter()
+                .cloned()
+                .collect(),
+            text_style,
             rem_size: recording.rem_size,
             parent_layout_key: recording.parent_layout_key,
         };
@@ -1026,14 +1063,22 @@ impl Window {
                 render: layout_dependencies.render,
             };
         }
-        let context = RetainedContext {
+        let inherited = InheritedContext {
             composition_surface: crate::fast::composition::input_surface(self),
-            bounds,
             content_mask: self.clip_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
             transformation: self.transformation,
         };
+        let inherited = match &self.retained_state.last_inherited {
+            Some(last) if **last == inherited => last.clone(),
+            _ => {
+                let inherited = Rc::new(inherited);
+                self.retained_state.last_inherited = Some(inherited.clone());
+                inherited
+            }
+        };
+        let context = RetainedContext { bounds, inherited };
         let end = self.prepaint_index();
         let retained = &mut self.next_frame.retained;
         debug_assert_eq!(retained.open.last(), Some(&index));
@@ -1042,7 +1087,7 @@ impl Window {
         let record = &mut retained.records[index];
         record.prepaint_range.end = end;
         record.nested = nested;
-        record.context = Rc::new(context);
+        record.context = context;
         record.dependencies = dependencies.all;
         record.own_dependencies = dependencies.own;
         record.render_offset_reads = render_offset_reads;
@@ -1137,7 +1182,7 @@ impl Window {
         let opacity = self.element_opacity;
         let record = &mut self.next_frame.retained.records[index];
         if record.context.opacity.to_bits() != opacity.to_bits() {
-            Rc::make_mut(&mut record.context).opacity = opacity;
+            Rc::make_mut(&mut record.context.inherited).opacity = opacity;
         }
         record.hover_dependencies = hovers;
         record.own_hovers = own_hovers;
