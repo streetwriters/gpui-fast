@@ -46,6 +46,12 @@ impl Clone for TextStyleStack {
 }
 
 impl TextStyleStack {
+    /// Whether `other` holds the same refinements, and so resolves the same
+    /// text styles.
+    pub(crate) fn same_refinements(&self, other: &Self) -> bool {
+        self.refinements == other.refinements
+    }
+
     pub(crate) fn push(&mut self, refinement: TextStyleRefinement) {
         self.refinements.push(refinement);
         self.resolved.get_mut().push(None);

@@ -85,6 +85,10 @@ pub(crate) struct RetainedSubtrees {
     /// The records whose prepaint is under way, innermost last.
     pub(crate) open: Vec<usize>,
     pub(crate) reused_any: bool,
+    /// Where in last frame the paint of each record drawn from it started,
+    /// by record, for the records copied along with it. Only needed until
+    /// the frame is finished.
+    pub(crate) paint_sources: FxHashMap<usize, PaintIndex>,
 }
 
 pub(crate) struct RetainedSubtree {
@@ -140,9 +144,9 @@ pub(crate) enum PaintStatus {
     /// Not painted, so `paint_range` means nothing.
     Unpainted,
     /// Painted this frame into `paint_range`. When that was drawn from last
-    /// frame, `source` is where it started there, for the records copied
-    /// along with it to shift their own ranges by.
-    Painted { source: Option<PaintIndex> },
+    /// frame, [`RetainedSubtrees::paint_sources`] has where it started there,
+    /// for the records copied along with it to shift their own ranges by.
+    Painted,
     /// Copied along with the subtree at `anchor` and still holding last
     /// frame's `paint_range`, which is shifted once that one is painted.
     Pending { anchor: usize },
@@ -341,6 +345,9 @@ pub(crate) struct RetainedState {
     /// The text style the last retained layout was recorded under, for the
     /// next one to share.
     pub(crate) last_text_style: Option<Rc<TextStyle>>,
+    /// The text style stack the last rebuildable view was recorded under,
+    /// for the next one to share.
+    pub(crate) last_text_style_stack: Option<Rc<crate::fast::text_style::TextStyleStack>>,
 }
 
 impl RetainedState {
@@ -364,6 +371,7 @@ impl RetainedState {
             focus_read_unnamed: std::cell::Cell::new(false),
             last_inherited: None,
             last_text_style: None,
+            last_text_style_stack: None,
         }
     }
 
@@ -507,6 +515,7 @@ impl RetainedSubtrees {
         self.by_id.clear();
         self.open.clear();
         self.reused_any = false;
+        self.paint_sources.clear();
     }
 
     /// Whether any subtree was drawn from last frame.
@@ -518,7 +527,7 @@ impl RetainedSubtrees {
     /// The painted record `id` left, if any.
     pub(crate) fn find(&self, id: &GlobalElementId) -> Option<usize> {
         let index = *self.by_id.get(id)?;
-        matches!(self.records[index].paint, PaintStatus::Painted { .. }).then_some(index)
+        matches!(self.records[index].paint, PaintStatus::Painted).then_some(index)
     }
 
     pub(crate) fn id(&self, index: usize) -> &GlobalElementId {
@@ -600,10 +609,8 @@ impl RetainedSubtrees {
             let PaintStatus::Pending { anchor } = self.records[index].paint else {
                 continue;
             };
-            let shift = match &self.records[anchor].paint {
-                PaintStatus::Painted {
-                    source: Some(source),
-                } if anchor != index => Some((
+            let shift = match (&self.records[anchor].paint, self.paint_sources.get(&anchor)) {
+                (PaintStatus::Painted, Some(source)) if anchor != index => Some((
                     source.clone(),
                     self.records[anchor].paint_range.start.clone(),
                 )),
@@ -614,11 +621,12 @@ impl RetainedSubtrees {
                 Some((from, to)) => {
                     record.paint_range = record.paint_range.start.shifted(&from, &to)
                         ..record.paint_range.end.shifted(&from, &to);
-                    record.paint = PaintStatus::Painted { source: None };
+                    record.paint = PaintStatus::Painted;
                 }
                 None => record.paint = PaintStatus::Unpainted,
             }
         }
+        self.paint_sources.clear();
     }
 }
 
@@ -869,7 +877,7 @@ impl Window {
         for index in previous..=previous + nested {
             let record = &source.records[index];
             let paint = match record.paint {
-                PaintStatus::Painted { .. } => PaintStatus::Pending { anchor },
+                PaintStatus::Painted => PaintStatus::Pending { anchor },
                 _ => PaintStatus::Unpainted,
             };
             let prepaint_range = if index == previous {
@@ -932,11 +940,15 @@ impl Window {
         if copied_whole {
             crate::fast::layers::reuse::follow_paint(self, &source, &start);
         }
-        let record = &mut self.next_frame.retained.records[index];
+        let retained = &mut self.next_frame.retained;
+        if copied_whole {
+            retained.paint_sources.insert(index, source.start);
+        } else {
+            retained.paint_sources.remove(&index);
+        }
+        let record = &mut retained.records[index];
         record.paint_range = start..end;
-        record.paint = PaintStatus::Painted {
-            source: copied_whole.then_some(source.start),
-        };
+        record.paint = PaintStatus::Painted;
 
         // The hovers were checked against last frame's hitboxes; this
         // frame's could put something over the subtree. That is found out
@@ -1175,7 +1187,7 @@ impl Window {
         };
         let record = &mut self.next_frame.retained.records[index];
         record.paint_range = recording.start..end;
-        record.paint = PaintStatus::Painted { source: None };
+        record.paint = PaintStatus::Painted;
         // Prepaint can only predict the opacity paint applies (an ancestor's
         // hover style depends on this frame's hit test): keep what was painted,
         // so a reuse under another opacity is noticed by `reuse_retained_paint`.

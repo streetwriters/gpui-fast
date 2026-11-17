@@ -75,11 +75,12 @@ pub(crate) struct Rebuild {
     /// The layout key its element was requested under, which its own key,
     /// and the keys of its nodes, are derived from.
     parent_layout_key: u64,
-    text_style_stack: TextStyleStack,
+    /// Shared with the views recorded before it under the same text styles.
+    text_style_stack: Rc<TextStyleStack>,
     element_offset: Point<Pixels>,
     rem_size: Pixels,
     /// The style it is laid out at, when it is a cached view.
-    cached_style: Option<StyleRefinement>,
+    cached_style: Option<Box<StyleRefinement>>,
 }
 
 impl Rebuild {
@@ -99,7 +100,7 @@ impl Window {
     /// its own, from here, if it can: its element was requested under
     /// `parent_layout_key`, and nothing it inherits is out of reach.
     pub(crate) fn rebuild_here(
-        &self,
+        &mut self,
         handle: &RebuildHandle,
         cached_style: Option<&StyleRefinement>,
         parent_layout_key: Option<u64>,
@@ -107,13 +108,23 @@ impl Window {
         if !self.image_cache_stack.is_empty() {
             return None;
         }
+        let view = handle.0.clone()?;
+        let parent_layout_key = parent_layout_key?;
+        let text_style_stack = match &self.retained_state.last_text_style_stack {
+            Some(last) if last.same_refinements(&self.text_style_stack) => last.clone(),
+            _ => {
+                let stack = Rc::new(self.text_style_stack.clone());
+                self.retained_state.last_text_style_stack = Some(stack.clone());
+                stack
+            }
+        };
         Some(Rebuild {
-            view: handle.0.clone()?,
-            parent_layout_key: parent_layout_key?,
-            text_style_stack: self.text_style_stack.clone(),
+            view,
+            parent_layout_key,
+            text_style_stack,
             element_offset: self.element_offset(),
             rem_size: self.rem_size(),
-            cached_style: cached_style.cloned(),
+            cached_style: cached_style.cloned().map(Box::new),
         })
     }
 }
@@ -280,7 +291,7 @@ impl Window {
             }),
             text_style_stack: mem::replace(
                 &mut self.text_style_stack,
-                rebuild.text_style_stack.clone(),
+                (*rebuild.text_style_stack).clone(),
             ),
             content_mask_stack: mem::replace(&mut self.content_mask_stack, vec![content_mask]),
             element_offset_stack: mem::replace(
@@ -345,7 +356,7 @@ impl Window {
             if view_entity(&nested.id).is_some_and(|entity| self.dirty_views.contains(&entity)) {
                 if nested.rebuild.is_none()
                     || nested.layout.is_none()
-                    || !matches!(nested.paint, PaintStatus::Painted { .. })
+                    || !matches!(nested.paint, PaintStatus::Painted)
                 {
                     return None;
                 }
@@ -547,7 +558,7 @@ impl Window {
                     .rebuild
                     .as_ref()
                     .is_some_and(|rebuild| rebuild.is_cached())
-                    || !matches!(nested.paint, PaintStatus::Painted { .. })
+                    || !matches!(nested.paint, PaintStatus::Painted)
                 {
                     return None;
                 }
@@ -606,7 +617,7 @@ impl Window {
             key
         });
         let mut view = ViewElement::new(rebuild.view.clone()).rebuildable(rebuild.view.clone());
-        view.cached_style = rebuild.cached_style.clone();
+        view.cached_style = rebuild.cached_style.as_deref().cloned();
         // Nothing is read laying it out, but what it reads from here on is
         // checked from now.
         let recording = cx.begin_recording_dependencies();
@@ -660,7 +671,7 @@ impl Window {
         let dependency_recording = cx.begin_recording_dependencies();
         let inherited = self.enter_gap(&global_id, &rebuild, context.content_mask, context.opacity);
         let mut view = ViewElement::new(rebuild.view.clone()).rebuildable(rebuild.view.clone());
-        view.cached_style = rebuild.cached_style.clone();
+        view.cached_style = rebuild.cached_style.as_deref().cloned();
         // What its element's request for layout does, inside the view around
         // it.
         let (layout_id, layout, layout_key) =
@@ -1031,7 +1042,7 @@ impl Window {
                         removed < record.prepaint_range.end.accessed_element_states_index
                     });
             }
-            let painted = matches!(record.paint, PaintStatus::Painted { .. });
+            let painted = matches!(record.paint, PaintStatus::Painted);
             let mut copy = copy_record(record, prepaint_range, anchor);
             if !painted {
                 copy.paint = PaintStatus::Unpainted;
@@ -1107,7 +1118,7 @@ impl Window {
             if let PaintStatus::Pending { .. } = record.paint {
                 record.paint_range = record.paint_range.start.shifted(from, to)
                     ..record.paint_range.end.shifted(from, to);
-                record.paint = PaintStatus::Painted { source: None };
+                record.paint = PaintStatus::Painted;
                 copied_hovers.extend_from_slice(&record.hover_dependencies);
             }
         }
@@ -1120,9 +1131,10 @@ impl Window {
         hovers.extend_from_slice(&own_hovers);
         hovers.extend_from_slice(&copied_hovers);
         hovers.extend_from_slice(gap_hovers);
+        self.next_frame.retained.paint_sources.remove(index);
         let record = &mut self.next_frame.retained.records[*index];
         record.paint_range = start..end;
-        record.paint = PaintStatus::Painted { source: None };
+        record.paint = PaintStatus::Painted;
         record.hover_dependencies = hovers.into();
         self.retained_state.open_paints.pop();
         self.retained_state.subtree_stack.pop();
