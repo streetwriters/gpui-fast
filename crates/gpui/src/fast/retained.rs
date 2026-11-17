@@ -93,8 +93,8 @@ pub(crate) struct RetainedSubtrees {
 
 pub(crate) struct RetainedSubtree {
     pub(crate) id: GlobalElementId,
-    pub(crate) prepaint_range: Range<PrepaintStateIndex>,
-    pub(crate) paint_range: Range<PaintIndex>,
+    pub(crate) prepaint_at: Range<PackedPrepaintIndex>,
+    pub(crate) paint_at: Range<PackedPaintIndex>,
     pub(crate) paint: PaintStatus,
     /// How many of the records following this one are nested inside it.
     pub(crate) nested: usize,
@@ -132,6 +132,25 @@ pub(crate) struct RetainedSubtree {
 }
 
 impl RetainedSubtree {
+    /// Where in its frame the subtree's prepaint went.
+    pub(crate) fn prepaint_range(&self) -> Range<PrepaintStateIndex> {
+        self.prepaint_at.start.unpack()..self.prepaint_at.end.unpack()
+    }
+
+    pub(crate) fn set_prepaint_range(&mut self, range: Range<PrepaintStateIndex>) {
+        self.prepaint_at =
+            PackedPrepaintIndex::pack(&range.start)..PackedPrepaintIndex::pack(&range.end);
+    }
+
+    /// Where in its frame the subtree's paint went, once it is painted.
+    pub(crate) fn paint_range(&self) -> Range<PaintIndex> {
+        self.paint_at.start.unpack()..self.paint_at.end.unpack()
+    }
+
+    pub(crate) fn set_paint_range(&mut self, range: Range<PaintIndex>) {
+        self.paint_at = PackedPaintIndex::pack(&range.start)..PackedPaintIndex::pack(&range.end);
+    }
+
     /// Whether the subtree is a cached view ([`crate::Entity::cached`]).
     pub(crate) fn is_cached(&self) -> bool {
         self.rebuild
@@ -150,6 +169,146 @@ pub(crate) enum PaintStatus {
     /// Copied along with the subtree at `anchor` and still holding last
     /// frame's `paint_range`, which is shifted once that one is painted.
     Pending { anchor: usize },
+}
+
+/// A [`PrepaintStateIndex`] in a quarter of the room: a retained record
+/// keeps two, for every view of every frame.
+#[derive(Clone, Default)]
+pub(crate) struct PackedPrepaintIndex([u32; 9]);
+
+impl PackedPrepaintIndex {
+    pub(crate) fn range(range: Range<PrepaintStateIndex>) -> Range<Self> {
+        Self::pack(&range.start)..Self::pack(&range.end)
+    }
+
+    pub(crate) fn pack(index: &PrepaintStateIndex) -> Self {
+        let line = &index.line_layout_index;
+        Self(
+            [
+                index.hitboxes_index,
+                index.tooltips_index,
+                index.deferred_draws_index,
+                index.dispatch_tree_index,
+                index.accessed_element_states_index,
+                line.font_generation,
+                line.lines_index,
+                line.wrapped_lines_index,
+                index.fast_a11y_index,
+            ]
+            .map(narrow),
+        )
+    }
+
+    pub(crate) fn unpack(&self) -> PrepaintStateIndex {
+        let [
+            hitboxes,
+            tooltips,
+            deferred,
+            dispatch,
+            states,
+            font,
+            lines,
+            wrapped,
+            a11y,
+        ] = self.0.map(|value| value as usize);
+        PrepaintStateIndex {
+            hitboxes_index: hitboxes,
+            tooltips_index: tooltips,
+            deferred_draws_index: deferred,
+            dispatch_tree_index: dispatch,
+            accessed_element_states_index: states,
+            line_layout_index: crate::LineLayoutIndex {
+                font_generation: font,
+                lines_index: lines,
+                wrapped_lines_index: wrapped,
+            },
+            fast_a11y_index: a11y,
+        }
+    }
+}
+
+/// A [`PaintIndex`] packed the same way.
+#[derive(Clone, Default)]
+pub(crate) struct PackedPaintIndex {
+    values: [u32; 12],
+    #[cfg(any(test, feature = "test-support"))]
+    debug_bounds_index: u32,
+}
+
+impl PackedPaintIndex {
+    pub(crate) fn range(range: Range<PaintIndex>) -> Range<Self> {
+        Self::pack(&range.start)..Self::pack(&range.end)
+    }
+
+    pub(crate) fn pack(index: &PaintIndex) -> Self {
+        let line = &index.line_layout_index;
+        Self {
+            values: [
+                index.scene_index,
+                index.fast.window_control_hitboxes,
+                index.fast.a11y_actions,
+                index.fast.images,
+                index.mouse_listeners_index,
+                index.input_handlers_index,
+                index.cursor_styles_index,
+                index.accessed_element_states_index,
+                index.tab_handle_index,
+                line.font_generation,
+                line.lines_index,
+                line.wrapped_lines_index,
+            ]
+            .map(narrow),
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: narrow(index.debug_bounds_index),
+        }
+    }
+
+    pub(crate) fn unpack(&self) -> PaintIndex {
+        let [
+            scene,
+            controls,
+            actions,
+            images,
+            mouse,
+            input,
+            cursor,
+            states,
+            tab,
+            font,
+            lines,
+            wrapped,
+        ] = self.values.map(|value| value as usize);
+        PaintIndex {
+            scene_index: scene,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: self.debug_bounds_index as usize,
+            fast: FastPaintIndex {
+                window_control_hitboxes: controls,
+                a11y_actions: actions,
+                images,
+            },
+            mouse_listeners_index: mouse,
+            input_handlers_index: input,
+            cursor_styles_index: cursor,
+            accessed_element_states_index: states,
+            tab_handle_index: tab,
+            line_layout_index: crate::LineLayoutIndex {
+                font_generation: font,
+                lines_index: lines,
+                wrapped_lines_index: wrapped,
+            },
+        }
+    }
+}
+
+/// An index into one of a frame's lists, which hold far fewer than 2^32
+/// entries.
+fn narrow(value: usize) -> u32 {
+    debug_assert!(
+        value <= u32::MAX as usize,
+        "frame index {value} overflows u32"
+    );
+    value as u32
 }
 
 /// What a record holds until the subtree it stands for is built, shared by
@@ -682,15 +841,17 @@ impl RetainedSubtrees {
             let shift = match (&self.records[anchor].paint, self.paint_sources.get(&anchor)) {
                 (PaintStatus::Painted, Some(source)) if anchor != index => Some((
                     source.clone(),
-                    self.records[anchor].paint_range.start.clone(),
+                    self.records[anchor].paint_range().start.clone(),
                 )),
                 _ => None,
             };
             let record = &mut self.records[index];
             match shift {
                 Some((from, to)) => {
-                    record.paint_range = record.paint_range.start.shifted(&from, &to)
-                        ..record.paint_range.end.shifted(&from, &to);
+                    let range = record.paint_range();
+                    record.set_paint_range(
+                        range.start.shifted(&from, &to)..range.end.shifted(&from, &to),
+                    );
                     record.paint = PaintStatus::Painted;
                 }
                 None => record.paint = PaintStatus::Unpainted,
@@ -939,7 +1100,7 @@ impl Window {
     ) -> usize {
         let (prepaint_range, layout_keys) = {
             let record = &self.rendered_frame.retained.records[previous];
-            (record.prepaint_range.clone(), record.layout_keys.clone())
+            (record.prepaint_range().clone(), record.layout_keys.clone())
         };
         self.keep_retained_layout(&layout_keys);
         self.layout_engine
@@ -984,18 +1145,20 @@ impl Window {
                 start.clone()..end.clone()
             } else {
                 record
-                    .prepaint_range
+                    .prepaint_range()
                     .start
                     .shifted(&prepaint_range.start, &start)
                     ..record
-                        .prepaint_range
+                        .prepaint_range()
                         .end
                         .shifted(&prepaint_range.start, &start)
             };
             target.push(RetainedSubtree {
                 id: record.id.clone(),
-                prepaint_range,
-                paint_range: record.paint_range.clone(),
+                prepaint_at: crate::fast::retained::PackedPrepaintIndex::range(prepaint_range),
+                paint_at: crate::fast::retained::PackedPaintIndex::range(
+                    record.paint_range().clone(),
+                ),
                 paint,
                 nested: if index == previous {
                     nested
@@ -1027,7 +1190,7 @@ impl Window {
         let PaintStatus::Pending { .. } = record.paint else {
             return;
         };
-        let source = record.paint_range.clone();
+        let source = record.paint_range().clone();
         let hovers = record.hover_dependencies.clone();
         let id = record.id.clone();
         let opacity_changed = record.context.opacity.to_bits() != self.element_opacity.to_bits();
@@ -1047,7 +1210,7 @@ impl Window {
             retained.paint_sources.remove(&index);
         }
         let record = &mut retained.records[index];
-        record.paint_range = start..end;
+        record.set_paint_range(start..end);
         record.paint = PaintStatus::Painted;
 
         // The hovers were checked against last frame's hitboxes; this
@@ -1102,8 +1265,12 @@ impl Window {
         let index = (!retained.by_id.contains_key(id) && !inside_layer).then(|| {
             let index = retained.push(RetainedSubtree {
                 id: id.clone(),
-                prepaint_range: start.clone()..start,
-                paint_range: PaintIndex::default()..PaintIndex::default(),
+                prepaint_at: crate::fast::retained::PackedPrepaintIndex::range(
+                    start.clone()..start,
+                ),
+                paint_at: crate::fast::retained::PackedPaintIndex::range(
+                    PaintIndex::default()..PaintIndex::default(),
+                ),
                 paint: PaintStatus::Unpainted,
                 nested: 0,
                 context: Unbuilt::with(|unbuilt| unbuilt.context.clone()),
@@ -1197,7 +1364,8 @@ impl Window {
         retained.open.pop();
         let nested = retained.records.len() - index - 1;
         let record = &mut retained.records[index];
-        record.prepaint_range.end = end;
+        let start = record.prepaint_range().start;
+        record.set_prepaint_range(start..end);
         record.nested = nested;
         record.context = context;
         record.dependencies = dependencies.all;
@@ -1286,7 +1454,7 @@ impl Window {
             }
         };
         let record = &mut self.next_frame.retained.records[index];
-        record.paint_range = recording.start..end;
+        record.set_paint_range(recording.start..end);
         record.paint = PaintStatus::Painted;
         // Prepaint can only predict the opacity paint applies (an ancestor's
         // hover style depends on this frame's hit test): keep what was painted,

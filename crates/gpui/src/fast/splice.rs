@@ -155,10 +155,7 @@ pub(crate) struct Gap {
 
 impl Gap {
     fn element_id(&self) -> ElementId {
-        self.global_id
-            .last()
-            .cloned()
-            .expect("a view has an id")
+        self.global_id.last().cloned().expect("a view has an id")
     }
 }
 
@@ -387,18 +384,18 @@ impl Window {
         // Copying a deferred draw outside the rebuilt gaps could therefore
         // replay a dirty view. Rebuild the ancestor to reach those draws;
         // deferred draws inside a gap are safe because that gap rebuilds them.
-        let mut deferred_cursor = record.prepaint_range.start.deferred_draws_index;
+        let mut deferred_cursor = record.prepaint_range().start.deferred_draws_index;
         for &gap in &gaps {
-            let range = &records[gap].prepaint_range;
+            let range = &records[gap].prepaint_range();
             if deferred_cursor != range.start.deferred_draws_index {
                 return None;
             }
             deferred_cursor = range.end.deferred_draws_index;
         }
-        if deferred_cursor != record.prepaint_range.end.deferred_draws_index {
+        if deferred_cursor != record.prepaint_range().end.deferred_draws_index {
             return None;
         }
-        if composites_effect_group(&self.rendered_frame.scene, &record.paint_range) {
+        if composites_effect_group(&self.rendered_frame.scene, &record.paint_range()) {
             return None;
         }
 
@@ -572,19 +569,19 @@ impl Window {
         }
         // As in `splice_layout`: deferred draws outside the gaps could replay
         // a dirty view.
-        let mut deferred_cursor = record.prepaint_range.start.deferred_draws_index;
+        let mut deferred_cursor = record.prepaint_range().start.deferred_draws_index;
         for &gap in &gaps {
-            let range = &records[gap].prepaint_range;
+            let range = &records[gap].prepaint_range();
             if deferred_cursor != range.start.deferred_draws_index {
                 return None;
             }
             deferred_cursor = range.end.deferred_draws_index;
         }
-        if deferred_cursor != record.prepaint_range.end.deferred_draws_index {
+        if deferred_cursor != record.prepaint_range().end.deferred_draws_index {
             return None;
         }
         // As in `splice_layout`: a group begun inside the view would lose what it holds.
-        if composites_effect_group(&self.rendered_frame.scene, &record.paint_range) {
+        if composites_effect_group(&self.rendered_frame.scene, &record.paint_range()) {
             return None;
         }
 
@@ -791,7 +788,7 @@ impl Window {
         let writes_now = cx.entities.write_generation();
         let source = &self.rendered_frame.retained;
         let record = &source.records[previous];
-        let prepaint_range = record.prepaint_range.clone();
+        let prepaint_range = record.prepaint_range().clone();
         let last = previous + record.nested;
         let kept_layout_keys = kept_keys(
             &record.layout_keys,
@@ -825,7 +822,7 @@ impl Window {
         for segment in 0..gaps.len() {
             let gap = &gaps[segment];
             let gap_record = &self.rendered_frame.retained.records[gap.record];
-            let gap_range = gap_record.prepaint_range.clone();
+            let gap_range = gap_record.prepaint_range().clone();
             let gap_nested = gap_record.nested;
             let context = gap_record.context.clone();
             let rebuild = gap_record.rebuild.clone().unwrap();
@@ -934,7 +931,7 @@ impl Window {
             dependencies = dependencies.without_released_entities(cx);
         }
         let record = &mut target.records[index];
-        record.prepaint_range = start..end;
+        record.set_prepaint_range(start..end);
         record.nested = nested;
         record.layout_keys = layout_keys.into();
         record.dependencies = dependencies;
@@ -1030,17 +1027,17 @@ impl Window {
         copied.reserve(records.len());
         for index in records {
             let record = &source.records[index];
-            let mut prepaint_range = record.prepaint_range.start.shifted(from, to)
-                ..record.prepaint_range.end.shifted(from, to);
+            let mut prepaint_range = record.prepaint_range().start.shifted(from, to)
+                ..record.prepaint_range().end.shifted(from, to);
             if !removed_states.is_empty() {
                 // Each boundary loses only accesses removed before it.
                 prepaint_range.start.accessed_element_states_index -= removed_states
                     .partition_point(|&removed| {
-                        removed < record.prepaint_range.start.accessed_element_states_index
+                        removed < record.prepaint_range().start.accessed_element_states_index
                     });
                 prepaint_range.end.accessed_element_states_index -=
                     removed_states.partition_point(|&removed| {
-                        removed < record.prepaint_range.end.accessed_element_states_index
+                        removed < record.prepaint_range().end.accessed_element_states_index
                     });
             }
             let painted = matches!(record.paint, PaintStatus::Painted);
@@ -1067,7 +1064,7 @@ impl Window {
             copied,
         } = spliced;
         let record = &self.rendered_frame.retained.records[*previous];
-        let paint_range = record.paint_range.clone();
+        let paint_range = record.paint_range().clone();
         let own_hovers = record.own_hovers.clone();
 
         self.retained_state.subtree_stack.push(id.clone());
@@ -1081,7 +1078,7 @@ impl Window {
         let mut cursor = paint_range.start.clone();
         for gap in gaps.iter_mut() {
             let gap_record = &self.rendered_frame.retained.records[gap.record];
-            let gap_range = gap_record.paint_range.clone();
+            let gap_range = gap_record.paint_range().clone();
             let context = gap_record.context.clone();
             let rebuild = gap_record.rebuild.clone().unwrap();
             let gap_id = gap_record.id.clone();
@@ -1117,8 +1114,8 @@ impl Window {
             let (from, to) = &segments[segment];
             let record = &mut self.next_frame.retained.records[copy];
             if let PaintStatus::Pending { .. } = record.paint {
-                record.paint_range = record.paint_range.start.shifted(from, to)
-                    ..record.paint_range.end.shifted(from, to);
+                let range = record.paint_range();
+                record.set_paint_range(range.start.shifted(from, to)..range.end.shifted(from, to));
                 record.paint = PaintStatus::Painted;
                 copied_hovers.extend_from_slice(&record.hover_dependencies);
             }
@@ -1134,7 +1131,7 @@ impl Window {
         hovers.extend_from_slice(gap_hovers);
         self.next_frame.retained.paint_sources.remove(index);
         let record = &mut self.next_frame.retained.records[*index];
-        record.paint_range = start..end;
+        record.set_paint_range(start..end);
         record.paint = PaintStatus::Painted;
         record.hover_dependencies = hovers.into();
         self.retained_state.open_paints.pop();
@@ -1236,8 +1233,8 @@ fn copy_record(
 ) -> RetainedSubtree {
     RetainedSubtree {
         id: record.id.clone(),
-        prepaint_range,
-        paint_range: record.paint_range.clone(),
+        prepaint_at: crate::fast::retained::PackedPrepaintIndex::range(prepaint_range),
+        paint_at: crate::fast::retained::PackedPaintIndex::range(record.paint_range().clone()),
         paint: PaintStatus::Pending { anchor },
         nested: record.nested,
         context: record.context.clone(),
