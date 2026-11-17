@@ -3035,3 +3035,116 @@ fn a_cached_view_is_built_again_unless_only_cached_views_in_it_changed() {
     );
     nested.assert_full_redraw_draws(&drawn);
 }
+
+/// Paints its child into an effect group.
+struct Faded(crate::AnyElement);
+
+impl IntoElement for Faded {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl crate::Element for Faded {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<crate::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&crate::GlobalElementId>,
+        _: Option<&crate::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut crate::App,
+    ) -> (crate::LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&crate::GlobalElementId>,
+        _: Option<&crate::InspectorElementId>,
+        _: crate::Bounds<crate::Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut crate::App,
+    ) {
+        self.0.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&crate::GlobalElementId>,
+        _: Option<&crate::InspectorElementId>,
+        _: crate::Bounds<crate::Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut crate::App,
+    ) {
+        window.with_effect_group(0.5, |window| self.0.paint(window, cx));
+    }
+}
+
+/// A view that fades a nested view and paints around it.
+struct FadedParent {
+    child: Entity<Tinted>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for FadedParent {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        Faded(
+            div()
+                .flex()
+                .flex_col()
+                .child(div().w(px(50.)).h(px(20.)).bg(crate::white()))
+                .child(self.child.clone())
+                .child(div().w(px(50.)).h(px(20.)).bg(crate::black()))
+                .into_any_element(),
+        )
+    }
+}
+
+/// A view that paints an effect group around a nested view is built again
+/// when only the nested view changed: a splice would copy the group's content
+/// out of the group and paint the nested view outside it.
+#[test]
+fn a_view_painting_an_effect_group_around_a_changed_view_is_not_spliced() {
+    let mut cx = TestAppContext::single();
+    let builds = Rc::new(Cell::new(0));
+    let child = cx.new(|_| Tinted {
+        tint: 0,
+        model: None,
+        builds: Rc::new(Cell::new(0)),
+    });
+    let (window, _) = shell(&mut cx, {
+        let (child, builds) = (child.clone(), builds.clone());
+        move |cx| cx.new(|_| FadedParent { child, builds }).into()
+    });
+    draw_shell(&mut cx, window);
+    let before = builds.get();
+    cx.update(|cx| {
+        child.update(cx, |child, cx| {
+            child.tint = 1;
+            cx.notify();
+        });
+    });
+    let changed = draw_shell(&mut cx, window);
+    assert_eq!(builds.get(), before + 1, "the faded view is built again");
+    cx.update_window(window.into(), |_, window, _| {
+        window.set_view_retention(false)
+    })
+    .unwrap();
+    assert_eq!(changed, draw_shell(&mut cx, window));
+}

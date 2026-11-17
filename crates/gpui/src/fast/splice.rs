@@ -387,6 +387,9 @@ impl Window {
         if deferred_cursor != record.prepaint_range.end.deferred_draws_index {
             return None;
         }
+        if composites_effect_group(&self.rendered_frame.scene, &record.paint_range) {
+            return None;
+        }
 
         let mut kept = kept_keys(
             &layout.keys,
@@ -565,6 +568,10 @@ impl Window {
             deferred_cursor = range.end.deferred_draws_index;
         }
         if deferred_cursor != record.prepaint_range.end.deferred_draws_index {
+            return None;
+        }
+        // As in `splice_layout`: a group begun inside the view would lose what it holds.
+        if composites_effect_group(&self.rendered_frame.scene, &record.paint_range) {
             return None;
         }
 
@@ -1398,4 +1405,20 @@ pub(crate) fn kept_keys<'a>(
         .collect();
     scratch.clear();
     kept
+}
+
+/// Whether the paint last frame's `range` holds composites an effect group
+/// begun inside it. A splice copies that paint in stretches around its gaps
+/// and paints each gap where the view starts, so such a group would lose what
+/// it holds.
+fn composites_effect_group(scene: &crate::Scene, range: &Range<PaintIndex>) -> bool {
+    scene.paint_operations[range.start.scene_index..range.end.scene_index]
+        .iter()
+        .any(|operation| {
+            matches!(
+                operation,
+                crate::scene::PaintOperation::Primitive(crate::Primitive::PolychromeSprite(sprite))
+                    if crate::scene::decode_effect_group(sprite.tile.texture_id).is_some()
+            )
+        })
 }
