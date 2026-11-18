@@ -4104,6 +4104,27 @@ impl Window {
         self.presentation_hold.as_ref().is_some_and(|hold| hold())
     }
 
+    /// Whether a presentation hold is set and still holding.
+    pub fn is_presentation_held(&self) -> bool {
+        self.presentation_held()
+    }
+
+    /// Draws a dirty window now instead of on the next frame request, and
+    /// presents the frame unless presentation is held. For content that
+    /// arrives while presentation is held, so the frame that ends the hold is
+    /// not a frame interval late. Does nothing during a draw or when the
+    /// window is clean.
+    pub fn draw_now(&mut self, cx: &mut App) {
+        if draw_in_progress() || !self.invalidator.is_dirty() {
+            return;
+        }
+        let arena_clear_needed = self.draw(cx);
+        if !self.presentation_held() {
+            self.present();
+        }
+        arena_clear_needed.clear(cx);
+    }
+
     /// Presents the most recently drawn frame if it hasn't been presented yet.
     #[cfg(all(test, feature = "profiler"))]
     pub fn present_if_needed(&mut self) {
