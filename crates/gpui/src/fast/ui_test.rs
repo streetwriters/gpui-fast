@@ -45,6 +45,8 @@ struct Entry {
     /// Whether any of it is inside the window and every scroll container
     /// around it.
     shown: bool,
+    /// Where it is in the window, in logical pixels, when the tree says.
+    bounds: Option<Bounds<Pixels>>,
 }
 
 impl Entry {
@@ -130,6 +132,7 @@ impl Snapshot {
                 focusable: window.a11y.focus_ids.contains_key(&id),
                 disabled: node.is_disabled(),
                 shown: shown && parent.is_none_or(|parent: usize| entries[parent].shown),
+                bounds,
             });
             for child in node.children().iter().rev() {
                 stack.push((*child, depth + 1, Some(index), inner_clip));
@@ -164,26 +167,37 @@ impl Snapshot {
 
     /// The one entry `matches` picks, or a panic saying what there is.
     fn the_one(&self, what: &str, hint: &str, matches: impl Fn(&Entry) -> bool) -> Entry {
+        self.try_one(what, hint, matches)
+            .unwrap_or_else(|message| panic!("{message}"))
+    }
+
+    /// The one entry `matches` picks, or a message saying what there is.
+    fn try_one(
+        &self,
+        what: &str,
+        hint: &str,
+        matches: impl Fn(&Entry) -> bool,
+    ) -> Result<Entry, String> {
         let found: Vec<&Entry> = self.entries.iter().filter(|e| matches(e)).collect();
         match found.as_slice() {
-            [one] => (*one).clone(),
-            [] => panic!(
+            [one] => Ok((*one).clone()),
+            [] => Err(format!(
                 "no {what} in the window.\n{}\nThe window's accessibility tree:\n{}",
                 self.like(hint),
                 self.dump()
-            ),
+            )),
             many => {
                 let mut list = String::new();
                 for entry in many {
                     writeln!(list, "  {}   (in {})", entry.line(), self.ancestry(entry)).ok();
                 }
-                panic!(
+                Err(format!(
                     "{} matches for {what}, expected one:\n{list}\
                      Use a longer name, or the exact one.\n\
                      The window's accessibility tree:\n{}",
                     many.len(),
                     self.dump()
-                )
+                ))
             }
         }
     }
@@ -277,6 +291,11 @@ impl<'a> UiNode<'a> {
         self.entry.shown
     }
 
+    /// Where it is in the window, in logical pixels, when the tree says.
+    pub fn bounds(&self) -> Option<Bounds<Pixels>> {
+        self.entry.bounds
+    }
+
     /// Clicks it at its centre, scrolling it into view first if it is
     /// scrolled out of its container. Panics when it is disabled.
     pub fn click(self) {
@@ -368,7 +387,7 @@ impl<'a> UiNode<'a> {
 
 /// Runs what is pending, draws, and delivers frames while a frame callback
 /// waits, until the window is still.
-fn settle(cx: &mut VisualTestContext) {
+pub(crate) fn settle(cx: &mut VisualTestContext) {
     for _ in 0..16 {
         cx.run_until_parked();
         let waiting = cx.update(|window, _| {
@@ -572,5 +591,21 @@ impl VisualTestContext {
     /// finding out what a window offers to drive.
     pub fn a11y_tree_text(&mut self) -> String {
         self.a11y_snapshot().dump()
+    }
+
+    /// Where the one node with `role` named exactly `name` is, in logical
+    /// pixels, or a message saying why there is no one such node.
+    pub(crate) fn try_bounds_by_role(
+        &mut self,
+        role: Role,
+        name: &str,
+    ) -> Result<Bounds<Pixels>, String> {
+        let what = format!("{role:?} named {name:?}");
+        let entry = self.a11y_snapshot().try_one(&what, name, |e| {
+            e.role == role && e.name.as_deref() == Some(name)
+        })?;
+        entry
+            .bounds
+            .ok_or_else(|| format!("the {what} has no bounds in the accessibility tree"))
     }
 }

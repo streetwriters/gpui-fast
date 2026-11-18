@@ -120,6 +120,12 @@ pub fn current_headless_renderer() -> anyhow::Result<Option<Box<dyn gpui::Platfo
     }
 }
 
+#[cfg(all(feature = "test-support", not(target_family = "wasm")))]
+mod fast;
+
+#[cfg(all(feature = "test-support", not(target_family = "wasm")))]
+pub use crate::fast::test_rendering::test_rendering;
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;

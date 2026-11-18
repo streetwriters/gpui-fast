@@ -15,6 +15,7 @@ struct Args {
     max_retries: usize,
     max_iterations: usize,
     on_failure_fn_name: proc_macro2::TokenStream,
+    render: bool,
 }
 
 impl Parse for Args {
@@ -23,10 +24,17 @@ impl Parse for Args {
         let mut max_retries = 0;
         let mut max_iterations = 1;
         let mut on_failure_fn_name = quote!(None);
+        let mut render = false;
 
         let metas = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
 
         for meta in metas {
+            if let Meta::Path(path) = &meta
+                && path.is_ident("render")
+            {
+                render = true;
+                continue;
+            }
             let ident = {
                 let meta_path = match &meta {
                     Meta::NameValue(meta) => &meta.path,
@@ -88,6 +96,7 @@ impl Parse for Args {
             max_retries,
             max_iterations,
             on_failure_fn_name,
+            render,
         })
     }
 }
@@ -128,6 +137,10 @@ fn generate_test_function(
     let num_iterations = args.max_iterations;
     let on_failure_fn_name = &args.on_failure_fn_name;
     let seeds = quote!( #(#seeds),* );
+    let enable_rendering = |cx_varname: &Ident| {
+        args.render
+            .then(|| quote!(#cx_varname.enable_rendering(gpui_platform::test_rendering());))
+    };
 
     let mut outer_fn: ItemFn = if inner_fn.sig.asyncness.is_some() {
         // Pass to the test function the number of app contexts that it needs,
@@ -160,11 +173,13 @@ fn generate_test_function(
                         last_segment.map(|s| s.ident.to_string()).as_deref()
                     {
                         let cx_varname = format_ident!("cx_{}", ix);
+                        let enable = enable_rendering(&cx_varname);
                         cx_vars.extend(quote!(
                             let mut #cx_varname = gpui::TestAppContext::build(
                                 dispatcher.clone(),
                                 Some(stringify!(#outer_fn_name)),
                             );
+                            #enable
                             let _entity_refcounts = #cx_varname.app.borrow().ref_counts_drop_handle();
                         ));
                         cx_teardowns.extend(quote!(
@@ -231,11 +246,13 @@ fn generate_test_function(
                         Some("App") => {
                             let cx_varname = format_ident!("cx_{}", ix);
                             let cx_varname_lock = format_ident!("cx_{}_lock", ix);
+                            let enable = enable_rendering(&cx_varname);
                             cx_vars.extend(quote!(
                                 let mut #cx_varname = gpui::TestAppContext::build(
                                    dispatcher.clone(),
                                    Some(stringify!(#outer_fn_name))
                                 );
+                                #enable
                                 let mut #cx_varname_lock = #cx_varname.app.borrow_mut();
                                 let _entity_refcounts = #cx_varname_lock.ref_counts_drop_handle();
                             ));
@@ -251,11 +268,13 @@ fn generate_test_function(
                         }
                         Some("TestAppContext") => {
                             let cx_varname = format_ident!("cx_{}", ix);
+                            let enable = enable_rendering(&cx_varname);
                             cx_vars.extend(quote!(
                                 let mut #cx_varname = gpui::TestAppContext::build(
                                     dispatcher.clone(),
                                     Some(stringify!(#outer_fn_name))
                                 );
+                                #enable
                                 let _entity_refcounts = #cx_varname.app.borrow().ref_counts_drop_handle();
                             ));
                             cx_teardowns.extend(quote!(

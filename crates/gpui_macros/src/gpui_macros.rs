@@ -206,6 +206,9 @@ pub fn box_shadow_style_methods(input: TokenStream) -> TokenStream {
 /// - `#[gpui::test(retries = 3)]` runs up to four times if it fails to try and make it pass.
 /// - `#[gpui::test(on_failure = "crate::test::report_failure")]` will call the specified function after the
 ///   tests fail so that you can write out more detail about the failure.
+/// - `#[gpui::test(render)]` lets the test's windows render to images (`cx.screenshot("name")`), with a
+///   real text system and the platform's offscreen renderer. It needs `gpui_platform` with its
+///   `test-support` feature as a dev-dependency. See `docs/ui-testing.md`.
 ///
 /// You can combine `iterations = ...` with `seeds(...)`:
 /// - `#[gpui::test(iterations = 5, seed = 10)]` is equivalent to `#[gpui::test(seeds(0, 1, 2, 3, 4, 10))]`.

@@ -257,6 +257,8 @@ impl SvgRenderer {
         } else if let Some(bytes) = self.asset_source.load(&params.path)? {
             render_pixmap(&bytes)
         } else {
+            #[cfg(any(test, feature = "test-support"))]
+            crate::fast::test_rendering::note_missing_svg(&params.path);
             Ok(None)
         }
     }

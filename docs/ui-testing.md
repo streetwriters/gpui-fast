@@ -117,6 +117,55 @@ Window
 
 Print it to find out what a window offers to drive.
 
+## Screenshots
+
+A headless test can render its window to a PNG, for a person or an agent to
+look at. No window opens and no screen-recording permission is needed: the
+frame is drawn by the platform's offscreen renderer (Metal on macOS, wgpu on
+Linux). There is no pixel-diff API; assert on pixels yourself if you must.
+
+```rust
+#[gpui::test(render)]
+fn the_inbox_looks_right(cx: &mut TestAppContext) {
+    cx.set_asset_source(Assets); // only if the view paints SVG icons
+    let (_view, cx) = cx.add_window_view(|_, _| Inbox::new());
+    let path = cx.screenshot("inbox").unwrap();          // the whole window
+    cx.screenshot_element("save", Role::Button, "Save").unwrap(); // one element
+    println!("{}", path.display());
+}
+```
+
+- Opt in with `#[gpui::test(render)]`, or `cx.enable_rendering(gpui_platform::test_rendering())`
+  before the first window opens. A test that does not opt in is unchanged and
+  pays nothing; its `screenshot` fails saying rendering is not enabled.
+- The crate needs `gpui_platform` as a dev-dependency with the `test-support`
+  feature. On macOS without the Metal toolchain (`xcrun metal`) also turn on
+  `runtime_shaders`.
+- `screenshot(name)` writes `<folder>/<test function>/<name>.png` and returns
+  the path. The folder is `$GPUI_SCREENSHOT_DIR`, else `gpui-screenshots` in
+  the cargo target directory. Names are made safe as file names (anything but
+  letters, digits, `-`, `_`, `.`, space becomes `_`).
+- `screenshot_element(name, role, label)` crops to the bounds of the one element
+  found by role and name in the accessibility tree. It fails naming the role
+  and label when none or several match.
+- `screenshot_image()` and `screenshot_element_image(role, label)` return the
+  `RgbaImage` without writing it, for pixel assertions. The image is the
+  window size times its scale factor (2.0 by default;
+  `simulate_scale_factor_change` changes it).
+- Text is real: rendering swaps the test's no-op text system for the
+  platform's, shared by every test in the process.
+- SVG icons need an asset source: `cx.set_asset_source(..)` gives
+  `svg().path(..)` and `img(..)` somewhere to load from. A frame that paints an
+  SVG with no asset fails the screenshot, naming the path, instead of leaving
+  a blank space. (A malformed SVG or a missing `img` file is not detected.)
+- Without an offscreen renderer (Windows today) `screenshot` fails saying so.
+
+Cost, on macOS Metal in a debug build: about 5 ms to set up the renderer for a
+window, about 5 ms to render a frame and about 40 ms more to encode and write
+the PNG. Every window gets its own renderer, so tests run in parallel
+(tested with four at once) and one test can open many windows (tested with 12)
+without sharing a GPU device.
+
 ## What it can't see yet
 
 - Text an element paints itself (`ShapedLine::paint` in a custom element,
