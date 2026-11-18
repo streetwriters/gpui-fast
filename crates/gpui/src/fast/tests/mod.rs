@@ -31,4 +31,5 @@ mod text_shaping;
 mod tracked_entities;
 mod transform;
 mod truncation;
+mod ui_test;
 mod wheel_notifies;

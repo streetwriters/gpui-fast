@@ -281,7 +281,7 @@ pub(crate) fn prepaint_text(
         inner.bounds = Some(bounds);
     }
     if window.a11y.is_active() {
-        window.a11y.nodes.add_text(text);
+        crate::fast::a11y::add_text(window, text, bounds);
     }
 }
 

@@ -653,12 +653,14 @@ fn clickable_elements_are_buttons_named_by_their_text(cx: &mut TestAppContext) {
                 (Role::Button, some("Explicit")),
                 (Role::Link, some("Docs")),
                 (Role::Group, None),
+                (Role::Label, some("not a name")),
                 (Role::Button, some("Outer")),
                 (Role::Button, some("Inner")),
                 (Role::Button, some("Card")),
                 (Role::Button, some("Copy")),
                 (Role::Button, Some(long)),
                 (Role::Tooltip, some("Help text")),
+                (Role::Label, some("no node")),
             ]
         );
         let tree = crate::fast::a11y::last_tree(window).unwrap();
@@ -846,7 +848,8 @@ fn hovering_by_accessibility_shows_the_tooltip(cx: &mut TestAppContext) {
         window.set_a11y_active_for_tests(true)
     })
     .unwrap();
-    assert_eq!(names(cx), vec![(Role::Group, None)]);
+    let save = (Role::Label, Some("Save".to_string()));
+    assert_eq!(names(cx), vec![(Role::Group, None), save.clone()]);
     act(cx, accesskit::Action::ShowTooltip);
     assert!(hovered.get());
     cx.executor()
@@ -856,6 +859,7 @@ fn hovering_by_accessibility_shows_the_tooltip(cx: &mut TestAppContext) {
         names(cx),
         vec![
             (Role::Group, None),
+            save.clone(),
             (Role::Tooltip, Some("Saves the file".to_string()))
         ]
     );
@@ -864,7 +868,7 @@ fn hovering_by_accessibility_shows_the_tooltip(cx: &mut TestAppContext) {
         .advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
     assert!(!hovered.get());
-    assert_eq!(names(cx), vec![(Role::Group, None)]);
+    assert_eq!(names(cx), vec![(Role::Group, None), save]);
 }
 
 struct Scrolled {

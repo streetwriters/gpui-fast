@@ -52,6 +52,8 @@ pub(crate) mod text_style;
 pub(crate) mod tracked_entities;
 pub(crate) mod transform;
 pub(crate) mod truncation;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod ui_test;
 
 #[cfg(test)]
 mod tests;

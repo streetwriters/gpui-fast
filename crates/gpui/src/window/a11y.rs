@@ -435,7 +435,7 @@ fn contents_name(text: &str) -> Option<String> {
 }
 
 pub(crate) struct A11yNodeBuilder {
-    ids_stack: SmallVec<[NodeId; 16]>,
+    pub(crate) ids_stack: SmallVec<[NodeId; 16]>,
     pub(crate) nodes_stack: SmallVec<[accesskit::Node; 16]>,
     /// For each open node, what text painted inside it does to its name.
     names_stack: SmallVec<[Naming; 16]>,
@@ -479,7 +479,7 @@ impl A11yNodeBuilder {
     }
 
     #[must_use]
-    fn can_push(&mut self, id: NodeId) -> bool {
+    pub(crate) fn can_push(&mut self, id: NodeId) -> bool {
         debug_assert!(!self.ids_stack.is_empty(), "node pushed before push_root");
 
         if !self.seen_ids.insert(id) {
@@ -545,9 +545,8 @@ impl A11yNodeBuilder {
     }
 
     /// Text painted with no node of its own: it names the innermost open node
-    /// that takes its name from its contents.
-    pub(crate) fn add_text(&mut self, text: &str) {
-        crate::fast::a11y::A11yLog::text(&mut self.fast, text);
+    /// that takes its name from its contents. Returns whether it named one.
+    pub(crate) fn add_text(&mut self, text: &str) -> bool {
         for naming in self.names_stack.iter_mut().rev() {
             match naming {
                 Naming::Collect(name) => {
@@ -555,12 +554,13 @@ impl A11yNodeBuilder {
                         name.push(' ');
                     }
                     name.push_str(text);
-                    return;
+                    return true;
                 }
-                Naming::Stop => return,
+                Naming::Stop => return true,
                 Naming::Pass => {}
             }
         }
+        false
     }
 
     /// Add a leaf node as a child of the current top-of-stack node, without

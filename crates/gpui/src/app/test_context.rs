@@ -870,7 +870,7 @@ pub struct VisualTestContext {
     #[deref_mut]
     /// cx is the original TestAppContext (you can more easily access this using Deref)
     pub cx: TestAppContext,
-    window: AnyWindowHandle,
+    pub(crate) window: AnyWindowHandle,
 }
 
 impl VisualTestContext {

@@ -94,8 +94,9 @@ pub(crate) enum Op {
     /// its [`Op::Pop`]. Whether it took its name from the text painted
     /// inside it, which a stretch drawn again names it by again.
     Push(NodeId, bool, accesskit::Role),
-    /// Text painted with no node of its own, naming the node open around it.
-    Text(SharedString),
+    /// Text painted with no node of its own, at these bounds: it names the
+    /// node open around it, or is a label of its own (see [`add_text`]).
+    Text(SharedString, Bounds<Pixels>),
     /// A leaf added under the node open, finished at this index of the
     /// frame's nodes.
     Leaf(usize),
@@ -154,9 +155,10 @@ impl A11yLog {
     }
 
     #[inline]
-    pub(crate) fn text(log: &mut Self, text: &str) {
+    pub(crate) fn text(log: &mut Self, text: &str, bounds: Bounds<Pixels>) {
         if log.recording {
-            log.ops.push(Op::Text(SharedString::from(text.to_owned())));
+            log.ops
+                .push(Op::Text(SharedString::from(text.to_owned()), bounds));
         }
     }
 
@@ -218,6 +220,61 @@ impl A11yLog {
         log.previous_recorded = log.recording && !mem::take(&mut log.diverged);
         log.recording = false;
     }
+}
+
+/// Text painted with no node of its own, at `bounds`. It names the innermost
+/// open node that takes its name from its contents (a button, a tab, a
+/// tooltip) or that has a label of its own; anywhere else it is a
+/// [`accesskit::Role::Label`] leaf named by the text, under the open node,
+/// as static text is on the web: so assistive technology can read it, and a
+/// GUI driver or test find it and press or hover where it is.
+///
+/// The leaf's id is the open node's and the leaf's place among its
+/// children, so the same text drawn again, from scratch or from the last
+/// frame, is the same node. It is not logged as a leaf: the [`Op::Text`]
+/// logged here adds it again when its stretch is drawn again.
+pub(crate) fn add_text(window: &mut Window, text: &str, bounds: Bounds<Pixels>) {
+    let scale = window.scale_factor();
+    let nodes = &mut window.a11y.nodes;
+    A11yLog::text(&mut nodes.fast, text, bounds);
+    if nodes.add_text(text) {
+        return;
+    }
+    let name = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return;
+    }
+    let (Some(parent_id), Some(parent)) = (nodes.ids_stack.last(), nodes.nodes_stack.last())
+    else {
+        return;
+    };
+    let id = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::default();
+        "gpui-fast text".hash(&mut hasher);
+        parent_id.0.hash(&mut hasher);
+        parent.children().len().hash(&mut hasher);
+        NodeId(hasher.finish())
+    };
+    if !nodes.can_push(id) {
+        return;
+    }
+    let mut node = accesskit::Node::new(accesskit::Role::Label);
+    node.set_label(name);
+    node.set_bounds(accesskit::Rect {
+        x0: (bounds.origin.x.0 * scale) as f64,
+        y0: (bounds.origin.y.0 * scale) as f64,
+        x1: (bounds.right().0 * scale) as f64,
+        y1: (bounds.bottom().0 * scale) as f64,
+    });
+    if nodes.in_scroll_view() {
+        node.add_action(accesskit::Action::ScrollIntoView);
+    }
+    if let Some(parent) = nodes.nodes_stack.last_mut() {
+        parent.push_child(id);
+    }
+    nodes.all_nodes.push((id, node));
+    window.a11y.node_bounds.insert(id, bounds);
 }
 
 /// Starts logging a frame in which accessibility is active, keeping what
@@ -415,7 +472,9 @@ fn replay(window: &mut Window, source: &Source, delta: Point<Pixels>) {
                 }
             }
             Op::ActiveDescendant(node) => window.a11y.set_active_descendant(node),
-            Op::Text(ref text) => window.a11y.nodes.add_text(text),
+            Op::Text(ref text, bounds) => {
+                add_text(window, text, Bounds::new(bounds.origin + delta, bounds.size))
+            }
         }
     }
     let log = &mut window.a11y.nodes.fast;
@@ -597,7 +656,7 @@ pub(crate) fn set_active_flag(a11y: &A11y, active: bool) {
 }
 
 /// The accessibility tree last sent to the platform, for tests to compare.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn last_tree(window: &Window) -> Option<&accesskit::TreeUpdate> {
     window.a11y.debug.last_tree_update.as_ref()
 }

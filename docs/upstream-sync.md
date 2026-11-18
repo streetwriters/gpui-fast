@@ -243,6 +243,16 @@ No application-specific timeline policy belongs here.
   are unchanged; CPU updates refuse GPU-written metadata. A native Metal
   producer interface is outside this extension.
 
+- Testing by what a user sees, under `test-support` only: `VisualTestContext`
+  gains `get_by_role`, `get_by_role_containing`, `get_by_label`,
+  `get_by_label_containing`, `query_by_role`, `query_by_label`,
+  `get_text_field`, `type_into`, `is_shown`, `assert_shown`,
+  `assert_not_shown` and `a11y_tree_text`, and `gpui` exports the `UiNode`
+  handle they return. Upstream has no way to drive a test window except by
+  pixel positions and debug selectors; this reads the accessibility tree
+  instead. It lives in `fast::ui_test` and is described in
+  `docs/ui-testing.md`. Builds without `test-support` see no difference.
+
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
 differs.
