@@ -165,6 +165,10 @@ pub(crate) mod ambient {
     /// The modifier keys and caps lock: [`crate::Window::modifiers`] and
     /// [`crate::Window::capslock`].
     pub(crate) struct Keys;
+    /// Whether the last input was from the keyboard or a touch screen:
+    /// [`crate::Window::last_input_was_keyboard`] and
+    /// [`crate::Window::last_input_was_touch`].
+    pub(crate) struct Modality;
 }
 
 /// A window's handle on the app's dependency recording, so that reading the
@@ -202,6 +206,16 @@ pub(crate) fn read_pointer(window: &crate::Window) {
 #[inline(always)]
 pub(crate) fn read_keys(window: &crate::Window) {
     window.retained_state.ambient_reads.note::<ambient::Keys>();
+}
+
+/// Notes, for any recording that is open, that `window`'s input modality was
+/// read.
+#[inline(always)]
+pub(crate) fn read_modality(window: &crate::Window) {
+    window
+        .retained_state
+        .ambient_reads
+        .note::<ambient::Modality>();
 }
 
 /// The pointer and modifier keys before a window handled an input event, to

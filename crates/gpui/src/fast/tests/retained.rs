@@ -3218,6 +3218,70 @@ fn a_change_of_focus_builds_only_the_views_that_read_it() {
     );
 }
 
+/// A view that reads nothing from the window.
+struct Plain {
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Plain {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        div().w(px(50.)).h(px(20.))
+    }
+}
+
+/// A view that draws differently after a key press.
+struct ModalityReader {
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for ModalityReader {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let color = if window.last_input_was_keyboard() {
+            crate::white()
+        } else {
+            crate::black()
+        };
+        div().w(px(50.)).h(px(20.)).bg(color)
+    }
+}
+
+/// Switching between mouse and keyboard builds the views that read the input
+/// modality and the views around them, and not the views beside them.
+#[test]
+fn a_change_of_input_modality_builds_only_the_views_that_read_it() {
+    let mut cx = TestAppContext::single();
+    let (reader_builds, other_builds) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let reader = cx.new(|_| ModalityReader {
+        builds: reader_builds.clone(),
+    });
+    let other = cx.new(|_| Plain {
+        builds: other_builds.clone(),
+    });
+    let pair = cx.new(|_| Pair {
+        left: reader.clone().into(),
+        right: other.into(),
+    });
+    let (window, _) = shell(&mut cx, move |_| pair.into());
+    draw_shell(&mut cx, window);
+    draw_shell(&mut cx, window);
+    let unkeyed = describe_shell(&mut cx, window);
+    let before = (reader_builds.get(), other_builds.get());
+    cx.update_window(window.into(), |_, window, cx| {
+        window.dispatch_keystroke(crate::Keystroke::parse("a").unwrap(), cx);
+    })
+    .unwrap();
+    let keyed = draw_shell(&mut cx, window);
+    draw_shell(&mut cx, window);
+    assert_ne!(unkeyed, keyed, "the reader draws differently after a key");
+    assert_eq!(
+        (reader_builds.get(), other_builds.get()),
+        (before.0 + 1, before.1),
+        "only the view that read the modality is built again"
+    );
+}
+
 /// A view that read which element is focused is built again when focus moves.
 #[test]
 fn a_change_of_focus_builds_the_view_that_read_it() {

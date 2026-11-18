@@ -3857,11 +3857,13 @@ impl Window {
     /// Returns true if the last input event was keyboard-based (key press, tab navigation, etc.)
     /// This is used for focus-visible styling to show focus indicators only for keyboard navigation.
     pub fn last_input_was_keyboard(&self) -> bool {
+        crate::fast::dependencies::read_modality(self);
         self.last_input_modality == InputModality::Keyboard
     }
 
     /// Returns whether the last input event came from a touch screen.
     pub fn last_input_was_touch(&self) -> bool {
+        crate::fast::dependencies::read_modality(self);
         self.last_input_modality == InputModality::Touch
     }
 
@@ -6416,7 +6418,12 @@ impl Window {
             _ => self.last_input_modality,
         };
         if self.last_input_modality != old_modality {
-            self.refresh();
+            if self.retained_state.view_retention && !self.a11y.is_active() {
+                cx.ambient_changed::<crate::fast::dependencies::ambient::Modality>();
+                self.invalidator.set_dirty(true);
+            } else {
+                self.refresh();
+            }
         }
 
         let ambient = crate::fast::dependencies::AmbientInput::of(self);
