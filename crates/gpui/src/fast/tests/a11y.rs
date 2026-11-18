@@ -982,3 +982,65 @@ fn scrolling_by_accessibility_reveals_the_node(cx: &mut TestAppContext) {
     }
     assert_eq!(clicked.get(), Some(0));
 }
+
+struct ScrolledLeaf {
+    leaf: Entity<Leaf>,
+}
+
+impl Render for ScrolledLeaf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size(px(100.))
+            .id("scroll")
+            .role(Role::ScrollView)
+            .overflow_y_scroll()
+            .child(self.leaf.clone())
+    }
+}
+
+struct Leaf;
+
+impl Render for Leaf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().id("leaf").role(Role::TextInput).h(px(20.))
+    }
+}
+
+/// A view built again on its own inside a scroll container drawn from the last
+/// frame is still known to be inside it.
+#[crate::test]
+fn a_view_rebuilt_inside_a_reused_scroll_container_can_be_scrolled_into_view(
+    cx: &mut TestAppContext,
+) {
+    let leaf = cx.new(|_| Leaf);
+    let window = cx.add_window({
+        let leaf = leaf.clone();
+        |_, _| ScrolledLeaf { leaf }
+    });
+    let leaf_can_scroll_into_view = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let tree = crate::fast::a11y::last_tree(window).unwrap();
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::TextInput)
+                .map(|(_, node)| node.supports_action(accesskit::Action::ScrollIntoView))
+                .unwrap()
+        })
+        .unwrap()
+    };
+    cx.update_window(window.into(), |_, window, _| {
+        window.set_a11y_active_for_tests(true)
+    })
+    .unwrap();
+    assert!(leaf_can_scroll_into_view(cx));
+    assert!(leaf_can_scroll_into_view(cx));
+    leaf.update(cx, |_, cx| cx.notify());
+    assert!(leaf_can_scroll_into_view(cx));
+    let reused = cx
+        .update_window(window.into(), |_, window, _| {
+            window.rendered_frame.retained.reused_any()
+        })
+        .unwrap();
+    assert!(reused, "the scroll container was drawn from the last frame");
+}
