@@ -1366,6 +1366,9 @@ pub struct Window {
         SingleSubscriberSet<Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
     pub(crate) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
+    /// While it answers true, frames are drawn but not presented: the window
+    /// keeps showing the last frame it presented.
+    presentation_hold: Option<Rc<dyn Fn() -> bool>>,
     /// Tracks recent input event timestamps to determine if input is arriving at a high rate.
     /// Used to selectively enable VRR optimization only when input rate exceeds 60fps.
     pub(crate) input_rate_tracker: Rc<RefCell<InputRateTracker>>,
@@ -2148,19 +2151,24 @@ impl Window {
                                 window.refresh();
                             }
                             let arena_clear_needed = window.draw(cx);
-                            window.present();
+                            if !window.presentation_held() {
+                                window.present();
+                            }
                             arena_clear_needed.clear(cx);
                         }));
                     })
                 } else if needs_present {
-                    ignore_if_window_removed(
-                        handle.update(&mut cx, |_, window, _| window.present()),
-                    );
+                    ignore_if_window_removed(handle.update(&mut cx, |_, window, _| {
+                        if !window.presentation_held() {
+                            window.present();
+                        }
+                    }));
                 }
 
                 ignore_if_window_removed(handle.update(&mut cx, |_, window, _| {
                     if window.invalidator.is_dirty()
                         || !window.next_frame_callbacks.borrow().is_empty()
+                        || window.presentation_held()
                     {
                         window.platform_window.schedule_frame();
                     }
@@ -2453,6 +2461,7 @@ impl Window {
             visibility_observers: SingleSubscriberSet::new(),
             hovered,
             needs_present,
+            presentation_hold: None,
             input_rate_tracker,
             #[cfg(feature = "profiler")]
             window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
@@ -4080,6 +4089,19 @@ impl Window {
         );
         self.needs_present.set(false);
         profiling::finish_frame!();
+    }
+
+    /// Holds back presenting while `hold` answers true: frames are still drawn,
+    /// and the window keeps showing the last frame it presented, for content
+    /// whose layout takes a few frames to settle. The window asks again every
+    /// frame, so `hold` should stop answering true by itself, such as after a
+    /// deadline. `None` removes the hold.
+    pub fn set_presentation_hold(&mut self, hold: Option<Rc<dyn Fn() -> bool>>) {
+        self.presentation_hold = hold;
+    }
+
+    fn presentation_held(&self) -> bool {
+        self.presentation_hold.as_ref().is_some_and(|hold| hold())
     }
 
     /// Presents the most recently drawn frame if it hasn't been presented yet.
