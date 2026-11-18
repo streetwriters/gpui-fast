@@ -1181,14 +1181,14 @@ fn copy_splice_state_accesses(
                     states,
                     &mut target.accessed_element_states,
                     range.start,
-                    |id| id.starts_with(prefix),
+                    |id| id.has_prefix(prefix),
                 )
             }
             _ => copy_state_accesses(
                 states,
                 &mut target.accessed_element_states,
                 range.start,
-                |id| gaps.iter().any(|gap| id.starts_with(&gap.global_id)),
+                |id| gaps.iter().any(|gap| id.has_prefix(&gap.global_id)),
             ),
         }
     }

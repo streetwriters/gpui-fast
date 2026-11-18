@@ -101,7 +101,7 @@ impl AnimationRequest {
     /// Whether it was asked for from inside the content of the scroll
     /// container `id`: by an element in it, or by a view drawn in it.
     fn inside(&self, id: &GlobalElementId) -> bool {
-        self.painting.as_ref() == Some(id) || self.path.starts_with(id)
+        self.painting.as_ref() == Some(id) || self.path.has_prefix(id)
     }
 }
 
@@ -976,7 +976,7 @@ fn view_notified(window: &Window, view: EntityId) -> bool {
 fn nested_container_scrolled(window: &Window, id: &GlobalElementId) -> bool {
     let prefix = crate::fast::layers::lists::content_prefix(id);
     let nested = |other: &GlobalElementId| {
-        other != id && other.len() > prefix.len() && other.starts_with(prefix)
+        other != id && other.len() > prefix.len() && other.has_prefix(prefix)
     };
     let scrolls = &window.fast_layers.scrolls;
     scrolls.scrolled.iter().any(nested)
@@ -1123,7 +1123,7 @@ fn any_content_view(window: &Window, id: &GlobalElementId, f: impl Fn(EntityId) 
     let nested = &records[index + 1..(index + 1 + records[index].nested).min(records.len())];
     nested.iter().any(|record| {
         record.id.len() > id.len()
-            && record.id.starts_with(id)
+            && record.id.has_prefix(id)
             && crate::fast::splice::view_entity(&record.id).is_some_and(&f)
     })
 }

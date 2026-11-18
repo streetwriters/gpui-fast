@@ -479,7 +479,7 @@ pub(crate) fn finish_frame(layers: &mut WindowLayers) {
             // An element without an id of its own has the id of the
             // nearest one around it with one: the container's, when it is
             // directly inside it.
-            let found = anchored.iter().any(|element| element.starts_with(id));
+            let found = anchored.iter().any(|element| element.has_prefix(id));
             match policy.last_decision {
                 Some(Decision::Repaint) => policy.content_anchored = found,
                 // A list's layer adds the rows a scroll uncovers.

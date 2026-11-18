@@ -44,6 +44,26 @@ pub(crate) struct PathNode {
     id: ElementId,
     parent: GlobalElementId,
     len: usize,
+    /// The ids of the path as a slice, made the first time something asks.
+    #[cfg(any(test, feature = "test-support"))]
+    flat: std::sync::OnceLock<Box<[ElementId]>>,
+}
+
+/// With test support an id reads as the slice of its element ids, root first,
+/// as it did before ids were interned: GPUI Kit's test support slices and
+/// copies them. Without it nothing builds the slice.
+#[cfg(any(test, feature = "test-support"))]
+impl std::ops::Deref for GlobalElementId {
+    type Target = [ElementId];
+
+    fn deref(&self) -> &[ElementId] {
+        match &self.path.0 {
+            None => &[],
+            Some(node) => node
+                .flat
+                .get_or_init(|| self.ids().into_iter().cloned().collect()),
+        }
+    }
 }
 
 impl Path {
@@ -64,7 +84,13 @@ impl Path {
     fn child(parent: GlobalElementId, id: ElementId, hash: u64) -> GlobalElementId {
         let len = parent.len() + 1;
         GlobalElementId {
-            path: Path(Some(Arc::new(PathNode { id, parent, len }))),
+            path: Path(Some(Arc::new(PathNode {
+                id,
+                parent,
+                len,
+                #[cfg(any(test, feature = "test-support"))]
+                flat: Default::default(),
+            }))),
             hash,
         }
     }
@@ -115,12 +141,28 @@ impl Path {
 
 impl GlobalElementId {
     /// How many element ids the path has.
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn len(&self) -> usize {
         self.path.0.as_ref().map_or(0, |node| node.len)
     }
 
+    /// How many element ids the path has. Public with test support, like the
+    /// slice the id dereferences to there, whose method this one stands for.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn len(&self) -> usize {
+        self.path.0.as_ref().map_or(0, |node| node.len)
+    }
+
     /// The element id of the element itself.
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn last(&self) -> Option<&ElementId> {
+        self.path.0.as_ref().map(|node| &node.id)
+    }
+
+    /// The element id of the element itself. Public with test support, like
+    /// the slice the id dereferences to there, whose method this one stands for.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn last(&self) -> Option<&ElementId> {
         self.path.0.as_ref().map(|node| &node.id)
     }
 
@@ -139,7 +181,7 @@ impl GlobalElementId {
     }
 
     /// Whether the path begins with every element id of `prefix`.
-    pub(crate) fn starts_with(&self, prefix: &GlobalElementId) -> bool {
+    pub(crate) fn has_prefix(&self, prefix: &GlobalElementId) -> bool {
         self.ancestor(prefix.len())
             .is_some_and(|ancestor| ancestor == prefix)
     }
@@ -254,8 +296,8 @@ mod tests {
         assert!(same_node(a.parent().unwrap(), &root));
         assert!(same_node(b.parent().unwrap(), &root));
         assert_eq!(b.len(), 2);
-        assert!(b.starts_with(&root));
-        assert!(!b.starts_with(&a));
+        assert!(b.has_prefix(&root));
+        assert!(!b.has_prefix(&a));
         assert_eq!(b.last(), Some(&ElementId::from("b")));
         assert_eq!(
             b,
