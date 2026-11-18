@@ -505,7 +505,7 @@ impl A11yNodeBuilder {
         if let Some(parent) = self.nodes_stack.last_mut() {
             parent.push_child(id);
         }
-        crate::fast::a11y::A11yLog::push(&mut self.fast, id);
+        crate::fast::a11y::A11yLog::push(&mut self.fast, id, node.role());
         self.ids_stack.push(id);
         self.names_stack.push(Naming::of(&node));
         self.nodes_stack.push(node);

@@ -93,7 +93,7 @@ pub(crate) enum Op {
     /// A node pushed: it hangs off the node open then and is open until
     /// its [`Op::Pop`]. Whether it took its name from the text painted
     /// inside it, which a stretch drawn again names it by again.
-    Push(NodeId, bool),
+    Push(NodeId, bool, accesskit::Role),
     /// Text painted with no node of its own, naming the node open around it.
     Text(SharedString),
     /// A leaf added under the node open, finished at this index of the
@@ -146,10 +146,10 @@ pub(crate) struct A11yLog {
 
 impl A11yLog {
     #[inline]
-    pub(crate) fn push(log: &mut Self, id: NodeId) {
+    pub(crate) fn push(log: &mut Self, id: NodeId, role: accesskit::Role) {
         log.open_pushes.push(log.recording.then_some(log.ops.len()));
         if log.recording {
-            log.ops.push(Op::Push(id, false));
+            log.ops.push(Op::Push(id, false, role));
         }
     }
 
@@ -164,7 +164,7 @@ impl A11yLog {
     #[inline]
     pub(crate) fn named(log: &mut Self) {
         if let Some(Some(at)) = log.open_pushes.last()
-            && let Some(Op::Push(_, named)) = log.ops.get_mut(*at)
+            && let Some(Op::Push(_, named, _)) = log.ops.get_mut(*at)
         {
             *named = true;
         }
@@ -351,8 +351,8 @@ fn replay(window: &mut Window, source: &Source, delta: Point<Pixels>) {
     let logged = window.a11y.nodes.fast.ops.len();
     for op in source.ops {
         match *op {
-            Op::Push(id, named) => {
-                let pushed = window.a11y.nodes.push(id, accesskit::Node::default());
+            Op::Push(id, named, role) => {
+                let pushed = window.a11y.nodes.push(id, accesskit::Node::new(role));
                 window.a11y.nodes.fast.replay_open.push(pushed);
                 if pushed {
                     if named {
@@ -518,7 +518,7 @@ pub(crate) fn capture(
                     Op::Leaf(local)
                 }
             }
-            Op::Push(id, named) => {
+            Op::Push(id, named, role) => {
                 if let Some(bounds) = window.a11y.node_bounds.get(&id) {
                     stretch.bounds.insert(id, *bounds);
                 }
@@ -526,7 +526,7 @@ pub(crate) fn capture(
                 if let Some(info) = builder.node_info.get(&id) {
                     stretch.info.insert(id, info.clone());
                 }
-                Op::Push(id, named)
+                Op::Push(id, named, role)
             }
             ref other => other.clone(),
         };

@@ -6418,7 +6418,7 @@ impl Window {
             _ => self.last_input_modality,
         };
         if self.last_input_modality != old_modality {
-            if self.retained_state.view_retention && !self.a11y.is_active() {
+            if self.retained_state.view_retention {
                 cx.ambient_changed::<crate::fast::dependencies::ambient::Modality>();
                 self.invalidator.set_dirty(true);
             } else {
