@@ -526,6 +526,19 @@ impl A11yNodeBuilder {
         }
     }
 
+    /// Sets how the node a retained stretch pushed again is named: by the
+    /// text inside it when it was last frame, and otherwise not at all, as
+    /// its role alone would have it collect text it had a label for.
+    pub(crate) fn name_replayed(&mut self, named: bool) {
+        if let Some(naming) = self.names_stack.last_mut() {
+            if named {
+                *naming = Naming::Collect(String::new());
+            } else if matches!(naming, Naming::Collect(_)) {
+                *naming = Naming::Stop;
+            }
+        }
+    }
+
     /// Whether the open node takes its name from the text painted inside it.
     pub(crate) fn takes_name_from_contents(&self) -> bool {
         matches!(self.names_stack.last(), Some(Naming::Collect(_)))

@@ -1044,3 +1044,60 @@ fn a_view_rebuilt_inside_a_reused_scroll_container_can_be_scrolled_into_view(
         .unwrap();
     assert!(reused, "the scroll container was drawn from the last frame");
 }
+
+struct LabelledButton;
+
+impl Render for LabelledButton {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("save")
+            .role(Role::Button)
+            .aria_label("Save document")
+            .h(px(20.))
+            .child("Save")
+    }
+}
+
+struct LabelledParent {
+    button: Entity<LabelledButton>,
+}
+
+impl Render for LabelledParent {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(100.)).child(self.button.clone())
+    }
+}
+
+/// A button with a label of its own keeps it when drawn again from the last
+/// frame, and is not named by the text inside it instead.
+#[crate::test]
+fn a_reused_button_keeps_the_label_it_was_given(cx: &mut TestAppContext) {
+    let button = cx.new(|_| LabelledButton);
+    let window = cx.add_window({
+        let button = button.clone();
+        |_, _| LabelledParent { button }
+    });
+    let label = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let tree = crate::fast::a11y::last_tree(window).unwrap();
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::Button)
+                .and_then(|(_, node)| node.label().map(str::to_owned))
+        })
+        .unwrap()
+    };
+    cx.update_window(window.into(), |_, window, _| {
+        window.set_a11y_active_for_tests(true)
+    })
+    .unwrap();
+    assert_eq!(label(cx).as_deref(), Some("Save document"));
+    assert_eq!(label(cx).as_deref(), Some("Save document"));
+    let reused = cx
+        .update_window(window.into(), |_, window, _| {
+            window.rendered_frame.retained.reused_any()
+        })
+        .unwrap();
+    assert!(reused, "the button was drawn from the last frame");
+}

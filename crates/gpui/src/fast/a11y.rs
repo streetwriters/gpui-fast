@@ -355,9 +355,7 @@ fn replay(window: &mut Window, source: &Source, delta: Point<Pixels>) {
                 let pushed = window.a11y.nodes.push(id, accesskit::Node::new(role));
                 window.a11y.nodes.fast.replay_open.push(pushed);
                 if pushed {
-                    if named {
-                        window.a11y.nodes.name_from_contents();
-                    }
+                    window.a11y.nodes.name_replayed(named);
                     if let Some(bounds) = source.bounds.get(&id) {
                         let bounds = Bounds::new(bounds.origin + delta, bounds.size);
                         window.a11y.node_bounds.insert(id, bounds);
