@@ -17,6 +17,8 @@
 pub(crate) mod a11y;
 pub(crate) mod arena;
 pub(crate) mod composition;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod cpu_render_support;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod dynamic_textures;

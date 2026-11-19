@@ -1,0 +1,36 @@
+[package]
+name = "gpui_cpu_renderer"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "A software renderer for GPUI's headless tests, for machines with no GPU"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[features]
+# Compile the Metal shaders at run time (macOS), for the comparison test on a
+# machine without Xcode's Metal toolchain, such as a sandbox.
+runtime_shaders = ["gpui_platform/runtime_shaders"]
+
+[[test]]
+name = "cpu_vs_gpu"
+
+[dependencies]
+anyhow.workspace = true
+# `test-support` for `gpui::FillParts`, which reads a gradient's private fields.
+gpui = { workspace = true, features = ["test-support"] }
+image.workspace = true
+log.workspace = true
+tiny-skia.workspace = true
+
+[dev-dependencies]
+# gpui_platform depends on this crate (optionally, for its `test-support`
+# fallback); a dev-dependency back on it is how the comparison test reaches the
+# platform's GPU renderer.
+gpui_platform = { workspace = true, features = ["test-support"] }

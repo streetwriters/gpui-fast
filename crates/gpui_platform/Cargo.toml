@@ -20,7 +20,7 @@ multithreaded = ["gpui_web/multithreaded"]
 bench-support = ["gpui/bench-support", "gpui_macos/bench-support", "gpui_wgpu/bench-support"]
 font-kit = ["gpui_macos/font-kit"]
 inspector = ["gpui/inspector"]
-test-support = ["font-kit", "gpui/test-support","gpui_macos/test-support", "gpui_windows/test-support", "gpui_wgpu/test-support", "gpui_linux/test-support"]
+test-support = ["dep:gpui_cpu_renderer", "dep:log", "font-kit", "gpui/test-support","gpui_macos/test-support", "gpui_windows/test-support", "gpui_wgpu/test-support", "gpui_linux/test-support"]
 screen-capture = ["gpui/screen-capture", "gpui_macos/screen-capture", "gpui_windows/screen-capture", "gpui_linux/screen-capture"]
 runtime_shaders = ["gpui_macos/runtime_shaders", "gpui_ios/runtime_shaders"]
 wayland = ["gpui_linux/wayland"]
@@ -59,10 +59,13 @@ required-features = ["bench-support"]
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
+gpui_cpu_renderer = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
 
 [dev-dependencies]
 bench_metrics.workspace = true
 criterion.workspace = true
+image.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_macos.workspace = true

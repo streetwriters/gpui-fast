@@ -4,7 +4,8 @@
 //! rasterizes nothing, and uses a text system that measures nothing. A test
 //! opts in with `#[gpui::test(render)]` or `cx.enable_rendering(..)`, which
 //! gives it a real text system and the platform's offscreen renderer (Metal
-//! on macOS, wgpu elsewhere). No window opens and no screen-recording
+//! on macOS, wgpu elsewhere, or a CPU renderer where there is no GPU or when
+//! `GPUI_TEST_RENDERER=cpu` is set). No window opens and no screen-recording
 //! permission is needed. Tests that do not opt in are unchanged.
 //!
 //! Once on, `cx.screenshot("name")` renders the window's current frame to a

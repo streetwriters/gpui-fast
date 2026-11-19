@@ -13,6 +13,7 @@ members = [
     "crates/collections",
     "crates/gpui",
     "crates/gpui_apple",
+    "crates/gpui_cpu_renderer",
     "crates/gpui_ios",
     "crates/gpui_linux",
     "crates/gpui_macos",
@@ -64,6 +65,7 @@ collections = { path = "crates/collections", version = "0.1.0" }
 derive_refineable = { path = "crates/refineable/derive_refineable" }
 gpui = { path = "crates/gpui", default-features = false }
 gpui_apple = { path = "crates/gpui_apple" }
+gpui_cpu_renderer = { path = "crates/gpui_cpu_renderer" }
 gpui_ios = { path = "crates/gpui_ios" }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
@@ -335,6 +337,7 @@ syn = { version = "2.0", default-features = false, features = ["proc-macro"] }
 take-until = "0.2.0"
 tempfile = "3.20.0"
 thiserror = "2.0.12"
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std"] }
 tokio = "1"
 tracing = "0.1.40"
 unicase = "2.6"

@@ -122,7 +122,9 @@ Print it to find out what a window offers to drive.
 A headless test can render its window to a PNG, for a person or an agent to
 look at. No window opens and no screen-recording permission is needed: the
 frame is drawn by the platform's offscreen renderer (Metal on macOS, wgpu on
-Linux). There is no pixel-diff API; assert on pixels yourself if you must.
+Linux), or by a software renderer when there is no GPU (see
+[The CPU renderer](#the-cpu-renderer)). There is no pixel-diff API; assert on
+pixels yourself if you must.
 
 ```rust
 #[gpui::test(render)]
@@ -158,13 +160,76 @@ fn the_inbox_looks_right(cx: &mut TestAppContext) {
   `svg().path(..)` and `img(..)` somewhere to load from. A frame that paints an
   SVG with no asset fails the screenshot, naming the path, instead of leaving
   a blank space. (A malformed SVG or a missing `img` file is not detected.)
-- Without an offscreen renderer (Windows today) `screenshot` fails saying so.
+- Windows has no GPU offscreen renderer, so `test_rendering()` gives it the CPU
+  one. On the web (wasm) there is none and `screenshot` fails saying so.
 
 Cost, on macOS Metal in a debug build: about 5 ms to set up the renderer for a
 window, about 5 ms to render a frame and about 40 ms more to encode and write
 the PNG. Every window gets its own renderer, so tests run in parallel
 (tested with four at once) and one test can open many windows (tested with 12)
 without sharing a GPU device.
+
+## The CPU renderer
+
+`crates/gpui_cpu_renderer` draws a frame on the CPU, with
+[tiny-skia](https://github.com/linebender/tiny-skia)'s pixmap as the frame
+buffer. Where a GPU can't be used (a sandbox, a container, much of Linux CI)
+`#[gpui::test(render)]` and `gpui_platform::test_rendering()` use it instead of
+failing with "accessing a compatible Metal device". It uses the same text system
+and the same atlas of glyph, icon and image tiles as the GPU renderers, so
+layout, colours and text come out the same.
+
+**When it is used**
+
+- By default: only when the platform's GPU renderer can't be created. A machine
+  with a working GPU keeps drawing with it. The fallback covers creating the
+  renderer, not a GPU that fails later.
+- Forced: `GPUI_TEST_RENDERER=cpu cargo test ...` draws every test on the CPU,
+  GPU or not, so the images are the same on every machine. Any other value, or
+  none, is the default. Use it for screenshots that are compared across
+  machines.
+- By hand: `cx.enable_rendering(gpui_platform::cpu_test_rendering())` picks the
+  CPU renderer for one test, and `gpui_platform::gpu_test_rendering()` the GPU one
+  with no fallback.
+- In a sandbox on macOS without the Metal toolchain, build with the
+  `runtime_shaders` feature as well; the CPU renderer needs no shaders, but
+  `gpui_platform` still builds the Metal one.
+
+**How close it is.** Every shader is ported to a per-pixel function (quads,
+borders and corner radii, gradients, the analytic shadow, underlines, sprites,
+paths), so the result is near the Metal one. The test
+`crates/gpui_cpu_renderer/tests/cpu_vs_gpu.rs` draws a card with a shadow,
+gradients (sRGB and Oklab), per-side and dashed borders, a slash pattern, a
+checkerboard, an inset shadow, a rounded `overflow_hidden` clip, a scrolled
+list, an icon, text and a wavy underline with both renderers and writes
+`cpu.png`, `gpu.png`, `difference.png` and `report.txt`
+(`cargo test -p gpui_cpu_renderer --features runtime_shaders --test cpu_vs_gpu -- --nocapture`;
+without a GPU it says so and passes). On Metal, in an 800 x 760 image, the mean
+difference is 0.007 out of 255, the largest difference of any channel is 3 and
+no pixel is off by more than 16. Only the two gradients differ at all, in about
+15% of their pixels, by up to 3 levels: Metal's gradient noise comes from a
+`sin` that runs under fast-math, which the CPU one can't reproduce bit for bit.
+Everything else (text, icons, borders, patterns, shadows, clips, the list) is
+identical or one level off at a handful of pixels. The shader maths is a third
+copy of `shaders.metal` and `shaders.wgsl`: on a machine with a GPU the test
+fails when one element is off by more than 16 levels at over 1% of its pixels,
+which is how a drifted copy shows. Do not assert on a single pixel along an
+edge or in a gradient across renderers.
+
+**What it doesn't draw** (each is skipped with one warning per process, and
+the frame is otherwise drawn)
+
+- Surfaces (video, camera and screen-capture frames), external textures and
+  dynamic textures.
+- Effect groups: opacity, blur and drop-shadow filters on a group of elements,
+  and blend modes. The group is not composited, so what is inside it can be
+  missing from the image. Don't screenshot such a view on the CPU renderer.
+
+Scroll layers (the retained-scroll fast path) are drawn: each tile is drawn
+into its own bitmap over the layer's background and composited, as Metal does,
+so a scrolled list shows its content.
+
+Borders have one colour for all sides, as in GPUI, with the width set per side.
 
 ## What it can't see yet
 

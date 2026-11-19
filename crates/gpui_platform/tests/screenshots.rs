@@ -192,6 +192,15 @@ fn sample_view_renders_to_png(cx: &mut TestAppContext) {
         inked(&image, scale, (130., 110.), (220., 146.), [0x30, 0xa0, 0x50]) > 20,
         "the button's label painted nothing"
     );
+
+    // Forced to the CPU renderer by the environment, a CPU renderer drew this
+    // (the test below runs this one that way).
+    if std::env::var("GPUI_TEST_RENDERER").is_ok_and(|value| value.eq_ignore_ascii_case("cpu")) {
+        assert!(
+            gpui_cpu_renderer::renderers_created() > 0,
+            "GPUI_TEST_RENDERER=cpu, yet no CPU renderer was made"
+        );
+    }
 }
 
 #[gpui::test(render)]
@@ -357,6 +366,28 @@ fn the_folder_can_be_chosen_by_env_var() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    let path = dir.join("sample_view_renders_to_png/sample.png");
+    assert_eq!(png_size(&path), (480, 320));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `GPUI_TEST_RENDERER=cpu` renders on the CPU, GPU or not. Set in a child
+/// process running one test, so the other tests keep their renderer.
+#[test]
+fn the_cpu_renderer_can_be_forced_by_env_var() {
+    let dir = std::env::temp_dir().join(format!("gpui-screenshots-cpu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "sample_view_renders_to_png", "--test-threads=1"])
+        .env("GPUI_TEST_RENDERER", "cpu")
+        .env("GPUI_SCREENSHOT_DIR", &dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    // The child ran the one test (a filter that matched nothing also succeeds),
+    // and that test checks a CPU renderer was made.
+    assert!(stdout.contains("1 passed"), "the child ran no test:\n{stdout}");
     let path = dir.join("sample_view_renders_to_png/sample.png");
     assert_eq!(png_size(&path), (480, 320));
     std::fs::remove_dir_all(&dir).unwrap();

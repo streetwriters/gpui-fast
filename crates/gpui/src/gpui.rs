@@ -141,6 +141,8 @@ pub use fast::layers::scene::{
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]
+pub use fast::cpu_render_support::FillParts;
+#[cfg(any(test, feature = "test-support"))]
 pub use fast::test_rendering::TestRendering;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::ui_test::UiNode;

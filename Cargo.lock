@@ -3599,6 +3599,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_cpu_renderer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui_platform",
+ "image",
+ "log",
+ "tiny-skia",
+]
+
+[[package]]
 name = "gpui_ios"
 version = "0.1.0"
 dependencies = [
@@ -3753,12 +3765,15 @@ dependencies = [
  "criterion",
  "gpui",
  "gpui_apple",
+ "gpui_cpu_renderer",
  "gpui_ios",
  "gpui_linux",
  "gpui_macos",
  "gpui_web",
  "gpui_wgpu",
  "gpui_windows",
+ "image",
+ "log",
 ]
 
 [[package]]
