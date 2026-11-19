@@ -4104,6 +4104,18 @@ impl Window {
         self.presentation_hold.as_ref().is_some_and(|hold| hold())
     }
 
+    /// While a presentation hold is set, draws a dirty window now instead of on
+    /// the next frame request, without presenting it: presenting stays with the
+    /// frame request, which asks the hold. Content that takes several rounds of
+    /// layout to settle then does not wait a frame interval for each. Does
+    /// nothing without a hold, during a draw, or when the window is clean.
+    pub fn draw_while_held(&mut self, cx: &mut App) {
+        if self.presentation_hold.is_none() || draw_in_progress() || !self.invalidator.is_dirty() {
+            return;
+        }
+        self.draw(cx).clear(cx);
+    }
+
     /// Presents the most recently drawn frame if it hasn't been presented yet.
     #[cfg(all(test, feature = "profiler"))]
     pub fn present_if_needed(&mut self) {
