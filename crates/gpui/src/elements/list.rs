@@ -8,9 +8,9 @@
 //! If all of your elements are the same height, see [`crate::UniformList`] for a simpler API
 
 use crate::{
-    Along as _, AnyElement, App, AvailableSpace, Axis, Bounds, ClipMask, DispatchPhase, Edges,
+    Along as _, AnyElement, App, AvailableSpace, Axis, Bounds, ClipMask, Edges,
     Element, EntityId, FocusHandle, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
-    IntoElement, Overflow, Pixels, Point, ScrollDelta, ScrollEvent, Size, Style, StyleRefinement,
+    IntoElement, Overflow, Pixels, Point, Size, Style, StyleRefinement,
     Styled, Window, point, px, size,
 };
 use collections::VecDeque;
@@ -67,7 +67,7 @@ pub(crate) struct StateInner {
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     alignment: ListAlignment,
     overdraw: Pixels,
-    reset: bool,
+    pub(crate) reset: bool,
     #[allow(clippy::type_complexity)]
     scroll_handler: Option<Box<dyn FnMut(&ListScrollEvent, &mut Window, &mut App)>>,
     scrollbar_drag_start_height: Option<Pixels>,
@@ -892,7 +892,7 @@ impl StateInner {
         scroll_top.item_ix..cursor.start().count + 1
     }
 
-    fn scroll(
+    pub(crate) fn scroll(
         &mut self,
         scroll_top: &ListOffset,
         height: Pixels,
@@ -1732,25 +1732,11 @@ impl Element for List {
         // children's scroll-wheel handlers run first and can stop propagation
         // to prevent the list from scrolling. This matches the ordering of
         // div-based scroll containers.
-        let list_state = self.state.clone();
         let height = bounds.size.height;
         let scroll_top = prepaint.layout.scroll_top;
         let hitbox_id = prepaint.hitbox.id;
-        let mut accumulated_scroll_delta = ScrollDelta::default();
-        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
-                accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
-                let pixel_delta = accumulated_scroll_delta.pixel_delta(px(20.));
-                list_state.0.borrow_mut().scroll(
-                    &scroll_top,
-                    height,
-                    pixel_delta,
-                    current_view,
-                    window,
-                    cx,
-                )
-            }
-        });
+        let list = (&self.state, scroll_top, height, hitbox_id, current_view);
+        crate::fast::scroll_chain::paint_list_listener(list, window);
 
         window.with_clip_mask(Some(ClipMask::new(bounds)), |window| {
             crate::fast::layers::lists::begin_paint_list(window, cx, &self.state);

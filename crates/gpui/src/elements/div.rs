@@ -19,7 +19,7 @@ use crate::{
     Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, BackGestureEvent, Bounds, ClickEvent,
     DispatchPhase, Display, Element, ElementId, Entity, EntityId, ExternalDragPayload,
     ExternalDragPayloadSource, FileDropEvent, FocusHandle, Global, GlobalElementId, Hitbox,
-    HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext, KeyDownEvent,
+    HitboxBehavior, HitboxId, InspectorElementId, IntoElement, KeyContext, KeyDownEvent,
     KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, LongPressEvent,
     ModifiersChangedEvent, MouseButton, MouseClickEvent, MouseDownEvent, MouseExitEvent,
     MouseMoveEvent, MousePressureEvent, MouseUpEvent, OngoingScroll, Overflow, ParentElement,
@@ -3451,75 +3451,7 @@ impl Interactivity {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        if let Some(scroll_offset) = self.scroll_offset.clone() {
-            let ongoing_scroll = self.ongoing_scroll.clone();
-            let overflow = style.overflow;
-            let allow_concurrent_scroll = style.allow_concurrent_scroll;
-            let restrict_scroll_to_axis = style.restrict_scroll_to_axis;
-            let line_height = window.line_height();
-            let fast_scroll_max =
-                crate::fast::layers::wheel::scroll_max(self, hitbox.bounds, style, window);
-            let hitbox = hitbox.clone();
-            let current_view = window.current_view();
-            let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
-            let fast_container = crate::fast::layers::invalidate::painted_container(window, self);
-            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                    let mut scroll_offset = scroll_offset.borrow_mut();
-                    let old_scroll_offset = *scroll_offset;
-                    let mut delta = event.delta.pixel_delta(line_height);
-
-                    if restrict_scroll_to_axis
-                        && event.delta.precise()
-                        && let Some(ongoing_scroll) = &ongoing_scroll
-                    {
-                        ongoing_scroll
-                            .borrow_mut()
-                            .filter(&mut delta, event.touch_phase);
-                    }
-
-                    let mut delta_x = match overflow.x {
-                        Overflow::Scroll if !delta.x.is_zero() => delta.x,
-                        Overflow::Scroll
-                            if !restrict_scroll_to_axis && overflow.y != Overflow::Scroll =>
-                        {
-                            delta.y
-                        }
-                        _ => Pixels::ZERO,
-                    };
-                    let mut delta_y = match overflow.y {
-                        Overflow::Scroll if !delta.y.is_zero() => delta.y,
-                        Overflow::Scroll
-                            if !restrict_scroll_to_axis && overflow.x != Overflow::Scroll =>
-                        {
-                            delta.x
-                        }
-                        _ => Pixels::ZERO,
-                    };
-                    if !allow_concurrent_scroll && !delta_x.is_zero() && !delta_y.is_zero() {
-                        if delta_x.abs() > delta_y.abs() {
-                            delta_y = Pixels::ZERO;
-                        } else {
-                            delta_x = Pixels::ZERO;
-                        }
-                    }
-                    if !crate::fast::layers::wheel::moves(
-                        old_scroll_offset,
-                        point(delta_x, delta_y),
-                        fast_scroll_max,
-                    ) {
-                        return;
-                    }
-                    scroll_offset.y += delta_y;
-                    scroll_offset.x += delta_x;
-                    if *scroll_offset != old_scroll_offset {
-                        crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
-                        crate::fast::layers::invalidate::note_scrolled(window, &fast_container);
-                        cx.notify(current_view);
-                    }
-                }
-            });
-        }
+        crate::fast::scroll_chain::paint_div_listener(self, hitbox, style, window);
     }
 
     /// Compute the visual style for this element, based on the current bounds and the element's state.
@@ -3771,7 +3703,7 @@ pub struct InteractiveElementState {
     /// blur). `None` means no activation key is pending.
     pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<u64>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
-    ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
+    pub(crate) ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
 }

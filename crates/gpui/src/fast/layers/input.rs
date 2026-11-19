@@ -167,6 +167,7 @@ pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &Platfor
     if let PlatformInput::Scroll(event) = event {
         crate::fast::layers::hover_freeze::note_wheel(window, cx, event);
     }
+    crate::fast::scroll_chain::begin_event(window, cx, event);
     crate::fast::layers::wheel::begin_dispatch(window, cx, event);
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return;

@@ -66,6 +66,7 @@ pub(crate) fn begin_dispatch(window: &mut Window, cx: &App, event: &PlatformInpu
 /// notifications its listeners sent each view a container of which it
 /// scrolled as notifications for the scroll, if nothing else changed.
 pub(crate) fn end_dispatch(window: &mut Window, cx: &App) {
+    crate::fast::scroll_chain::end_event(window);
     let Some(before) = window.fast_layers.wheel.0.take() else {
         return;
     };
@@ -114,9 +115,9 @@ pub(crate) fn scroll_max(
 /// The container's listener does not notify its view for such a wheel, or
 /// invalidate the retained subtrees holding it, or note it scrolled: each
 /// would draw again what did not move, and the last repaints every scroll
-/// layer holding the container. A vertical wheel over a container that
-/// scrolls only horizontally is mapped onto its one axis, so a page scrolled
-/// past a carousel at its start sends one on every event.
+/// layer holding the container. A container keeps a whole scroll sequence
+/// once [`crate::fast::scroll_chain`] latched it, so one reaching its edge
+/// mid-gesture is sent such wheels until the gesture ends.
 pub(crate) fn moves(offset: Point<Pixels>, delta: Point<Pixels>, max: Point<Pixels>) -> bool {
     let moves = |offset: Pixels, delta: Pixels, max: Pixels| {
         !delta.is_zero() && (offset + delta).clamp(-max, px(0.)) != offset

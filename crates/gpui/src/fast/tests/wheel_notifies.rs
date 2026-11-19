@@ -227,9 +227,9 @@ impl Render for StripPage {
 
 /// A wheel that cannot move a scroll container's content, because it is
 /// already at the end the wheel points to, changes nothing: the view that
-/// painted the container is not built again. A vertical wheel over a
-/// horizontal container, as a page scrolled past a carousel sends it on every
-/// event, is mapped onto its one axis and is the usual case.
+/// painted the container is not built again. Nor does a vertical wheel over
+/// a horizontal container, as a page scrolled past a carousel sends it on
+/// every event: it goes past it (see [`crate::fast::scroll_chain`]).
 #[test]
 fn a_wheel_that_cannot_move_its_container_does_not_build_its_view() {
     let mut cx = TestAppContext::single();
@@ -244,13 +244,13 @@ fn a_wheel_that_cannot_move_its_container_does_not_build_its_view() {
             .unwrap();
     };
     draw(&mut cx);
-    let wheel = |cx: &mut TestAppContext, dy: f32| {
+    let wheel_by = |cx: &mut TestAppContext, delta: Point<Pixels>| {
         let before = renders.get();
         cx.update_window(window.into(), |_, window, cx| {
             window.dispatch_event(
                 PlatformInput::Scroll(ScrollEvent {
                     position: point(px(50.), px(25.)),
-                    delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+                    delta: ScrollDelta::Pixels(delta),
                     modifiers: Default::default(),
                     touch_phase: TouchPhase::Moved,
                     ..Default::default()
@@ -262,6 +262,7 @@ fn a_wheel_that_cannot_move_its_container_does_not_build_its_view() {
         draw(cx);
         renders.get() - before
     };
+    let wheel = |cx: &mut TestAppContext, dx: f32| wheel_by(cx, point(px(dx), px(0.)));
     // The window's first wheel changes its input modality, which draws it
     // again whole.
     wheel(&mut cx, 20.);
@@ -273,5 +274,11 @@ fn a_wheel_that_cannot_move_its_container_does_not_build_its_view() {
     assert_eq!(wheel(&mut cx, -60.), 1, "a wheel past the end");
     assert_eq!(handle.offset().x, px(-60.));
     assert_eq!(wheel(&mut cx, -20.), 0, "a wheel towards the end it is at");
+    assert_eq!(handle.offset().x, px(-60.));
+    assert_eq!(
+        wheel_by(&mut cx, point(px(0.), px(20.))),
+        0,
+        "a vertical wheel"
+    );
     assert_eq!(handle.offset().x, px(-60.));
 }

@@ -131,6 +131,8 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
   - the content changes on at least eight of the last sixteen frames, or
     the layer's estimated work exceeds drawing directly (demotion, below).
 
+Which container a wheel event scrolls (one, kept for the whole gesture) is
+described in [`scrolling.md`](scrolling.md).
 The view holding the container is notified by the container's wheel
 listener, and a frame is taken for a scroll only while that view was
 notified no more often than the wheel scrolled what it holds. Other wheel

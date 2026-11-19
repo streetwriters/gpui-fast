@@ -2682,13 +2682,35 @@ mod decisions {
         }
         // The inner container is painted by the view holding the outer one,
         // which the inner one's wheel listener notifies: a change of the
-        // outer layer's content, not a scroll of it (spec §6.6).
+        // outer layer's content, not a scroll of it (spec §6.6). The inner
+        // one scrolls only on x, so the vertical wheels that promote the
+        // outer one go past it. In the frame checked, a horizontal swipe
+        // scrolls the inner one and a vertical one the outer one, each a
+        // gesture of its own.
         let handle = page(cx, false);
         let window = handle.into();
         let inner = with_inner_scroller(cx, handle);
         promote(cx, window);
         let before = inner.offset();
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        frame_after(cx, window, |cx| {
+            with_window(cx, window, |window, cx| {
+                for (delta, touch_phase) in [
+                    (point(px(-20.), px(0.)), TouchPhase::Started),
+                    (point(px(0.), px(-20.)), TouchPhase::Started),
+                ] {
+                    window.dispatch_event(
+                        crate::PlatformInput::Scroll(ScrollEvent {
+                            position: point(px(20.), px(20.)),
+                            delta: ScrollDelta::Pixels(delta),
+                            touch_phase,
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                }
+            })
+        });
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
         assert_ne!(
             inner.offset(),
             before,

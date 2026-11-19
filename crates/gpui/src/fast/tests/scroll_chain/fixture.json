@@ -1,0 +1,252 @@
+{
+  "about": [
+    "Nested scrolling scenarios and what Chrome on macOS does with each.",
+    "Each scenario's layout is a tree of scroll boxes: size and content are [width, height] in px, scroll is the axes it scrolls (an HTML box gets overflow:auto on them, hidden on the others), child_at places the child box in the content, start is the box's [scrollLeft, scrollTop].",
+    "Input runs in order, 20 ms apart unless a wait says otherwise. wheel is one mouse-wheel tick of [dx, dy] lines; trackpad is one precise event of [dx, dy] px with its phase (start, move, end, momentum: macOS sends momentum after the gesture's end as moves without a phase). Positive is towards the bottom and right, as scrollTop and scrollLeft grow. move_pointer moves the pointer by [dx, dy] px.",
+    "expect names each box that scrolled and which way; every other box must not have moved.",
+    "Expectations: the sandbox this fixture was written in cannot start Chrome or WebKit (Mach port registration is denied), so each cites what Chromium's source does. record.mjs replays every scenario in Chrome with Playwright, outside the sandbox, and prints where Chrome differs.",
+    "Citations: [phase] content/browser/renderer_host/input/mouse_wheel_phase_handler.h/.cc (kDefaultMouseWheelLatchingTransactionTimeout = 500 ms; kWheelLatchingSlopRegion = 10 px; a sequence also ends when the modifiers change; momentum may begin up to 100 ms after the phase ends). [latch] cc/input/input_handler.cc: ScrollBegin's FindNodeToLatch walks up from the box under the pointer to the first one that can scroll in the delta's direction (CanConsumeDelta) and latches it; ScrollUpdate's ScrollLatchedScroller scrolls only that box for the rest of the sequence, never its ancestors. [shift] browsers scroll horizontally on shift+wheel: AppKit sends shift+wheel as deltaX on macOS, Chromium's Windows and Linux event conversion swaps the axes (ui/events/blink/web_input_event.cc), and Firefox does so by mousewheel.with_shift.action. [overflow] CSS Overflow 3: a box scrolls only on an axis whose overflow is auto or scroll, and only when its content overflows it."
+  ],
+  "scenarios": [
+    {
+      "name": "vertical_in_vertical_wheel",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 100]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[latch] the box under the pointer can scroll down, so it is latched and takes every tick; the page does not move."
+    },
+    {
+      "name": "vertical_in_vertical_trackpad",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 100]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"inner": "down"},
+      "why": "[latch] as with the wheel: the inner box is latched at the gesture's first delta."
+    },
+    {
+      "name": "horizontal_in_vertical_wheel",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "x", "size": [300, 150], "content": [900, 150], "start": [300, 0]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"page": "down"},
+      "why": "[overflow][latch] the inner box cannot scroll vertically, so CanConsumeDelta is false for it and the page is latched; the inner box's scrollLeft does not change."
+    },
+    {
+      "name": "horizontal_in_vertical_trackpad_vertical",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "x", "size": [300, 150], "content": [900, 150], "start": [300, 0]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"page": "down"},
+      "why": "[overflow][latch] a vertical swipe over a horizontal box goes to the page."
+    },
+    {
+      "name": "horizontal_in_vertical_trackpad_horizontal",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "x", "size": [300, 150], "content": [900, 150], "start": [300, 0]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [20, 2]}, {"trackpad": "move", "delta": [20, 3]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"inner": "right"},
+      "why": "[latch] the inner box can take the swipe, so it is latched; the swipe's small vertical part is not chained to the page: no diagonal."
+    },
+    {
+      "name": "vertical_in_horizontal_wheel",
+      "layout": {"id": "page", "scroll": "x", "size": [300, 300], "content": [900, 300],
+        "child_at": [100, 0], "child": {"id": "inner", "scroll": "y", "size": [150, 300], "content": [150, 900], "start": [0, 300]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[latch] the inner box scrolls vertically and has room, so it is latched."
+    },
+    {
+      "name": "vertical_in_horizontal_trackpad_horizontal",
+      "layout": {"id": "page", "scroll": "x", "size": [300, 300], "content": [900, 300],
+        "child_at": [100, 0], "child": {"id": "inner", "scroll": "y", "size": [150, 300], "content": [150, 900], "start": [0, 300]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [20, 0]}, {"trackpad": "move", "delta": [20, 0]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"page": "right"},
+      "why": "[overflow][latch] the vertical box cannot take a horizontal swipe; the horizontal page is latched."
+    },
+    {
+      "name": "both_axes_in_vertical_wheel",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "xy", "size": [300, 150], "content": [900, 450], "start": [300, 150]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[latch] the inner box scrolls both ways and has room below."
+    },
+    {
+      "name": "both_axes_in_vertical_trackpad_diagonal",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "xy", "concurrent": true, "size": [300, 150], "content": [900, 450], "start": [300, 150]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [20, 10]}, {"trackpad": "move", "delta": [20, 10]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"inner": "down right"},
+      "why": "[latch] the latched box takes both axes of each delta; a browser box always does, which in GPUI is allow_concurrent_scroll (concurrent here)."
+    },
+    {
+      "name": "inner_at_bottom_wheel_chains",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 300]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"page": "down"},
+      "why": "[latch] at the start of the sequence the inner box is at its bottom and cannot scroll down, so FindNodeToLatch goes on to the page."
+    },
+    {
+      "name": "inner_at_top_wheel_up_chains",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900], "start": [0, 50],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 0]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, -1]}],
+      "expect": {"page": "up"},
+      "why": "[latch] the inner box is at its top and cannot scroll up; the page is latched."
+    },
+    {
+      "name": "inner_at_bottom_trackpad_chains",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 300]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"page": "down"},
+      "why": "[latch] a gesture that starts with the inner box at its edge chains to the page."
+    },
+    {
+      "name": "inner_reaches_bottom_mid_gesture_trackpad",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"inner": "down"},
+      "why": "[latch] the inner box stays latched after it reaches its bottom: ScrollLatchedScroller never chains mid-sequence, so the page does not move."
+    },
+    {
+      "name": "inner_reaches_bottom_mid_burst_wheel",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[phase][latch] ticks 20 ms apart are one sequence (under the 500 ms timeout), latched to the inner box, which keeps them at its bottom."
+    },
+    {
+      "name": "burst_within_timeout_stays_latched",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"wait": 400}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[phase] a tick 400 ms after the last is still in its sequence (timeout 500 ms), so it stays with the inner box."
+    },
+    {
+      "name": "new_burst_after_timeout_chains",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"wait": 600}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down", "page": "down"},
+      "why": "[phase][latch] 600 ms of quiet ends the sequence; the next tick starts one with the inner box at its bottom and chains to the page."
+    },
+    {
+      "name": "new_trackpad_gesture_at_edge_chains",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]},
+        {"wait": 300},
+        {"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"inner": "down", "page": "down"},
+      "why": "[phase][latch] the second gesture begins a new sequence; the inner box is at its bottom, so it chains to the page."
+    },
+    {
+      "name": "momentum_stays_latched",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [0, 20]}, {"trackpad": "end", "delta": [0, 0]},
+        {"trackpad": "momentum", "delta": [0, 30]}, {"trackpad": "momentum", "delta": [0, 20]}, {"trackpad": "momentum", "delta": [0, 10]}],
+      "expect": {"inner": "down"},
+      "why": "[phase] momentum beginning within 100 ms of the gesture's end continues its sequence, latched to the inner box even at its bottom."
+    },
+    {
+      "name": "shift_wheel_over_horizontal",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "x", "size": [300, 150], "content": [900, 150], "start": [300, 0]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1], "shift": true}, {"wheel": [0, 1], "shift": true}],
+      "expect": {"inner": "right"},
+      "why": "[shift][latch] shift+wheel is a horizontal scroll, which the horizontal box takes."
+    },
+    {
+      "name": "shift_wheel_over_vertical_only",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 100]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1], "shift": true}, {"wheel": [0, 1], "shift": true}],
+      "expect": {},
+      "why": "[shift][overflow] shift+wheel scrolls horizontally, and nothing under the pointer scrolls horizontally, so nothing moves."
+    },
+    {
+      "name": "non_overflowing_inner",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 100]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"page": "down"},
+      "why": "[overflow][latch] a box whose content fits cannot scroll, so the page is latched."
+    },
+    {
+      "name": "three_levels_vertical",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 50], "child": {"id": "strip", "scroll": "x", "size": [300, 200], "content": [900, 200], "start": [100, 0],
+          "child_at": [200, 0], "child": {"id": "inner", "scroll": "y", "size": [150, 200], "content": [150, 600], "start": [0, 200]}}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[latch] the innermost box can scroll down, so it is latched; neither the strip nor the page moves."
+    },
+    {
+      "name": "three_levels_inner_at_bottom_skips_horizontal",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 50], "child": {"id": "strip", "scroll": "x", "size": [300, 200], "content": [900, 200], "start": [100, 0],
+          "child_at": [200, 0], "child": {"id": "inner", "scroll": "y", "size": [150, 200], "content": [150, 600], "start": [0, 400]}}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}],
+      "expect": {"page": "down"},
+      "why": "[latch][overflow] the innermost box is at its bottom and the strip cannot scroll vertically, so FindNodeToLatch reaches the page."
+    },
+    {
+      "name": "three_levels_horizontal_trackpad",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 50], "child": {"id": "strip", "scroll": "x", "size": [300, 200], "content": [900, 200], "start": [100, 0],
+          "child_at": [200, 0], "child": {"id": "inner", "scroll": "y", "size": [150, 200], "content": [150, 600], "start": [0, 200]}}},
+      "pointer": "inner",
+      "input": [{"trackpad": "start", "delta": [0, 0]}, {"trackpad": "move", "delta": [20, 0]}, {"trackpad": "move", "delta": [20, 0]}, {"trackpad": "end", "delta": [0, 0]}],
+      "expect": {"strip": "right"},
+      "why": "[latch][overflow] the innermost box cannot scroll horizontally; the strip around it is the first that can."
+    },
+    {
+      "name": "pointer_moved_past_slop_relatches",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"move_pointer": [0, 20]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down", "page": "down"},
+      "why": "[phase][latch] a tick more than 10 px from where the sequence began starts a new one, which chains past the inner box at its bottom."
+    },
+    {
+      "name": "pointer_moved_within_slop_stays",
+      "layout": {"id": "page", "scroll": "y", "size": [300, 300], "content": [300, 900],
+        "child_at": [0, 100], "child": {"id": "inner", "scroll": "y", "size": [300, 150], "content": [300, 450], "start": [0, 290]}},
+      "pointer": "inner",
+      "input": [{"wheel": [0, 1]}, {"wheel": [0, 1]}, {"move_pointer": [0, 5]}, {"wheel": [0, 1]}],
+      "expect": {"inner": "down"},
+      "why": "[phase] a tick within 10 px of where the sequence began stays in it, with the inner box."
+    }
+  ]
+}

@@ -8091,6 +8091,7 @@ impl Window {
                 touch_phase: crate::TouchPhase::Moved,
                 source: crate::ScrollSource::Pointer,
             });
+            crate::fast::scroll_chain::new_sequence(self);
             self.dispatch_event(scroll, cx);
             bounds.origin += delta;
             scrolled = true;

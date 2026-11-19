@@ -754,3 +754,5 @@ self-contained piece (retained layout nodes, the bounds grid, text
 measurement carrying, retained views, scroll layers) that can be proposed to
 GPUI on its own. [`scroll-layers.md`](scroll-layers.md) is the reference for
 scroll layers: where they apply, how they fall back, and how to measure them.
+[`scrolling.md`](scrolling.md) is the reference for which container a wheel
+or trackpad scroll moves (`fast/scroll_chain.rs`).
