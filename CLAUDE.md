@@ -30,6 +30,10 @@ keep merging upstream changes into. To keep those merges easy:
 - **New files only inside `fast/` or in our own crates** (`crates/gpui_perf`).
 - **Run `script/check-upstream` before committing.** It fails when a change to an
   upstream file is more than a hook.
+- **Run one package's tests with `sh script/test-one.sh <package> <filter>`**
+  (either may be empty; no package tests gpui and gpui_apple). It adds the
+  gpui test features only where cargo accepts them, so gpui isn't rebuilt
+  between packages.
 - **Never commit to `main` directly; every change goes through a pull
   request.** Work on a topic branch off `origin/main`, and when the change is
   ready to merge, push the branch and open a PR.
