@@ -113,38 +113,6 @@ impl TestRendering {
     }
 }
 
-type RendererFactory = Box<dyn Fn() -> Result<Option<Box<dyn PlatformHeadlessRenderer>>>>;
-
-/// What the test platform renders with: the offscreen renderer its windows
-/// get (given when it is built, or by [`TestAppContext::enable_rendering`])
-/// and the text system a test swapped in.
-pub(crate) struct Installed {
-    text_system: RefCell<Option<Arc<dyn PlatformTextSystem>>>,
-    renderer_factory: RefCell<Option<RendererFactory>>,
-}
-
-impl Installed {
-    pub(crate) fn new(renderer_factory: Option<RendererFactory>) -> Self {
-        Self {
-            text_system: RefCell::new(None),
-            renderer_factory: RefCell::new(renderer_factory),
-        }
-    }
-
-    pub(crate) fn text_system(installed: &Self) -> Option<Arc<dyn PlatformTextSystem>> {
-        installed.text_system.borrow().clone()
-    }
-
-    pub(crate) fn renderer(
-        installed: &Self,
-    ) -> Result<Option<Box<dyn PlatformHeadlessRenderer>>> {
-        match installed.renderer_factory.borrow().as_ref() {
-            Some(factory) => factory(),
-            None => Ok(None),
-        }
-    }
-}
-
 thread_local! {
     /// SVG paths this thread tried to paint and found no asset for.
     static MISSING_SVGS: RefCell<Vec<SharedString>> = const { RefCell::new(Vec::new()) };

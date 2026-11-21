@@ -53,7 +53,7 @@ pub(crate) struct TestPlatform {
     idle_sleep_prevention_count: Arc<AtomicUsize>,
     idle_sleep_prevention_delay: Cell<Duration>,
     idle_sleep_prevention_fails: Cell<bool>,
-    pub(crate) fast_rendering: crate::fast::test_rendering::Installed,
+    pub(crate) fast_rendering: crate::fast::installed_rendering::Installed,
     weak: Weak<Self>,
     menus: RefCell<Vec<OwnedMenu>>,
     pub(crate) app_lifecycle_callback: RefCell<Option<Box<dyn FnMut(AppLifecyclePhase)>>>,
@@ -263,7 +263,9 @@ impl TestPlatform {
             opened_url: Default::default(),
             system_notifications: Default::default(),
             text_system,
-            fast_rendering: crate::fast::test_rendering::Installed::new(headless_renderer_factory),
+            fast_rendering: crate::fast::installed_rendering::Installed::new(
+                headless_renderer_factory,
+            ),
             menus: Default::default(),
             app_lifecycle_callback: Default::default(),
             memory_warning_callback: Default::default(),
@@ -483,7 +485,7 @@ impl Platform for TestPlatform {
     }
 
     fn text_system(&self) -> Arc<dyn PlatformTextSystem> {
-        crate::fast::test_rendering::Installed::text_system(&self.fast_rendering)
+        crate::fast::installed_rendering::Installed::text_system(&self.fast_rendering)
             .unwrap_or_else(|| self.text_system.clone())
     }
 
@@ -606,7 +608,8 @@ impl Platform for TestPlatform {
         handle: AnyWindowHandle,
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
-        let renderer = crate::fast::test_rendering::Installed::renderer(&self.fast_rendering)?;
+        let renderer =
+            crate::fast::installed_rendering::Installed::renderer(&self.fast_rendering)?;
         let window = TestWindow::new(
             handle,
             params,

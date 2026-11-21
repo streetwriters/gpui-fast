@@ -51,6 +51,8 @@ pub(crate) mod stats;
 pub(crate) mod tab_stops;
 pub(crate) mod text;
 pub(crate) mod text_keys;
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+pub(crate) mod installed_rendering;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_rendering;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
