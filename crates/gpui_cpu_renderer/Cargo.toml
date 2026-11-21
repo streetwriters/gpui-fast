@@ -27,6 +27,8 @@ anyhow.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 image.workspace = true
 log.workspace = true
+# Draws a primitive's rows on several threads (`fast/bands.rs`).
+rayon.workspace = true
 tiny-skia.workspace = true
 
 [dev-dependencies]

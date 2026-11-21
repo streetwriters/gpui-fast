@@ -236,6 +236,45 @@ fn crop_to_an_element_by_role_and_name(cx: &mut TestAppContext) {
 }
 
 #[gpui::test(render)]
+fn an_element_crop_is_the_same_pixels_as_the_frame_cropped(cx: &mut TestAppContext) {
+    let mut cx = open_sample(cx);
+    let crop = cx.screenshot_element_image(Role::Button, "Save").unwrap();
+    let frame = cx.screenshot_image().unwrap();
+    // The "Save" button is at left 130, top 110, 90 x 36 (logical pixels): its
+    // crop is exactly that place of the frame, and not the same pixels
+    // anywhere else, so a crop that is placed or sized wrongly fails.
+    let scale = frame.width() as f32 / WINDOW.0;
+    let (left, top, width, height) = (
+        (130. * scale) as u32,
+        (110. * scale) as u32,
+        (90. * scale) as u32,
+        (36. * scale) as u32,
+    );
+    assert_eq!(
+        crop.dimensions(),
+        (width, height),
+        "the crop is not the button's size"
+    );
+    let expected = image::imageops::crop_imm(&frame, left, top, width, height).to_image();
+    assert!(
+        crop == expected,
+        "the crop is not the pixels of the frame at the button's place ({left}, {top})"
+    );
+    // The place has the button's colours, so the comparison is not of two
+    // blank images: the green of its background in a corner and the white of
+    // its label in the middle.
+    assert_close(crop.get_pixel(2, 2).0, [0x30, 0xa0, 0x50], "the button's corner");
+    assert!(
+        crop.pixels().any(|pixel| pixel.0[..3] == [255, 255, 255]),
+        "the button's label is not in the crop"
+    );
+    // A crop one pixel off is a different image: the whole frame has no
+    // other place with these pixels next to the one asked for.
+    let shifted = image::imageops::crop_imm(&frame, left + 1, top, width, height).to_image();
+    assert!(crop != shifted, "a crop one pixel to the right looks the same");
+}
+
+#[gpui::test(render)]
 fn cropping_to_a_missing_element_names_it(cx: &mut TestAppContext) {
     let mut cx = open_sample(cx);
     let error = cx

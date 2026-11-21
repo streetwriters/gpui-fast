@@ -997,6 +997,166 @@ fn a_scroll_layer_shows_the_tiles_its_content_is_cut_into() {
     image.expect(20, 80, BLACK, 0);
 }
 
+/// What a crop of `scene` shows, and how many layer tiles were drawn for it.
+fn cropped_layer(scene: &Scene, region: Bounds<DevicePixels>) -> (image::RgbaImage, usize) {
+    let renderer = CpuHeadlessRenderer::new();
+    let mut canvas =
+        crate::fast::crop::canvas(size(DevicePixels(100), DevicePixels(128)), region)
+            .expect("the crop is in the frame");
+    let mut drawing = crate::Drawing {
+        atlas: &renderer.atlas,
+        canvas: &mut canvas,
+        clips: Vec::new(),
+        tiles: std::collections::HashMap::new(),
+        spans: true,
+    };
+    drawing.scene(scene);
+    let tiles = drawing.tiles.len();
+    (canvas.into_image(), tiles)
+}
+
+#[test]
+fn a_crop_of_a_scroll_layer_draws_only_the_tiles_it_shows() {
+    let mut scene = scrolled_layer(-60.);
+    scene.finish();
+    let whole = render_scene(&mut Frame::new(), scrolled_layer(-60.), 100, 128).0;
+    let region = |x, y, width, height| Bounds {
+        origin: point(DevicePixels(x), DevicePixels(y)),
+        size: size(DevicePixels(width), DevicePixels(height)),
+    };
+    // Tiles cover x = -60..4 and 4..68 in the first row, -60..4 in the second
+    // (y = 64..128). A crop is the frame's pixels whichever tiles it draws.
+    for (x, y, width, height, tiles) in [
+        // Only the second tile of the first row.
+        (10, 10, 20, 20, 1),
+        // The edge between the first two tiles of the row, nothing below.
+        (0, 0, 30, 30, 2),
+        // The row below: only its tile, which is 4 pixels wide here.
+        (0, 70, 10, 20, 1),
+        // Past every tile: nothing to draw.
+        (80, 20, 10, 10, 0),
+        // The whole frame needs them all.
+        (0, 0, 100, 128, 3),
+    ] {
+        let (crop, drawn) = cropped_layer(&scene, region(x, y, width, height));
+        let expected =
+            image::imageops::crop_imm(&whole, x as u32, y as u32, width as u32, height as u32)
+                .to_image();
+        assert!(
+            crop == expected,
+            "the crop ({x}, {y}) {width}x{height} differs from the whole frame cropped"
+        );
+        assert_eq!(
+            drawn, tiles,
+            "the crop ({x}, {y}) {width}x{height} drew {drawn} tiles"
+        );
+    }
+}
+
+/// A scene of many opaque one-colour quads at fractional bounds, each under a
+/// mask that is a plain rectangle, a rounded one or none, some translucent,
+/// bordered or rounded (which take the shader), some under a transform or a
+/// colour filter, and one inside a rounded clip.
+fn spanned_scene(seed: u64) -> Scene {
+    let mut state = seed | 1;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let mut frame = Frame::new();
+    for index in 0..240 {
+        let (x, y) = (-20. + next() * 140., -20. + next() * 140.);
+        let (width, height) = (next() * 60., next() * 60.);
+        let bounds = rect(x, y, width, height);
+        let hex = (next() * 16_777_215.) as u32;
+        let mut primitive = quad(bounds, hex);
+        let mask = rect(
+            -10. + next() * 100.,
+            -10. + next() * 100.,
+            next() * 100.,
+            next() * 100.,
+        );
+        primitive.content_mask = match index % 6 {
+            0 => open(),
+            1 => ClipMask {
+                bounds: mask,
+                rounded_bounds: mask,
+                corner_radii: Corners::all(sp(next() * 20.)),
+            },
+            _ => ClipMask::new(mask),
+        };
+        match index % 7 {
+            0 => primitive.corner_radii = Corners::all(sp(next() * 10.)),
+            1 => {
+                primitive.border_widths = Edges::all(sp(next() * 3.));
+                primitive.border_color = color(0x00ff00);
+            }
+            2 => primitive.background = solid_background(Hsla { a: next(), ..color(hex) }),
+            _ => {}
+        }
+        let previous = match index % 11 {
+            0 => Some(
+                frame
+                    .scene
+                    .push_transform(TransformationMatrix::unit().translate(point(
+                        sp(next() * 10.),
+                        sp(next() * 10.),
+                    ))),
+            ),
+            1 => {
+                let mut halve_red = ColorFilter::IDENTITY;
+                halve_red.rows[0][0] = next();
+                Some(frame.scene.push_color_filter(halve_red))
+            }
+            _ => None,
+        };
+        frame.add(primitive);
+        if let Some(previous) = previous {
+            frame.scene.pop_transform(previous);
+        }
+    }
+    let mut scene = frame.scene;
+    scene.finish();
+    scene
+}
+
+#[test]
+fn filling_an_opaque_quad_in_spans_draws_what_the_shader_draws() {
+    for seed in 1..=6 {
+        let mut images = Vec::new();
+        for spans in [false, true] {
+            let mut renderer = CpuHeadlessRenderer::new();
+            renderer.spans = spans;
+            let scene = spanned_scene(seed);
+            let image = renderer
+                .render_scene_to_image(&scene, size(DevicePixels(120), DevicePixels(120)))
+                .expect("the scene renders");
+            images.push(image.into_raw());
+        }
+        assert!(
+            images[0] == images[1],
+            "seed {seed}: the spans drew something else than the shader"
+        );
+    }
+}
+
+#[test]
+fn the_rounded_clip_is_the_same_with_and_without_spans() {
+    let mut images = Vec::new();
+    for spans in [false, true] {
+        let mut frame = Frame::new();
+        frame.renderer.spans = spans;
+        let scene = rounded_clip(rect(5.3, 7.1, 70.4, 60.2), 12., |scene| {
+            scene.insert_primitive(quad(rect(0., 0., 90.7, 40.5), 0x3366cc));
+            scene.insert_primitive(quad(rect(10.5, 30.25, 40.5, 70.), 0xcc6633));
+        });
+        images.push(render_scene(&mut frame, scene, 100, 100).0.into_raw());
+    }
+    assert!(images[0] == images[1]);
+}
+
 #[test]
 fn a_scroll_layer_tile_is_copied_pixel_for_pixel() {
     let mut frame = Frame::new();

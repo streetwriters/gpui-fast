@@ -1500,6 +1500,15 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
         anyhow::bail!("render_to_image not implemented for this platform")
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn render_region_to_image(
+        &self,
+        scene: &Scene,
+        region: Bounds<DevicePixels>,
+    ) -> Result<RgbaImage> {
+        crate::fast::region::crop_image(self.render_to_image(scene)?, region)
+    }
 }
 
 /// A renderer for headless windows that can produce real rendered output.
@@ -1511,6 +1520,16 @@ pub trait PlatformHeadlessRenderer {
         scene: &Scene,
         size: Size<DevicePixels>,
     ) -> Result<RgbaImage>;
+
+    /// Render only `region` of the frame: the same pixels as that part of `render_scene_to_image`'s.
+    fn render_scene_region_to_image(
+        &mut self,
+        scene: &Scene,
+        size: Size<DevicePixels>,
+        region: Bounds<DevicePixels>,
+    ) -> Result<RgbaImage> {
+        crate::fast::region::crop_image(self.render_scene_to_image(scene, size)?, region)
+    }
 
     /// Render a scene to an offscreen target without reading the result back.
     ///

@@ -14,6 +14,7 @@
 //! skipped is logged once per process.
 
 mod atlas;
+mod fast;
 mod shade;
 
 #[cfg(test)]
@@ -56,6 +57,10 @@ fn note_unsupported(what: &'static str) {
 /// A `PlatformHeadlessRenderer` that draws on the CPU.
 pub struct CpuHeadlessRenderer {
     atlas: Arc<CpuAtlas>,
+    /// Whether the interior of an opaque one-colour primitive is written as
+    /// spans of pixels. Always, but for the tests that check the spans against
+    /// drawing every pixel.
+    spans: bool,
 }
 
 static RENDERERS_CREATED: AtomicUsize = AtomicUsize::new(0);
@@ -71,7 +76,22 @@ impl CpuHeadlessRenderer {
         RENDERERS_CREATED.fetch_add(1, Ordering::Relaxed);
         Self {
             atlas: Arc::new(CpuAtlas::default()),
+            spans: true,
         }
+    }
+}
+
+impl CpuHeadlessRenderer {
+    fn draw(&mut self, scene: &Scene, mut canvas: Canvas) -> Result<image::RgbaImage> {
+        let mut drawing = Drawing {
+            atlas: &self.atlas,
+            canvas: &mut canvas,
+            clips: Vec::new(),
+            tiles: HashMap::new(),
+            spans: self.spans,
+        };
+        drawing.scene(scene);
+        Ok(canvas.into_image())
     }
 }
 
@@ -91,15 +111,19 @@ impl PlatformHeadlessRenderer for CpuHeadlessRenderer {
         if width <= 0 || height <= 0 {
             bail!("cannot render a {width}x{height} window");
         }
-        let mut canvas = Canvas::new(width as u32, height as u32)?;
-        let mut drawing = Drawing {
-            atlas: &self.atlas,
-            canvas: &mut canvas,
-            clips: Vec::new(),
-            tiles: HashMap::new(),
-        };
-        drawing.scene(scene);
-        Ok(canvas.into_image())
+        self.draw(scene, Canvas::new(width as u32, height as u32)?)
+    }
+
+    /// Draws only the pixels of `region`: the image is the same as the whole
+    /// frame's `region`, and costs what the region does.
+    fn render_scene_region_to_image(
+        &mut self,
+        scene: &Scene,
+        size: Size<DevicePixels>,
+        region: Bounds<DevicePixels>,
+    ) -> Result<image::RgbaImage> {
+        let canvas = crate::fast::crop::canvas(size, region)?;
+        self.draw(scene, canvas)
     }
 
     /// Frames that are never read back are not drawn: a test window hands the
@@ -114,25 +138,73 @@ impl PlatformHeadlessRenderer for CpuHeadlessRenderer {
 }
 
 /// The frame: tiny-skia's premultiplied RGBA8 pixmap, cleared to opaque black as
-/// the Metal headless renderer's is.
-struct Canvas {
-    pixmap: Pixmap,
-    width: i32,
-    height: i32,
+/// the Metal headless renderer's is. It holds the pixels of the frame inside
+/// `left..left + width` by `top..top + height`, which is all of it unless only
+/// a crop of the frame was asked for: the primitives are still placed by the
+/// frame's coordinates, and the ones outside the crop are not drawn.
+pub(crate) struct Canvas {
+    pub(crate) pixmap: Pixmap,
+    pub(crate) left: i32,
+    pub(crate) top: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
 }
 
 fn to_byte(value: f32) -> u8 {
     (value.clamp(0., 1.) * 255. + 0.5) as u8
 }
 
+/// Blends a straight colour over a pixel's four bytes, as the GPU pipelines do:
+/// `source * alpha + destination * (1 - alpha)`.
+fn blend_pixel(pixel: &mut [u8], color: Rgba) {
+    let alpha = color[3].min(1.);
+    if !(alpha > 0.) {
+        return;
+    }
+    for channel in 0..3 {
+        let below = pixel[channel] as f32 / 255.;
+        pixel[channel] = to_byte(color[channel].clamp(0., 1.) * alpha + below * (1. - alpha));
+    }
+    let below = pixel[3] as f32 / 255.;
+    pixel[3] = to_byte(alpha + below * (1. - alpha));
+}
+
+/// Blends a premultiplied colour over a pixel's four bytes.
+fn blend_premultiplied_pixel(pixel: &mut [u8], color: Rgba) {
+    let alpha = color[3].min(1.);
+    if !(alpha > 0.) {
+        return;
+    }
+    for channel in 0..3 {
+        let below = pixel[channel] as f32 / 255.;
+        pixel[channel] = to_byte(color[channel] + below * (1. - alpha));
+    }
+    let below = pixel[3] as f32 / 255.;
+    pixel[3] = to_byte(alpha + below * (1. - alpha));
+}
+
+/// How much of a point the enclosing rounded clips let through.
+fn clip_coverage(clips: &[RoundedClip], device: V2) -> f32 {
+    clips
+        .iter()
+        .fold(1., |coverage, clip| coverage.min(clip.coverage(device)))
+}
+
 impl Canvas {
     fn new(width: u32, height: u32) -> Result<Self> {
+        Self::crop(0, 0, width, height)
+    }
+
+    /// A canvas of the `width` by `height` pixels of the frame from (`left`, `top`).
+    fn crop(left: i32, top: i32, width: u32, height: u32) -> Result<Self> {
         let Some(mut pixmap) = Pixmap::new(width, height) else {
             bail!("cannot allocate a {width}x{height} frame");
         };
         pixmap.fill(Color::BLACK);
         Ok(Self {
             pixmap,
+            left,
+            top,
             width: width as i32,
             height: height as i32,
         })
@@ -152,46 +224,20 @@ impl Canvas {
         image::RgbaImage::from_raw(width, height, data).expect("a pixmap's size matches")
     }
 
-    fn pixel(&mut self, x: i32, y: i32) -> &mut [u8] {
-        let index = (y as usize * self.width as usize + x as usize) * 4;
-        &mut self.pixmap.data_mut()[index..index + 4]
+    /// The columns of the canvas whose centres lie in `[low, high)`.
+    fn x_span(&self, low: f32, high: f32) -> (i32, i32) {
+        Self::span(low, high, self.left, self.left + self.width)
     }
 
-    /// Blends a straight colour over the pixel, as the GPU pipelines do:
-    /// `source * alpha + destination * (1 - alpha)`.
-    fn blend(&mut self, x: i32, y: i32, color: Rgba) {
-        let alpha = color[3].min(1.);
-        if !(alpha > 0.) {
-            return;
-        }
-        let pixel = self.pixel(x, y);
-        for channel in 0..3 {
-            let below = pixel[channel] as f32 / 255.;
-            pixel[channel] = to_byte(color[channel].clamp(0., 1.) * alpha + below * (1. - alpha));
-        }
-        let below = pixel[3] as f32 / 255.;
-        pixel[3] = to_byte(alpha + below * (1. - alpha));
+    /// The rows of the canvas whose centres lie in `[low, high)`.
+    fn y_span(&self, low: f32, high: f32) -> (i32, i32) {
+        Self::span(low, high, self.top, self.top + self.height)
     }
 
-    /// Blends a premultiplied colour over the pixel.
-    fn blend_premultiplied(&mut self, x: i32, y: i32, color: Rgba) {
-        let alpha = color[3].min(1.);
-        if !(alpha > 0.) {
-            return;
-        }
-        let pixel = self.pixel(x, y);
-        for channel in 0..3 {
-            let below = pixel[channel] as f32 / 255.;
-            pixel[channel] = to_byte(color[channel] + below * (1. - alpha));
-        }
-        let below = pixel[3] as f32 / 255.;
-        pixel[3] = to_byte(alpha + below * (1. - alpha));
-    }
-
-    /// The pixel range whose centres lie in `[low, high)`.
-    fn span(low: f32, high: f32, limit: i32) -> (i32, i32) {
-        let start = ((low - 0.5).ceil().max(0.)).min(limit as f32) as i32;
-        let end = ((high - 0.5).ceil().max(0.)).min(limit as f32) as i32;
+    /// The pixel range inside `[min, max)` whose centres lie in `[low, high)`.
+    fn span(low: f32, high: f32, min: i32, max: i32) -> (i32, i32) {
+        let start = ((low - 0.5).ceil().max(min as f32)).min(max as f32) as i32;
+        let end = ((high - 0.5).ceil().max(min as f32)).min(max as f32) as i32;
         (start, end.max(start))
     }
 }
@@ -229,6 +275,21 @@ impl Placement {
         ))
     }
 
+    /// The device-space box of the primitive's box `low..high`.
+    fn device_box(&self, low: V2, high: V2) -> (V2, V2) {
+        if self.identity {
+            return (low, high);
+        }
+        let covered = self.matrix.transform_bounds(&Bounds {
+            origin: gpui::point(ScaledPixels(low.x), ScaledPixels(low.y)),
+            size: gpui::size(ScaledPixels(high.x - low.x), ScaledPixels(high.y - low.y)),
+        });
+        (
+            shade::origin(&covered),
+            shade::origin(&covered) + shade::size(&covered),
+        )
+    }
+
     /// How far past a primitive's bounds a transformed one covers, so that an
     /// edge antialiased in the fragment stage is not cut off.
     fn margin(&self) -> f32 {
@@ -248,6 +309,7 @@ struct Drawing<'a> {
     clips: Vec<RoundedClip>,
     /// The layer tiles rasterized so far, by the layer's frame and the tile.
     tiles: HashMap<(usize, gpui::TileCoord), Arc<atlas::Texture>>,
+    spans: bool,
 }
 
 fn grown(bounds: &Bounds<ScaledPixels>, margin: f32) -> (V2, V2) {
@@ -257,11 +319,6 @@ fn grown(bounds: &Bounds<ScaledPixels>, margin: f32) -> (V2, V2) {
 }
 
 impl Drawing<'_> {
-    fn clip_coverage(&self, device: V2) -> f32 {
-        self.clips
-            .iter()
-            .fold(1., |coverage, clip| coverage.min(clip.coverage(device)))
-    }
 
     /// Draws `scene` in draw order.
     fn scene(&mut self, scene: &Scene) {
@@ -318,7 +375,40 @@ impl Drawing<'_> {
         margin: f32,
         transform: TransformIndex,
         mask: &ClipMask<ScaledPixels>,
-        mut shade: impl FnMut(V2) -> Rgba,
+        shade: impl Fn(V2) -> Rgba + Sync,
+    ) {
+        self.raster_rows(
+            scene,
+            bounds,
+            margin,
+            transform,
+            mask,
+            None,
+            |_| (),
+            |_, position| shade(position),
+        );
+    }
+
+    /// [`Self::raster`] for a shader that has work to do once for each row of
+    /// pixels: `prepare` gets the y of a row's pixel centres, in the
+    /// primitive's space, and `shade` the result with each pixel's position.
+    /// Under a transform no two pixels of a row share a y in that space, and
+    /// `prepare` runs for each pixel.
+    ///
+    /// `opaque` promises that `shade` returns that colour, with an alpha of
+    /// one or more, for every pixel that gets as far as it. Where nothing is
+    /// then done to the colour (no transform, no colour filter, no rounded
+    /// clip), the row's pixels are written as a span.
+    fn raster_rows<Row>(
+        &mut self,
+        scene: &Scene,
+        bounds: &Bounds<ScaledPixels>,
+        margin: f32,
+        transform: TransformIndex,
+        mask: &ClipMask<ScaledPixels>,
+        opaque: Option<Rgba>,
+        prepare: impl Fn(f32) -> Row + Sync,
+        shade: impl Fn(&Row, V2) -> Rgba + Sync,
     ) {
         let placement = Placement::new(scene, transform);
         if !placement.identity && placement.inverse.is_none() {
@@ -326,25 +416,49 @@ impl Drawing<'_> {
         }
         let margin = margin.max(placement.margin());
         let (low, high) = grown(bounds, margin);
-        // The device-space box of the primitive.
-        let (device_low, device_high) = if placement.identity {
-            (low, high)
-        } else {
-            let covered = placement.matrix.transform_bounds(&Bounds {
-                origin: gpui::point(ScaledPixels(low.x), ScaledPixels(low.y)),
-                size: gpui::size(ScaledPixels(high.x - low.x), ScaledPixels(high.y - low.y)),
-            });
-            (
-                shade::origin(&covered),
-                shade::origin(&covered) + shade::size(&covered),
-            )
-        };
-        let (x0, x1) = Canvas::span(device_low.x, device_high.x, self.canvas.width);
-        let (y0, y1) = Canvas::span(device_low.y, device_high.y, self.canvas.height);
+        let (device_low, device_high) = placement.device_box(low, high);
+        let (x0, x1) = self.canvas.x_span(device_low.x, device_high.x);
+        let (y0, y1) = self.canvas.y_span(device_low.y, device_high.y);
         let filter = scene.transforms.filter(transform);
         let filtered = !filter.is_identity();
-        for y in y0..y1 {
-            for x in x0..x1 {
+        let clips = &self.clips;
+        // What an opaque colour comes to once blended: the pixel below does
+        // not show, since the colour's alpha is one.
+        let span_bytes = opaque
+            .filter(|_| self.spans && placement.identity && !filtered && clips.is_empty())
+            .map(|color| {
+                let mut bytes = [0; 4];
+                blend_pixel(&mut bytes, color);
+                bytes
+            });
+        let x_inside = |x: i32| {
+            let centre = x as f32 + 0.5;
+            !(centre < low.x || centre >= high.x) && shade::mask_contains_x(centre, mask)
+        };
+        let y_inside = |y: i32| {
+            let centre = y as f32 + 0.5;
+            !(centre < low.y || centre >= high.y) && shade::mask_contains_y(centre, mask)
+        };
+        let mask_x = (
+            shade::origin(&mask.bounds).x,
+            shade::origin(&mask.bounds).x + shade::size(&mask.bounds).x,
+        );
+        crate::fast::bands::for_each_row(self.canvas, (x0, x1), (y0, y1), |y, row| {
+            if let Some(bytes) = span_bytes {
+                if !y_inside(y) {
+                    return;
+                }
+                let estimate = (
+                    (low.x.max(mask_x.0) - 0.5).ceil(),
+                    (high.x.min(mask_x.1) - 0.5).ceil(),
+                );
+                if let Some(columns) = crate::fast::spans::columns((x0, x1), estimate, x_inside) {
+                    crate::fast::spans::fill(row, x0, columns, bytes);
+                    return;
+                }
+            }
+            let mut prepared = None;
+            for (pixel, x) in row.chunks_exact_mut(4).zip(x0..x1) {
                 let device = v2(x as f32 + 0.5, y as f32 + 0.5);
                 let Some(local) = placement.local(device) else {
                     continue;
@@ -355,26 +469,32 @@ impl Drawing<'_> {
                 if !shade::inside_mask_rect(local, mask) {
                     continue;
                 }
-                let mut color = shade(local);
+                let mut color = if placement.identity {
+                    shade(prepared.get_or_insert_with(|| prepare(local.y)), local)
+                } else {
+                    shade(&prepare(local.y), local)
+                };
                 if filtered {
                     color = shade::apply_color_filter(&filter, color);
                 }
-                color[3] *= self.clip_coverage(device);
-                self.canvas.blend(x, y, color);
+                color[3] *= clip_coverage(clips, device);
+                blend_pixel(pixel, color);
             }
-        }
+        });
     }
 
     fn quad(&mut self, scene: &Scene, quad: &gpui::Quad) {
         let fill = Fill::new(&quad.background, quad.bounds);
         let border = shade::hsla_to_rgba(quad.border_color);
-        self.raster(
+        self.raster_rows(
             scene,
             &quad.bounds,
             0.,
             quad.transform_index(),
             &quad.content_mask,
-            |position| shade::quad_color(quad, &fill, border, position),
+            shade::one_opaque_colour(quad, &fill),
+            |_| (),
+            |_, position| shade::quad_color(quad, &fill, border, position),
         );
     }
 
@@ -385,14 +505,16 @@ impl Drawing<'_> {
         } else {
             (shadow.bounds, 3. * shadow.blur_radius.0)
         };
-        self.raster(
+        self.raster_rows(
             scene,
             &bounds,
             margin,
             TransformIndex(shadow.transform_index),
             &shadow.content_mask,
-            |position| {
-                let alpha = shade::shadow_alpha(shadow, position);
+            None,
+            |y| shade::ShadowRow::new(shadow, y),
+            |row, position| {
+                let alpha = row.alpha(shadow, position.x);
                 [color[0], color[1], color[2], color[3] * alpha]
             },
         );
@@ -484,10 +606,11 @@ impl Drawing<'_> {
             return;
         }
         let (low, high) = grown(&sprite.bounds, 0.);
-        let (x0, x1) = Canvas::span(low.x, high.x, self.canvas.width);
-        let (y0, y1) = Canvas::span(low.y, high.y, self.canvas.height);
-        for y in y0..y1 {
-            for x in x0..x1 {
+        let (x0, x1) = self.canvas.x_span(low.x, high.x);
+        let (y0, y1) = self.canvas.y_span(low.y, high.y);
+        let clips = &self.clips;
+        crate::fast::bands::for_each_row(self.canvas, (x0, x1), (y0, y1), |y, row| {
+            for (pixel, x) in row.chunks_exact_mut(4).zip(x0..x1) {
                 let position = v2(x as f32 + 0.5, y as f32 + 0.5);
                 if !shade::inside_mask_rect(position, &sprite.content_mask) {
                     continue;
@@ -496,8 +619,7 @@ impl Drawing<'_> {
                 let coverage = texture.sample_linear(tx, ty);
                 let strength = color[3]
                     * shade::content_mask_alpha(position, &sprite.content_mask)
-                    * self.clip_coverage(position);
-                let pixel = self.canvas.pixel(x, y);
+                    * clip_coverage(clips, position);
                 for channel in 0..3 {
                     let below = pixel[channel] as f32 / 255.;
                     let alpha = coverage[channel] * strength;
@@ -507,7 +629,7 @@ impl Drawing<'_> {
                 let alpha = coverage[3] * strength;
                 pixel[3] = to_byte(alpha + below * (1. - alpha));
             }
-        }
+        });
     }
 
     fn polychrome_sprites(
@@ -563,6 +685,11 @@ impl Drawing<'_> {
             let texture = match self.tiles.get(&identity) {
                 Some(texture) => texture.clone(),
                 None => {
+                    // A tile whose sprite is off the canvas (a crop of the
+                    // frame) is not drawn: the sprite would draw nothing.
+                    if !self.reaches_canvas(scene, &sprite.bounds, TransformIndex(sprite.transform_index)) {
+                        continue;
+                    }
                     let Some(texture) = self.rasterize_tile(frame, coord) else {
                         continue;
                     };
@@ -572,6 +699,19 @@ impl Drawing<'_> {
             };
             self.polychrome_sprite(scene, &texture, sprite);
         }
+    }
+
+    /// Whether a primitive with these bounds covers any pixel of the canvas.
+    fn reaches_canvas(&self, scene: &Scene, bounds: &Bounds<ScaledPixels>, transform: TransformIndex) -> bool {
+        let placement = Placement::new(scene, transform);
+        if !placement.identity && placement.inverse.is_none() {
+            return false;
+        }
+        let (low, high) = grown(bounds, placement.margin());
+        let (device_low, device_high) = placement.device_box(low, high);
+        let (x0, x1) = self.canvas.x_span(device_low.x, device_high.x);
+        let (y0, y1) = self.canvas.y_span(device_low.y, device_high.y);
+        x0 < x1 && y0 < y1
     }
 
     /// One tile of a layer, drawn into a texture of its own.
@@ -595,6 +735,7 @@ impl Drawing<'_> {
             canvas: &mut canvas,
             clips: Vec::new(),
             tiles: HashMap::new(),
+            spans: self.spans,
         }
         .scene(&tile_scene);
         // The atlas keeps its pixels as blue, green, red, alpha.
@@ -688,8 +829,8 @@ impl Drawing<'_> {
         let low = shade::origin(&path.bounds).max(shade::origin(&mask.bounds));
         let high = (shade::origin(&path.bounds) + shade::size(&path.bounds))
             .min(shade::origin(&mask.bounds) + shade::size(&mask.bounds));
-        let (x0, x1) = Canvas::span(low.x, high.x, self.canvas.width);
-        let (y0, y1) = Canvas::span(low.y, high.y, self.canvas.height);
+        let (x0, x1) = self.canvas.x_span(low.x, high.x);
+        let (y0, y1) = self.canvas.y_span(low.y, high.y);
         let (width, height) = ((x1 - x0) as usize, (y1 - y0) as usize);
         if width == 0 || height == 0 {
             return;
@@ -743,10 +884,10 @@ impl Drawing<'_> {
             let max_x = a.x.max(b.x).max(c.x);
             let min_y = a.y.min(b.y).min(c.y);
             let max_y = a.y.max(b.y).max(c.y);
-            let (tx0, tx1) = Canvas::span(min_x, max_x, x1);
-            let (ty0, ty1) = Canvas::span(min_y, max_y, y1);
-            for y in ty0.max(y0)..ty1 {
-                for x in tx0.max(x0)..tx1 {
+            let (tx0, tx1) = Canvas::span(min_x, max_x, x0, x1);
+            let (ty0, ty1) = Canvas::span(min_y, max_y, y0, y1);
+            for y in ty0..ty1 {
+                for x in tx0..tx1 {
                     let point = v2(x as f32 + 0.5, y as f32 + 0.5);
                     let (e_ab, e_bc, e_ca) = (edge(a, b, point), edge(b, c, point), edge(c, a, point));
                     let inside = (e_ab > 0. || (e_ab == 0. && own_ab))
@@ -782,20 +923,21 @@ impl Drawing<'_> {
                 }
             }
         }
-        for y in y0..y1 {
-            for x in x0..x1 {
+        let clips = &self.clips;
+        crate::fast::bands::for_each_row(self.canvas, (x0, x1), (y0, y1), |y, row| {
+            for (pixel, x) in row.chunks_exact_mut(4).zip(x0..x1) {
                 let mut color = coverage[(y - y0) as usize * width + (x - x0) as usize];
                 if color[3] <= 0. {
                     continue;
                 }
                 let device = v2(x as f32 + 0.5, y as f32 + 0.5);
-                let clip = self.clip_coverage(device);
+                let clip = clip_coverage(clips, device);
                 for channel in &mut color {
                     *channel *= clip;
                 }
-                self.canvas.blend_premultiplied(x, y, color);
+                blend_premultiplied_pixel(pixel, color);
             }
-        }
+        });
     }
 }
 

@@ -149,7 +149,10 @@ fn the_inbox_looks_right(cx: &mut TestAppContext) {
   letters, digits, `-`, `_`, `.`, space becomes `_`).
 - `screenshot_element(name, role, label)` crops to the bounds of the one element
   found by role and name in the accessibility tree. It fails naming the role
-  and label when none or several match.
+  and label when none or several match. The CPU renderer draws only the
+  element's pixels; the GPU renderers draw the frame and crop it.
+  `Window::render_region_to_image(region)` (`test-support`) does the same for a
+  region in device pixels.
 - `screenshot_image()` and `screenshot_element_image(role, label)` return the
   `RgbaImage` without writing it, for pixel assertions. The image is the
   window size times its scale factor (2.0 by default;
@@ -216,6 +219,35 @@ fails when one element is off by more than 16 levels at over 1% of its pixels,
 which is how a drifted copy shows. Do not assert on a single pixel along an
 edge or in a gradient across renderers.
 
+**How fast it is.** A primitive of 16K pixels or more is drawn in bands of
+rows, spread over rayon's pool (`fast/bands.rs`); the per-pixel maths is
+untouched, so the bytes are the same as one thread's
+(`tests/golden.rs` pins the hashes of two fixed scenes taken before the
+change). A region (`render_scene_region_to_image`, `fast/crop.rs`) draws into a
+frame the size of the region only, so an element's capture costs the element,
+not the window.
+
+Work that is the same for every pixel of a row is done once per row, with the
+same operations in the same order: a shadow's corner radii, blur weights and
+sample offsets, a gradient's direction and a pattern's stripe set-up
+(`shade.rs`). The inside of an opaque one-colour quad (no border or rounded
+corner, a rectangular mask, no transform or colour filter) is written as a run
+of bytes per row, the run's ends being found with the same comparisons the
+per-pixel path makes (`fast/spans.rs`); a row it can't be sure of is drawn
+pixel by pixel. A unit test draws random scenes with spans on and off and
+compares the bytes.
+
+`cargo test -p gpui_cpu_renderer --release --features runtime_shaders --test
+timing -- --ignored --nocapture` prints the cost: on 12 cores a 2048 x 1536
+frame of boxes takes about 105 ms on one thread before the bands and the
+hoisting, 46 ms with the hoisting, 14 ms on all cores, and a 200 x 100 crop of
+it 0.3 ms. The `what_the_tester_specs_cost` test in the same file
+models the captures of the tester's `side-borders`, `outline-radius` and
+`rounded-clip` e2e specs (their elements, at 1024 x 768 points and scale 2, one
+capture per call the spec makes) and prints the whole-frame and element costs
+for each; it is a model of the specs, since the tester's driver does not ask
+for a crop yet.
+
 **What it doesn't draw** (each is skipped with one warning per process, and
 the frame is otherwise drawn)
 
@@ -227,7 +259,9 @@ the frame is otherwise drawn)
 
 Scroll layers (the retained-scroll fast path) are drawn: each tile is drawn
 into its own bitmap over the layer's background and composited, as Metal does,
-so a scrolled list shows its content.
+so a scrolled list shows its content. A tile is drawn only when its sprite
+reaches the canvas, so a region of a scrolled list draws the tiles that show in
+it, not all of them.
 
 Borders have one colour for all sides, as in GPUI, with the width set per side.
 

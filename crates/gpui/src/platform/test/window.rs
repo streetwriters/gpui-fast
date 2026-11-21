@@ -28,7 +28,7 @@ pub(crate) struct TestWindowState {
     platform: Weak<TestPlatform>,
     // TODO: Replace with `Rc`
     sprite_atlas: Arc<dyn PlatformAtlas>,
-    renderer: Option<Box<dyn PlatformHeadlessRenderer>>,
+    pub(crate) renderer: Option<Box<dyn PlatformHeadlessRenderer>>,
     pub(crate) should_close_handler: Option<Box<dyn FnMut() -> bool>>,
     close_callback: Option<Box<dyn FnOnce()>>,
     hit_test_window_control_callback: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
@@ -581,6 +581,15 @@ impl PlatformWindow for TestWindow {
         } else {
             anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn render_region_to_image(
+        &self,
+        scene: &Scene,
+        region: Bounds<DevicePixels>,
+    ) -> anyhow::Result<RgbaImage> {
+        crate::fast::test_rendering::render_test_window_region(self, scene, region)
     }
 
     fn as_test(&mut self) -> Option<&mut TestWindow> {

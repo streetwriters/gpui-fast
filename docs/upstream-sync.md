@@ -164,6 +164,11 @@ unchanged, and a new entry needs as good a reason.
   in a non-composited frame keyed by `u32::MAX`. The private wire format lives
   in `fast::rounded_clip_scene`; Metal, WGPU and Direct3D evaluate the clip
   stack directly without intermediate render targets.
+- With `test-support`, `Window::render_region_to_image`,
+  `PlatformWindow::render_region_to_image` and
+  `PlatformHeadlessRenderer::render_scene_region_to_image` draw one region of
+  a frame (the CPU renderer draws only that region; the defaults crop a whole
+  frame), so an element screenshot need not draw the window.
 - `crates/gpui/Cargo.toml` names this repository and sets `publish = false`.
 - Window composition, the API of
   [zed#62379](https://github.com/zed-industries/zed/pull/62379), which

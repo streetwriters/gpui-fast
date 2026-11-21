@@ -190,14 +190,34 @@ fn oklab_to_srgb(color: Rgba) -> Rgba {
     ]
 }
 
-/// A fill prepared for a primitive's bounds, with the colour conversions done
-/// once.
+/// What a gradient fill's shader works out again for every pixel and which
+/// only depends on the fill and its bounds.
+struct GradientSetup {
+    direction: V2,
+    direction_length: f32,
+    half_size: V2,
+    center: V2,
+    along_x: bool,
+}
+
+/// The same for the stripes of a slash pattern.
+struct StripeSetup {
+    pattern_period: f32,
+    sin: f32,
+    cos: f32,
+    half_dash: f32,
+}
+
+/// A fill prepared for a primitive's bounds, with the colour conversions and
+/// the per-fill part of the gradient and stripe maths done once.
 pub(crate) struct Fill {
     parts: FillParts,
     solid: Rgba,
     color0: Rgba,
     color1: Rgba,
     bounds: Bounds<ScaledPixels>,
+    gradient: GradientSetup,
+    stripes: StripeSetup,
 }
 
 impl Fill {
@@ -217,35 +237,69 @@ impl Fill {
             }
             _ => solid = hsla_to_rgba(parts.solid),
         }
+        let (bounds_origin, bounds_size) = (origin(&bounds), size(&bounds));
+        let angle = parts.angle_or_pattern;
+        let radians = ((angle % 360.0) - 90.0) * (std::f32::consts::PI / 180.0);
+        let mut direction = v2(radians.cos(), radians.sin());
+        if bounds_size.x > bounds_size.y {
+            direction.y *= bounds_size.y / bounds_size.x;
+        } else {
+            direction.x *= bounds_size.x / bounds_size.y;
+        }
+        let half_size = bounds_size / 2.;
+        let gradient = GradientSetup {
+            direction,
+            direction_length: direction.length(),
+            half_size,
+            center: bounds_origin + half_size,
+            along_x: direction.x.abs() > direction.y.abs(),
+        };
+        let packed = parts.angle_or_pattern;
+        let pattern_width = (packed / 65535.0) / 255.0;
+        let pattern_interval = (packed % 65535.0) / 255.0;
+        let pattern_height = pattern_width + pattern_interval;
+        let stripe_angle = std::f32::consts::FRAC_PI_4;
+        let pattern_period = pattern_height * stripe_angle.sin();
+        let (sin, cos) = stripe_angle.sin_cos();
+        let stripes = StripeSetup {
+            pattern_period,
+            sin,
+            cos,
+            half_dash: pattern_period * (pattern_width / pattern_height) / 2.0,
+        };
         Self {
             parts,
             solid,
             color0,
             color1,
             bounds,
+            gradient,
+            stripes,
         }
+    }
+
+    /// The colour of every pixel, when the fill is one opaque colour.
+    pub fn opaque_solid(&self) -> Option<Rgba> {
+        (self.parts.tag == 0 && self.solid[3] >= 1.).then_some(self.solid)
     }
 
     /// `fill_color` of the Metal shaders.
     pub fn at(&self, position: V2) -> Rgba {
-        let bounds = &self.bounds;
-        let (bounds_origin, bounds_size) = (origin(bounds), size(bounds));
+        let bounds_origin = origin(&self.bounds);
         match self.parts.tag {
             0 => self.solid,
             1 => {
-                let angle = self.parts.angle_or_pattern;
-                let radians = ((angle % 360.0) - 90.0) * (std::f32::consts::PI / 180.0);
-                let mut direction = v2(radians.cos(), radians.sin());
-                if bounds_size.x > bounds_size.y {
-                    direction.y *= bounds_size.y / bounds_size.x;
-                } else {
-                    direction.x *= bounds_size.x / bounds_size.y;
-                }
-                let half_size = bounds_size / 2.;
-                let center = bounds_origin + half_size;
+                let GradientSetup {
+                    direction,
+                    direction_length,
+                    half_size,
+                    center,
+                    along_x,
+                } = self.gradient;
+                let bounds_size = size(&self.bounds);
                 let center_to_point = position - center;
-                let mut t = center_to_point.dot(direction) / direction.length();
-                if direction.x.abs() > direction.y.abs() {
+                let mut t = center_to_point.dot(direction) / direction_length;
+                if along_x {
                     t = (t + half_size.x) / bounds_size.x;
                 } else {
                     t = (t + half_size.y) / bounds_size.y;
@@ -272,19 +326,17 @@ impl Fill {
                 ]
             }
             2 => {
-                let packed = self.parts.angle_or_pattern;
-                let pattern_width = (packed / 65535.0) / 255.0;
-                let pattern_interval = (packed % 65535.0) / 255.0;
-                let pattern_height = pattern_width + pattern_interval;
-                let stripe_angle = std::f32::consts::FRAC_PI_4;
-                let pattern_period = pattern_height * stripe_angle.sin();
+                let StripeSetup {
+                    pattern_period,
+                    sin: s,
+                    cos: c,
+                    half_dash,
+                } = self.stripes;
                 let relative = position - bounds_origin;
-                let (s, c) = stripe_angle.sin_cos();
                 // float2x2(c, -s, s, c) is column major: x' = c*x + s*y.
                 let rotated_x = c * relative.x + s * relative.y;
                 let pattern = rotated_x % pattern_period;
-                let distance = pattern.min(pattern_period - pattern)
-                    - pattern_period * (pattern_width / pattern_height) / 2.0;
+                let distance = pattern.min(pattern_period - pattern) - half_dash;
                 let mut color = self.solid;
                 color[3] *= saturate(0.5 - distance);
                 color
@@ -360,11 +412,25 @@ pub(crate) fn content_mask_alpha(position: V2, mask: &ClipMask<ScaledPixels>) ->
 
 /// Whether `position` is inside the hard rectangle of a content mask.
 pub(crate) fn inside_mask_rect(position: V2, mask: &ClipMask<ScaledPixels>) -> bool {
+    mask_contains_x(position.x, mask) && mask_contains_y(position.y, mask)
+}
+
+/// The horizontal half of [`inside_mask_rect`].
+pub(crate) fn mask_contains_x(x: f32, mask: &ClipMask<ScaledPixels>) -> bool {
     let (o, s) = (origin(&mask.bounds), size(&mask.bounds));
-    position.x - o.x >= 0.
-        && o.x + s.x - position.x >= 0.
-        && position.y - o.y >= 0.
-        && o.y + s.y - position.y >= 0.
+    x - o.x >= 0. && o.x + s.x - x >= 0.
+}
+
+/// The vertical half of [`inside_mask_rect`].
+pub(crate) fn mask_contains_y(y: f32, mask: &ClipMask<ScaledPixels>) -> bool {
+    let (o, s) = (origin(&mask.bounds), size(&mask.bounds));
+    y - o.y >= 0. && o.y + s.y - y >= 0.
+}
+
+/// Whether a content mask lets a point through unchanged wherever it is inside
+/// the mask's rectangle: it has no rounded rectangle.
+pub(crate) fn mask_is_rectangular(mask: &ClipMask<ScaledPixels>) -> bool {
+    no_radii(&mask.corner_radii)
 }
 
 fn over(below: Rgba, above: Rgba) -> Rgba {
@@ -399,6 +465,27 @@ fn dash_alpha(t: f32, period: f32, length: f32, dash_velocity: f32, antialias: f
     let centered = ((t + half_period - half_length) % period) - half_period;
     let signed_distance = centered.abs() - half_length;
     saturate(antialias - signed_distance / dash_velocity)
+}
+
+/// The colour `quad_color` returns for every point of a quad inside its
+/// content mask's rectangle, when that is one colour with an alpha of one or
+/// more: a solid fill, no borders, no radii, no transform and a mask without a
+/// rounded rectangle, which are what `quad_color`'s first early return and
+/// `content_mask_alpha` ask for.
+pub(crate) fn one_opaque_colour(quad: &Quad, fill: &Fill) -> Option<Rgba> {
+    let widths = &quad.border_widths;
+    let plain = widths.top.0 == 0.
+        && widths.left.0 == 0.
+        && widths.right.0 == 0.
+        && widths.bottom.0 == 0.
+        && no_radii(&quad.corner_radii)
+        && quad.transform_index().0 == 0
+        && mask_is_rectangular(&quad.content_mask);
+    if !plain {
+        return None;
+    }
+    let [red, green, blue, alpha] = fill.opaque_solid()?;
+    Some([red, green, blue, alpha * 1.])
 }
 
 /// `quad_fragment_body`: the colour of a quad at `frag_pos`, before the colour
@@ -630,57 +717,119 @@ fn erf(x: f32) -> f32 {
     sign - sign / (r2 * r2)
 }
 
-fn blur_along_x(x: f32, y: f32, sigma: f32, corner: f32, half_size: V2) -> f32 {
+/// How far from the middle of a shadow the edge of its rounded rectangle is at
+/// `y` from the middle, for the corner radius `corner`.
+fn curved_extent(y: f32, corner: f32, half_size: V2) -> f32 {
     let delta = (half_size.y - corner - y.abs()).min(0.);
-    let curved = half_size.x - corner + (corner * corner - delta * delta).max(0.).sqrt();
-    let scale = 0.5f32.sqrt() / sigma;
+    half_size.x - corner + (corner * corner - delta * delta).max(0.).sqrt()
+}
+
+/// The box blur of a shadow's edges along a row, at `x` from the middle.
+fn blur_along_x(x: f32, scale: f32, curved: f32) -> f32 {
     let low = 0.5 + 0.5 * erf((x - curved) * scale);
     let high = 0.5 + 0.5 * erf((x + curved) * scale);
     high - low
 }
 
-/// `shadow_fragment_body` without the colour: the shadow's alpha at `frag_pos`.
-pub(crate) fn shadow_alpha(shadow: &Shadow, frag_pos: V2) -> f32 {
-    let half_size = size(&shadow.bounds) / 2.;
-    let center = origin(&shadow.bounds) + half_size;
-    let point = frag_pos - center;
-    let corner_radius = pick_corner_radius(point, &shadow.corner_radii);
-    let blur = shadow.blur_radius.0;
+/// What `shadow_fragment_body` works out from the row of the pixel alone: the
+/// four samples of the blur down the row (where they are, their weights, how
+/// far across the shadow's rounded corners reach at each) and the vertical part
+/// of the dither. Computed once for a row of pixels, it leaves each pixel the
+/// work that depends on its column, in the same operations as if the whole of
+/// it were done per pixel.
+pub(crate) struct ShadowRow {
+    y: f32,
+    center: V2,
+    blur: f32,
+    /// `1 / sqrt 2` over the blur.
+    scale: f32,
+    step: f32,
+    /// Each sample's gaussian weight.
+    weights: [f32; 4],
+    /// How far each sample's rounded edge reaches, for the left radius and the
+    /// right one.
+    curved: [[f32; 2]; 4],
+    dither_y: [f32; 2],
+}
 
-    let mut alpha;
-    if blur == 0. {
-        alpha = saturate(0.5 - quad_sdf(frag_pos, &shadow.bounds, &shadow.corner_radii));
-    } else {
-        let low = point.y - half_size.y;
-        let high = point.y + half_size.y;
-        let start = (-3. * blur).clamp(low.min(high), low.max(high));
-        let end = (3. * blur).clamp(low.min(high), low.max(high));
-        let step = (end - start) / 4.;
-        let mut y = start + step * 0.5;
-        alpha = 0.;
-        for _ in 0..4 {
-            alpha += blur_along_x(point.x, point.y - y, blur, corner_radius, half_size)
-                * gaussian(y, blur)
-                * step;
-            y += step;
+impl ShadowRow {
+    /// The row whose pixel centres are at `frag_y`.
+    pub fn new(shadow: &Shadow, frag_y: f32) -> Self {
+        let half_size = size(&shadow.bounds) / 2.;
+        let center = origin(&shadow.bounds) + half_size;
+        let point_y = frag_y - center.y;
+        let blur = shadow.blur_radius.0;
+        let radii = [true, false].map(|left| {
+            pick_corner_radius(v2(if left { -1. } else { 1. }, point_y), &shadow.corner_radii)
+        });
+
+        let mut row = Self {
+            y: frag_y,
+            center,
+            blur,
+            scale: 0.5f32.sqrt() / blur,
+            step: 0.,
+            weights: [0.; 4],
+            curved: [[0.; 2]; 4],
+            dither_y: [0.; 2],
+        };
+        if blur != 0. {
+            let low = point_y - half_size.y;
+            let high = point_y + half_size.y;
+            let start = (-3. * blur).clamp(low.min(high), low.max(high));
+            let end = (3. * blur).clamp(low.min(high), low.max(high));
+            let step = (end - start) / 4.;
+            let mut y = start + step * 0.5;
+            row.step = step;
+            for sample in 0..4 {
+                row.weights[sample] = gaussian(y, blur);
+                for side in 0..2 {
+                    row.curved[sample][side] =
+                        curved_extent(point_y - y, radii[side], half_size);
+                }
+                y += step;
+            }
         }
+        // Metal's dither: interleaved gradient noise, triangular over about +-1/255.
+        let p_y = frag_y - origin(&shadow.bounds).y;
+        let weights = v2(0.067_110_56, 0.005_837_15);
+        row.dither_y = [p_y * weights.y, (p_y + 0.5) * weights.y];
+        row
     }
-    if shadow.inset != 0 {
-        alpha = 1. - alpha;
-        let element_distance = quad_sdf(
-            frag_pos,
-            &shadow.element_bounds,
-            &shadow.element_corner_radii,
-        );
-        alpha *= saturate(0.5 - element_distance);
+
+    /// `shadow_fragment_body` without the colour: the shadow's alpha at the
+    /// pixel in column `frag_x` of the row.
+    pub fn alpha(&self, shadow: &Shadow, frag_x: f32) -> f32 {
+        let frag_pos = v2(frag_x, self.y);
+        let point_x = frag_x - self.center.x;
+        let side = !(point_x < 0.) as usize;
+        let mut alpha;
+        if self.blur == 0. {
+            alpha = saturate(0.5 - quad_sdf(frag_pos, &shadow.bounds, &shadow.corner_radii));
+        } else {
+            alpha = 0.;
+            for sample in 0..4 {
+                alpha += blur_along_x(point_x, self.scale, self.curved[sample][side])
+                    * self.weights[sample]
+                    * self.step;
+            }
+        }
+        if shadow.inset != 0 {
+            alpha = 1. - alpha;
+            let element_distance = quad_sdf(
+                frag_pos,
+                &shadow.element_bounds,
+                &shadow.element_corner_radii,
+            );
+            alpha *= saturate(0.5 - element_distance);
+        }
+        let p_x = frag_x - origin(&shadow.bounds).x;
+        let weights = v2(0.067_110_56, 0.005_837_15);
+        let a = fract(52.982_918_9 * fract(p_x * weights.x + self.dither_y[0]));
+        let b = fract(52.982_918_9 * fract((p_x + 0.5) * weights.x + self.dither_y[1]));
+        alpha = (alpha + (a + b - 1.0) / 255.0 * (alpha * 2.0).min(1.0)).max(0.0);
+        alpha * content_mask_alpha(frag_pos, &shadow.content_mask)
     }
-    // Metal's dither: interleaved gradient noise, triangular over about +-1/255.
-    let p = frag_pos - origin(&shadow.bounds);
-    let weights = v2(0.067_110_56, 0.005_837_15);
-    let a = fract(52.982_918_9 * fract(p.dot(weights)));
-    let b = fract(52.982_918_9 * fract((p + V2::splat(0.5)).dot(weights)));
-    alpha = (alpha + (a + b - 1.0) / 255.0 * (alpha * 2.0).min(1.0)).max(0.0);
-    alpha * content_mask_alpha(frag_pos, &shadow.content_mask)
 }
 
 /// `underline_fragment_body` without the colour: the underline's alpha.

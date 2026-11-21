@@ -53,6 +53,8 @@ pub(crate) mod text;
 pub(crate) mod text_keys;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_rendering;
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+pub(crate) mod region;
 pub(crate) mod text_style;
 pub(crate) mod tracked_entities;
 pub(crate) mod transform;

@@ -30,9 +30,67 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use image::RgbaImage;
 
 use crate::{
-    AssetSource, PlatformHeadlessRenderer, PlatformTextSystem, SharedString, SvgRenderer,
-    TestAppContext, TextSystem, VisualTestContext,
+    AssetSource, Bounds, DevicePixels, Pixels, PlatformHeadlessRenderer, PlatformTextSystem,
+    Scene, SharedString, Size, SvgRenderer, TestAppContext, TextSystem, VisualTestContext, point,
+    size,
 };
+
+/// The device pixels an element's `bounds` cover in a window of `size` (the
+/// whole pixel an edge falls in), or `None` when none of them are in the window.
+pub(crate) fn element_region(
+    bounds: Bounds<Pixels>,
+    scale: f32,
+    window: Size<DevicePixels>,
+) -> Option<Bounds<DevicePixels>> {
+    let (width, height) = (window.width.0.max(0) as u32, window.height.0.max(0) as u32);
+    let left = ((bounds.left().0 * scale).floor().max(0.) as u32).min(width);
+    let top = ((bounds.top().0 * scale).floor().max(0.) as u32).min(height);
+    let right = ((bounds.right().0 * scale).ceil().max(0.) as u32).min(width);
+    let bottom = ((bounds.bottom().0 * scale).ceil().max(0.) as u32).min(height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(Bounds {
+        origin: point(DevicePixels(left as i32), DevicePixels(top as i32)),
+        size: size(
+            DevicePixels((right - left) as i32),
+            DevicePixels((bottom - top) as i32),
+        ),
+    })
+}
+
+/// Draws `region` of a test window's frame with its offscreen renderer.
+pub(crate) fn render_region(
+    renderer: &mut Option<Box<dyn PlatformHeadlessRenderer>>,
+    size: Size<DevicePixels>,
+    scene: &Scene,
+    region: Bounds<DevicePixels>,
+) -> Result<RgbaImage> {
+    match renderer {
+        Some(renderer) => renderer.render_scene_region_to_image(scene, size, region),
+        None => bail!("render_to_image not available: no HeadlessRenderer configured"),
+    }
+}
+
+/// Draws `region` of a frame of the test window `window` with its renderer.
+pub(crate) fn render_test_window_region(
+    window: &crate::TestWindow,
+    scene: &Scene,
+    region: Bounds<DevicePixels>,
+) -> Result<RgbaImage> {
+    let scale_factor = crate::PlatformWindow::scale_factor(window);
+    let mut state = window.0.lock();
+    let size = state.bounds.size.to_device_pixels(scale_factor);
+    render_region(&mut state.renderer, size, scene, region)
+}
+
+impl crate::Window {
+    /// Like `render_to_image`, for `region` of the frame only.
+    pub fn render_region_to_image(&self, region: Bounds<DevicePixels>) -> Result<RgbaImage> {
+        self.platform_window
+            .render_region_to_image(&self.rendered_frame.scene, region)
+    }
+}
 
 /// What a test needs to render its windows: a real text system and a factory
 /// for the platform's offscreen renderer. `gpui_platform::test_rendering()`
@@ -226,6 +284,15 @@ impl VisualTestContext {
     /// no offscreen renderer, or when the frame paints an SVG whose asset
     /// the test did not supply (see [`TestAppContext::set_asset_source`]).
     pub fn screenshot_image(&mut self) -> Result<RgbaImage> {
+        self.render_frame(None)
+    }
+
+    /// The frame, or with `element` (its bounds, role and name) only the
+    /// element's bounds, drawn without drawing the rest of the window.
+    fn render_frame(
+        &mut self,
+        element: Option<(Bounds<Pixels>, Role, &str)>,
+    ) -> Result<RgbaImage> {
         if !self.is_rendering() {
             bail!(
                 "this test can't take a screenshot: rendering is not enabled. Use \
@@ -239,7 +306,20 @@ impl VisualTestContext {
         self.update(|window, _| window.refresh());
         crate::fast::ui_test::settle(self);
         let image = self
-            .update(|window, _| window.render_to_image())
+            .update(|window, _| match element {
+                None => window.render_to_image(),
+                Some((bounds, role, label)) => {
+                    let scale = window.scale_factor();
+                    let size = window.bounds().size.to_device_pixels(scale);
+                    let Some(region) = element_region(bounds, scale, size) else {
+                        bail!(
+                            "the {role:?} named {label:?} is outside the window or has no size \
+                             (bounds {bounds:?}), so there is nothing to crop to"
+                        );
+                    };
+                    window.render_region_to_image(region)
+                }
+            })
             .map_err(|error| {
                 if error.to_string().contains("no HeadlessRenderer configured") {
                     anyhow!(
@@ -285,19 +365,7 @@ impl VisualTestContext {
         let bounds = self
             .try_bounds_by_role(role, label)
             .map_err(|message| anyhow!("can't take a screenshot of the element: {message}"))?;
-        let image = self.screenshot_image()?;
-        let scale = self.update(|window, _| window.scale_factor());
-        let left = ((bounds.left().0 * scale).floor().max(0.) as u32).min(image.width());
-        let top = ((bounds.top().0 * scale).floor().max(0.) as u32).min(image.height());
-        let right = ((bounds.right().0 * scale).ceil().max(0.) as u32).min(image.width());
-        let bottom = ((bounds.bottom().0 * scale).ceil().max(0.) as u32).min(image.height());
-        if right <= left || bottom <= top {
-            bail!(
-                "the {role:?} named {label:?} is outside the window or has no size \
-                 (bounds {bounds:?}), so there is nothing to crop to"
-            );
-        }
-        Ok(image::imageops::crop_imm(&image, left, top, right - left, bottom - top).to_image())
+        self.render_frame(Some((bounds, role, label)))
     }
 
     /// Like [`Self::screenshot`], cut down to the bounds of the one element
